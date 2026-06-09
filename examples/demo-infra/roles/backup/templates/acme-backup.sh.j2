@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Acme Corp nightly backup script for {{ inventory_hostname }}
+set -euo pipefail
+
+TS="$(date +%Y%m%d-%H%M%S)"
+TARGET="{{ backup_target_dir }}"
+HOST="{{ inventory_hostname }}"
+RETENTION_DAYS="{{ backup_retention_days }}"
+
+log() { logger -t acme-backup "$*"; echo "[acme-backup] $*"; }
+
+log "starting backup run ${TS} on ${HOST}"
+mkdir -p "${TARGET}"
+
+{% if 'db' in group_names %}
+# --- PostgreSQL: dump every database ---
+log "dumping PostgreSQL cluster"
+sudo -u postgres pg_dumpall --clean \
+  | {{ backup_compress_cmd }} -q -o "${TARGET}/pgdumpall-${HOST}-${TS}.sql.zst"
+{% endif %}
+{% if 'cache' in group_names %}
+# --- Redis: trigger a synchronous save and copy the RDB ---
+log "saving Redis dataset"
+redis-cli -a "{{ vault_redis_password | default('CHANGEME-redis') }}" --no-auth-warning BGSAVE || true
+sleep 5
+cp /var/lib/redis/dump.rdb "${TARGET}/redis-${HOST}-${TS}.rdb"
+{% endif %}
+{% if 'docker_hosts' in group_names %}
+# --- Docker: archive compose project definitions and named volumes list ---
+log "archiving compose definitions"
+tar -C /opt -czf "${TARGET}/compose-${HOST}-${TS}.tar.gz" acme-compose || true
+docker volume ls --format '{% raw %}{{.Name}}{% endraw %}' > "${TARGET}/volumes-${HOST}-${TS}.list"
+{% endif %}
+{% for path in backup_extra_paths %}
+log "archiving extra path {{ path }}"
+tar -czf "${TARGET}/extra-$(echo '{{ path }}' | tr '/' '_')-${TS}.tar.gz" "{{ path }}"
+{% endfor %}
+
+# --- Encrypt everything produced in this run ---
+log "encrypting artifacts"
+find "${TARGET}" -newer /etc/acme-provisioned -type f ! -name '*.gpg' -print0 \
+  | while IFS= read -r -d '' f; do
+      gpg --batch --yes --symmetric --cipher-algo AES256 \
+          --passphrase "{{ vault_backup_encryption_passphrase }}" "$f" && rm -f "$f"
+    done
+
+# --- Retention ---
+log "pruning artifacts older than ${RETENTION_DAYS} days"
+find "${TARGET}" -type f -mtime +"${RETENTION_DAYS}" -delete
+
+log "backup run ${TS} finished"

@@ -1,0 +1,48 @@
+# {{ ansible_managed }}
+# Acme Corp PostgreSQL {{ pg_version }} configuration ({{ pg_role }})
+
+data_directory = '{{ pg_data_dir }}'
+hba_file = '{{ pg_config_dir }}/pg_hba.conf'
+ident_file = '{{ pg_config_dir }}/pg_ident.conf'
+
+# --- Connections ---
+listen_addresses = '{{ pg_listen_addresses }}'
+port = {{ pg_port }}
+max_connections = {{ pg_max_connections }}
+unix_socket_directories = '/var/run/postgresql'
+
+# --- Memory ---
+shared_buffers = {{ pg_shared_buffers }}
+effective_cache_size = {{ pg_effective_cache_size }}
+work_mem = {{ pg_work_mem }}
+maintenance_work_mem = 128MB
+
+# --- WAL / replication ---
+wal_level = {{ pg_wal_level }}
+{% if pg_role == 'primary' %}
+max_wal_senders = {{ pg_max_wal_senders }}
+wal_keep_size = {{ pg_wal_keep_size }}
+synchronous_commit = {{ pg_synchronous_commit }}
+{% endif %}
+hot_standby = {{ pg_hot_standby }}
+
+# --- Checkpoints ---
+checkpoint_completion_target = 0.9
+max_wal_size = 2GB
+min_wal_size = 256MB
+
+# --- Logging ---
+log_destination = 'stderr'
+logging_collector = on
+log_directory = 'log'
+log_filename = 'postgresql-%a.log'
+log_min_duration_statement = {{ pg_log_min_duration_statement }}
+log_line_prefix = '%m [%p] %q%u@%d '
+log_lock_waits = on
+log_checkpoints = on
+
+# --- Locale ---
+datestyle = 'iso, dmy'
+timezone = '{{ acme_timezone | default("Etc/UTC") }}'
+lc_messages = 'C.UTF-8'
+default_text_search_config = 'pg_catalog.english'

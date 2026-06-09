@@ -1,0 +1,70 @@
+---
+- name: Configure Acme web servers (nginx + application)
+  hosts: web
+  become: true
+  gather_facts: true
+  vars_files:
+    - vars/secrets.yml
+  vars:
+    healthcheck_path: /healthz
+
+  pre_tasks:
+    - name: Verify connectivity to the web tier
+      ansible.builtin.ping:
+      tags: [always]
+
+    - name: Make sure the apt cache is fresh (Debian family only)
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_facts['os_family'] == 'Debian'
+      tags: [packages]
+
+  roles:
+    - role: common
+      tags: [common, packages, config]
+    - role: nginx
+      tags: [nginx, config, services]
+
+  tasks:
+    - name: Deploy the Acme shop application code
+      ansible.builtin.include_role:
+        name: app_deploy
+        apply:
+          tags: [deploy]
+      tags: [deploy]
+
+    - name: Ship nginx access logs to the central syslog relay
+      ansible.builtin.lineinfile:
+        path: /etc/rsyslog.d/49-acme-nginx.conf
+        line: 'local7.* @{{ hostvars[groups["monitoring"][0]]["ansible_host"] }}:514'
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart rsyslog
+      tags: [config, logging]
+
+  post_tasks:
+    - name: Wait for nginx to answer on port 80
+      ansible.builtin.wait_for:
+        port: 80
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        timeout: 30
+      tags: [services, verify]
+
+    - name: Check the application health endpoint
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host | default(inventory_hostname) }}{{ healthcheck_path }}"
+        status_code: 200
+      register: web_health
+      retries: 5
+      delay: 3
+      until: web_health.status == 200
+      tags: [verify]
+
+  handlers:
+    - name: Restart rsyslog
+      ansible.builtin.service:
+        name: rsyslog
+        state: restarted

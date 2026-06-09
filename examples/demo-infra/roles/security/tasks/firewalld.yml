@@ -1,0 +1,52 @@
+---
+# firewalld configuration (RHEL / Rocky / Alma)
+
+- name: Install firewalld
+  ansible.builtin.package:
+    name: firewalld
+    state: present
+  tags: [firewall, packages]
+
+- name: Enable and start firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: started
+    enabled: true
+  tags: [firewall, services]
+
+- name: Open baseline TCP ports permanently
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ security_open_tcp_ports }}"
+  tags: [firewall]
+
+- name: Open HTTP/HTTPS services on frontend hosts
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: [http, https]
+  when: "'frontend' in group_names"
+  tags: [firewall]
+
+- name: Open PostgreSQL on db hosts
+  ansible.posix.firewalld:
+    port: "5432/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: "'db' in group_names"
+  tags: [firewall]
+
+- name: Open Redis on cache hosts
+  ansible.posix.firewalld:
+    port: "6379/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: "'cache' in group_names"
+  tags: [firewall]

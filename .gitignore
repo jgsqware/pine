@@ -1,0 +1,5 @@
+/pine
+/dist/
+*.log
+.pine/
+.DS_Store

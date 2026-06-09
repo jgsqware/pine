@@ -1,0 +1,98 @@
+---
+# users role - groups, accounts, SSH keys and sudo
+
+- name: Ensure shells required by the user list are installed
+  ansible.builtin.package:
+    name: zsh
+    state: present
+  when: acme_users | selectattr('shell', 'search', 'zsh') | list | length > 0
+  tags: [users, packages]
+
+- name: Create Acme OS groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.gid }}"
+    state: present
+  loop: "{{ acme_groups }}"
+  loop_control:
+    label: "{{ item.name }} (gid {{ item.gid }})"
+  tags: [users, groups]
+
+- name: Create or update Acme user accounts
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    uid: "{{ item.uid }}"
+    comment: "{{ item.comment | default(omit) }}"
+    groups: "{{ item.groups | join(',') }}"
+    append: false
+    shell: "{{ item.shell | default(users_default_shell) }}"
+    create_home: true
+    home: "/home/{{ item.name }}"
+    state: present
+    password: "!"
+  loop: "{{ acme_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.state == 'present'
+  tags: [users]
+
+- name: Tighten home directory permissions
+  ansible.builtin.file:
+    path: "/home/{{ item.name }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "{{ users_home_mode }}"
+  loop: "{{ acme_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.state == 'present'
+  tags: [users]
+
+- name: Install authorized SSH keys
+  ansible.posix.authorized_key:
+    user: "{{ item.0.name }}"
+    key: "{{ item.1 }}"
+    state: present
+    exclusive: false
+  loop: "{{ acme_users | selectattr('state', 'equalto', 'present') | subelements('ssh_keys') }}"
+  loop_control:
+    label: "{{ item.0.name }}: {{ item.1 | truncate(40, true) }}"
+  tags: [users, ssh]
+
+- name: Grant sudo to entitled users via sudoers.d (validated)
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: "{{ users_sudoers_dir }}/50-acme-{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  loop: "{{ acme_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - item.state == 'present'
+    - item.sudo | bool
+  tags: [users, sudo]
+
+- name: Revoke sudoers snippets from non-sudo or departed users
+  ansible.builtin.file:
+    path: "{{ users_sudoers_dir }}/50-acme-{{ item.name }}"
+    state: absent
+  loop: "{{ acme_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.state == 'absent' or not (item.sudo | bool)
+  tags: [users, sudo]
+
+- name: Remove accounts of people who left Acme
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    state: absent
+    remove: true
+  loop: "{{ acme_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.state == 'absent'
+  tags: [users, offboarding]

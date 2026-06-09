@@ -1,0 +1,19 @@
+services:
+  pine:
+    build: .
+    image: pine:latest
+    container_name: pine
+    ports:
+      - "8743:8743"
+    environment:
+      # registers the bundled Acme Corp demo repository on first start
+      PINE_DEMO: "1"
+      PINE_DEMO_PATH: /usr/share/pine/demo-infra
+    volumes:
+      - pine-data:/data
+      # mount your local Ansible repos to connect them by path:
+      # - ./my-ansible-repo:/repos/my-ansible-repo:ro
+    restart: unless-stopped
+
+volumes:
+  pine-data:

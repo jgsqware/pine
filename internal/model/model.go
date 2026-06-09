@@ -1,0 +1,158 @@
+// Package model defines the core data types shared across Pine:
+// scanned Ansible content, repositories and jobs.
+package model
+
+// Task is a single Ansible task (or block) extracted from a playbook or role.
+type Task struct {
+	Name   string   `json:"name"`
+	Module string   `json:"module"`
+	Tags   []string `json:"tags,omitempty"`
+	When   string   `json:"when,omitempty"`
+	Loop   bool     `json:"loop,omitempty"`
+	Notify []string `json:"notify,omitempty"`
+	Block  []Task   `json:"block,omitempty"`
+	Rescue []Task   `json:"rescue,omitempty"`
+	Always []Task   `json:"always,omitempty"`
+}
+
+// Play is one play inside a playbook.
+type Play struct {
+	Name      string   `json:"name"`
+	Hosts     string   `json:"hosts"`
+	Become    bool     `json:"become,omitempty"`
+	Serial    string   `json:"serial,omitempty"`
+	Strategy  string   `json:"strategy,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	VarsFiles []string `json:"vars_files,omitempty"`
+	Roles     []string `json:"roles,omitempty"`
+	PreTasks  []Task   `json:"pre_tasks,omitempty"`
+	Tasks     []Task   `json:"tasks,omitempty"`
+	PostTasks []Task   `json:"post_tasks,omitempty"`
+	Handlers  []Task   `json:"handlers,omitempty"`
+	Import    string   `json:"import,omitempty"` // set when the entry is an import_playbook
+}
+
+// Playbook is a scanned playbook file.
+type Playbook struct {
+	Path  string `json:"path"`
+	Name  string `json:"name"`
+	Plays []Play `json:"plays"`
+}
+
+// Role is a scanned Ansible role.
+type Role struct {
+	Name         string         `json:"name"`
+	Path         string         `json:"path"`
+	Description  string         `json:"description,omitempty"`
+	Dependencies []string       `json:"dependencies,omitempty"`
+	TasksCount   int            `json:"tasks_count"`
+	Tasks        []Task         `json:"tasks,omitempty"`
+	Handlers     []Task         `json:"handlers,omitempty"`
+	Defaults     map[string]any `json:"defaults,omitempty"`
+	Vars         map[string]any `json:"vars,omitempty"`
+	Templates    []string       `json:"templates,omitempty"`
+	Files        []string       `json:"files,omitempty"`
+}
+
+// Group is an inventory group.
+type Group struct {
+	Name     string         `json:"name"`
+	Hosts    []string       `json:"hosts"`
+	Children []string       `json:"children,omitempty"`
+	Vars     map[string]any `json:"vars,omitempty"`
+}
+
+// Host is an inventory host with its resolved group memberships.
+type Host struct {
+	Name   string         `json:"name"`
+	Groups []string       `json:"groups"`
+	Vars   map[string]any `json:"vars,omitempty"`
+}
+
+// Inventory is a scanned inventory source (directory or single file).
+type Inventory struct {
+	Name   string  `json:"name"`
+	Path   string  `json:"path"`
+	Format string  `json:"format"` // ini | yaml
+	Groups []Group `json:"groups"`
+	Hosts  []Host  `json:"hosts"`
+}
+
+// ScanResult is everything Pine discovered in one repository.
+type ScanResult struct {
+	Playbooks   []Playbook  `json:"playbooks"`
+	Roles       []Role      `json:"roles"`
+	Inventories []Inventory `json:"inventories"`
+}
+
+// RepoSummary holds the headline counts shown on repo cards.
+type RepoSummary struct {
+	Playbooks   int `json:"playbooks"`
+	Roles       int `json:"roles"`
+	Inventories int `json:"inventories"`
+	Hosts       int `json:"hosts"`
+	Groups      int `json:"groups"`
+}
+
+// Repo statuses.
+const (
+	RepoNew     = "new"
+	RepoSyncing = "syncing"
+	RepoReady   = "ready"
+	RepoError   = "error"
+)
+
+// Repo is a connected Ansible repository (git URL or local path).
+type Repo struct {
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	URL        string      `json:"url,omitempty"`
+	Path       string      `json:"path,omitempty"`
+	Branch     string      `json:"branch,omitempty"`
+	Status     string      `json:"status"`
+	Error      string      `json:"error,omitempty"`
+	LastSynced string      `json:"last_synced,omitempty"`
+	Summary    RepoSummary `json:"summary"`
+}
+
+// JobSummary aggregates the PLAY RECAP counters across hosts.
+type JobSummary struct {
+	OK          int `json:"ok"`
+	Changed     int `json:"changed"`
+	Failed      int `json:"failed"`
+	Skipped     int `json:"skipped"`
+	Unreachable int `json:"unreachable"`
+}
+
+// Job statuses.
+const (
+	JobPending  = "pending"
+	JobRunning  = "running"
+	JobSuccess  = "success"
+	JobFailed   = "failed"
+	JobCanceled = "canceled"
+)
+
+// Job is one playbook execution.
+type Job struct {
+	ID         string     `json:"id"`
+	RepoID     string     `json:"repo_id"`
+	RepoName   string     `json:"repo_name"`
+	Playbook   string     `json:"playbook"`
+	Inventory  string     `json:"inventory,omitempty"`
+	Limit      string     `json:"limit,omitempty"`
+	Tags       string     `json:"tags,omitempty"`
+	Check      bool       `json:"check"`
+	Simulated  bool       `json:"simulated"`
+	Status     string     `json:"status"`
+	Created    string     `json:"created"`
+	Started    string     `json:"started,omitempty"`
+	Finished   string     `json:"finished,omitempty"`
+	DurationMS int64      `json:"duration_ms"`
+	Summary    JobSummary `json:"summary"`
+}
+
+// Terminal reports whether the job reached a final state.
+func (j *Job) Terminal() bool {
+	return j.Status == JobSuccess || j.Status == JobFailed || j.Status == JobCanceled
+}

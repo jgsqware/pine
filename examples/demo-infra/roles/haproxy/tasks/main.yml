@@ -1,0 +1,72 @@
+---
+# haproxy role - package, config from inventory, systemd override, keepalived
+
+- name: Install haproxy and keepalived
+  ansible.builtin.package:
+    name:
+      - haproxy
+      - keepalived
+    state: present
+  tags: [haproxy, packages]
+
+- name: Deploy haproxy.cfg (validated, backends from groups['web'])
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "haproxy -c -f %s"
+  notify: Restart haproxy
+  tags: [haproxy, config]
+
+- name: Create the haproxy systemd override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/haproxy.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [haproxy, systemd]
+
+- name: Install the haproxy systemd override
+  ansible.builtin.template:
+    src: override.conf.j2
+    dest: /etc/systemd/system/haproxy.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd daemon
+    - Restart haproxy
+  tags: [haproxy, systemd]
+
+- name: Deploy keepalived VRRP configuration for the VIP
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart keepalived
+  tags: [haproxy, keepalived, config]
+
+- name: Allow binding to the VIP even when it is not local yet
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/91-haproxy.conf
+    state: present
+    reload: true
+  tags: [haproxy, sysctl]
+
+- name: Enable and start haproxy and keepalived
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop:
+    - haproxy
+    - keepalived
+  tags: [haproxy, services]

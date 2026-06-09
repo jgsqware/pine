@@ -1,0 +1,39 @@
+---
+# Acme Corp - web tier variables
+
+# nginx vhosts rendered by roles/nginx/templates/vhost.conf.j2
+nginx_vhosts:
+  - server_name: "shop.{{ acme_domain }}"
+    listen_port: 80
+    upstream_port: "{{ app_port }}"
+    root: /var/www/acme-shop/current/public
+    access_log: /var/log/nginx/shop-access.log
+    enable_tls: false
+  - server_name: "api.{{ acme_domain }}"
+    listen_port: 80
+    upstream_port: 8001
+    root: /var/www/acme-api/current/public
+    access_log: /var/log/nginx/api-access.log
+    enable_tls: false
+  - server_name: "static.{{ acme_domain }}"
+    listen_port: 80
+    upstream_port: 0
+    root: /var/www/acme-static
+    access_log: /var/log/nginx/static-access.log
+    enable_tls: false
+
+nginx_client_max_body_size: 32m
+nginx_keepalive_timeout: 65
+
+# app_deploy role configuration for the web tier
+app_name: acme-shop
+app_git_repo: "https://git.{{ acme_domain }}/acme/acme-shop.git"
+app_git_version: "v2.4.1"
+app_user: acme-shop
+app_group: acme-svc
+app_base_dir: /var/www/acme-shop
+app_workers: 4
+app_db_host: "{{ hostvars['db-primary']['ansible_host'] }}"
+app_db_name: acme_shop
+app_db_user: acme_shop
+app_redis_host: "{{ hostvars['redis01']['ansible_host'] }}"

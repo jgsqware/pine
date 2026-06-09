@@ -1,0 +1,73 @@
+---
+- name: Zero-downtime rolling update of the Acme web tier
+  hosts: web
+  become: true
+  gather_facts: true
+  serial: 1
+  max_fail_percentage: 25
+  vars_files:
+    - vars/secrets.yml
+  vars:
+    haproxy_backend_name: acme_web_backend
+    drain_grace_seconds: 10
+
+  pre_tasks:
+    - name: Drain {{ inventory_hostname }} from every load balancer
+      ansible.builtin.shell:
+        cmd: >-
+          echo "disable server {{ haproxy_backend_name }}/{{ inventory_hostname }}"
+          | socat stdio /run/haproxy/admin.sock
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['lb'] }}"
+      changed_when: true
+      tags: [lb, drain]
+
+    - name: Give in-flight requests time to finish
+      ansible.builtin.wait_for:
+        timeout: "{{ drain_grace_seconds }}"
+      tags: [drain]
+
+  tasks:
+    - name: Deploy the new application release
+      ansible.builtin.include_role:
+        name: app_deploy
+        apply:
+          tags: [deploy]
+      tags: [deploy]
+
+    - name: Flush handlers so the app restarts before the health check
+      ansible.builtin.meta: flush_handlers
+      tags: [always]
+
+  post_tasks:
+    - name: Wait for the application to report healthy
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host | default(inventory_hostname) }}:{{ app_port }}/healthz"
+        status_code: 200
+      register: app_health
+      retries: 12
+      delay: 5
+      until: app_health.status == 200
+      tags: [verify]
+
+    - name: Re-enable {{ inventory_hostname }} on every load balancer
+      ansible.builtin.shell:
+        cmd: >-
+          echo "enable server {{ haproxy_backend_name }}/{{ inventory_hostname }}"
+          | socat stdio /run/haproxy/admin.sock
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['lb'] }}"
+      changed_when: true
+      tags: [lb, drain]
+
+    - name: Confirm the node serves traffic through the VIP again
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['lb01']['keepalived_vip'] }}/healthz"
+        status_code: 200
+      delegate_to: localhost
+      become: false
+      retries: 3
+      delay: 5
+      register: vip_health
+      until: vip_health.status == 200
+      tags: [verify]

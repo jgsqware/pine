@@ -1,0 +1,61 @@
+---
+# Two plays: node_exporter goes everywhere, the Prometheus/Grafana stack
+# only runs on the monitoring group (via docker compose).
+
+- name: Install node_exporter on every Acme host
+  hosts: acme
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Install and enable node_exporter as a systemd unit
+      ansible.builtin.include_role:
+        name: monitoring
+        tasks_from: node_exporter.yml
+        apply:
+          tags: [monitoring, node_exporter]
+      tags: [monitoring, node_exporter]
+
+- name: Deploy the Prometheus + Grafana stack on mon01
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  vars_files:
+    - vars/secrets.yml
+
+  pre_tasks:
+    - name: Create the monitoring base directory
+      ansible.builtin.file:
+        path: "{{ monitoring_base_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags: [monitoring, config]
+
+  roles:
+    - role: common
+      tags: [common, packages, config]
+    - role: monitoring
+      tags: [monitoring, compose, services]
+
+  post_tasks:
+    - name: Wait for Prometheus to come up
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ prometheus_port }}/-/ready"
+        status_code: 200
+      register: prom_ready
+      retries: 10
+      delay: 6
+      until: prom_ready.status == 200
+      tags: [verify]
+
+    - name: Wait for Grafana to come up
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ grafana_port }}/api/health"
+        status_code: 200
+      register: grafana_ready
+      retries: 10
+      delay: 6
+      until: grafana_ready.status == 200
+      tags: [verify]

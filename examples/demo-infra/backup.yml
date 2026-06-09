@@ -1,0 +1,25 @@
+---
+- name: Configure nightly backups on the data-bearing tiers
+  hosts: db:cache:docker_hosts
+  become: true
+  gather_facts: true
+  vars_files:
+    - vars/secrets.yml
+
+  roles:
+    - role: backup
+      tags: [backup, config, services]
+
+  post_tasks:
+    - name: Show next scheduled backup runs
+      ansible.builtin.command:
+        cmd: systemctl list-timers acme-backup.timer --no-pager
+      register: timer_list
+      changed_when: false
+      when: not backup_use_cron | bool
+      tags: [verify]
+
+    - name: Display timer schedule
+      ansible.builtin.debug:
+        msg: "{{ timer_list.stdout_lines | default(['cron fallback in use']) }}"
+      tags: [verify]

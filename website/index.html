@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pine — The Ansible control plane that doesn't need a control plane</title>
+<meta name="description" content="Pine is a single static binary that turns your Ansible repositories into a fast, beautiful control center. Web UI, TUI and REST API. A modern open-source alternative to AWX.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 L25 14 H20 L27 24 H18 V30 H14 V24 H5 L12 14 H7 Z' fill='%234ade80'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+
+<!-- ============================== NAV ============================== -->
+<header class="nav" id="top">
+  <div class="container nav-inner">
+    <a class="brand" href="#top" aria-label="Pine home">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M16 2 L25 14 H20 L27 24 H18 V30 H14 V24 H5 L12 14 H7 Z" fill="currentColor"/>
+      </svg>
+      <span class="wordmark">Pine</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="#why">Why Pine</a>
+      <a href="#features">Features</a>
+      <a href="#examples">Examples</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#api">API</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost btn-sm" href="https://github.com/jgsqware/pine" rel="noopener">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+      <a class="btn btn-primary btn-sm" href="#quickstart">Get Started</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============================== HERO ============================== -->
+<section class="hero">
+  <div class="hero-glow" aria-hidden="true"></div>
+  <div class="container hero-inner">
+    <div class="hero-copy reveal">
+      <div class="pill">
+        <span class="pill-dot"></span> Open source · MIT · single binary
+      </div>
+      <h1>The Ansible control plane that <em>doesn't need</em> a control plane.</h1>
+      <p class="lede">
+        Pine is one static Go binary that turns your Ansible repositories into a fast,
+        beautiful control center — web UI, full TUI and REST API included.
+        No operator. No PostgreSQL. No message broker. Just your playbooks, visualized and runnable.
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#quickstart">Get Started</a>
+        <a class="btn btn-ghost" href="https://github.com/jgsqware/pine" rel="noopener">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.42 7.42 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+      <div class="hero-term">
+        <code><span class="t-prompt">$</span> docker compose up -d <span class="t-comment"># http://localhost:8743 — that's it.</span></code>
+      </div>
+    </div>
+
+    <!-- Dashboard mockup -->
+    <div class="hero-visual reveal" aria-hidden="true">
+      <div class="mock-window">
+        <div class="mock-titlebar">
+          <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+          <span class="mock-url">localhost:8743</span>
+        </div>
+        <div class="mock-body">
+          <aside class="mock-side">
+            <div class="mock-side-brand">
+              <svg viewBox="0 0 32 32" width="14" height="14"><path d="M16 2 L25 14 H20 L27 24 H18 V30 H14 V24 H5 L12 14 H7 Z" fill="#4ade80"/></svg>
+              Pine
+            </div>
+            <div class="mock-nav-item">Overview</div>
+            <div class="mock-nav-item">Repos</div>
+            <div class="mock-nav-item active">Playbooks</div>
+            <div class="mock-nav-item">Roles</div>
+            <div class="mock-nav-item">Inventory</div>
+            <div class="mock-nav-item">Jobs</div>
+            <div class="mock-side-foot"><span class="sync-dot"></span> acme-infra · synced</div>
+          </aside>
+          <main class="mock-main">
+            <div class="mock-head">
+              <span class="mock-title">acme-infra</span>
+              <span class="mock-badge">git · main · auto-sync</span>
+            </div>
+            <div class="mock-stats">
+              <div class="mock-stat"><b>11</b><span>playbooks</span></div>
+              <div class="mock-stat"><b>12</b><span>roles</span></div>
+              <div class="mock-stat"><b>14</b><span>hosts</span></div>
+              <div class="mock-stat"><b>2</b><span>inventories</span></div>
+            </div>
+            <div class="mock-jobs">
+              <div class="mock-jobs-head">Recent jobs</div>
+              <div class="mock-job">
+                <span class="status status-running"></span>
+                <span class="mock-job-name">rolling-update.yml</span>
+                <span class="mock-job-meta">--limit web · serial:1</span>
+                <span class="mock-job-time">running 0:42</span>
+              </div>
+              <div class="mock-job">
+                <span class="status status-ok"></span>
+                <span class="mock-job-name">site.yml</span>
+                <span class="recap-bar"><i style="width:62%" class="rb-ok"></i><i style="width:30%" class="rb-changed"></i><i style="width:8%" class="rb-skipped"></i></span>
+                <span class="mock-job-time">2m ago</span>
+              </div>
+              <div class="mock-job">
+                <span class="status status-ok"></span>
+                <span class="mock-job-name">hardening.yml</span>
+                <span class="recap-bar"><i style="width:80%" class="rb-ok"></i><i style="width:20%" class="rb-changed"></i></span>
+                <span class="mock-job-time">1h ago</span>
+              </div>
+              <div class="mock-job">
+                <span class="status status-failed"></span>
+                <span class="mock-job-name">backup.yml --check</span>
+                <span class="recap-bar"><i style="width:70%" class="rb-ok"></i><i style="width:12%" class="rb-failed"></i><i style="width:18%" class="rb-skipped"></i></span>
+                <span class="mock-job-time">3h ago</span>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== WHY PINE ============================== -->
+<section class="section" id="why">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Why Pine</span>
+      <h2>Everything AWX gives a small team.<br>None of what it demands.</h2>
+      <p>AWX is a powerful platform — if you need enterprise RBAC across thousands of users and a workflow engine, use it. Pine is for everyone who just wants to see, understand and run their Ansible. Honestly compared:</p>
+    </div>
+    <div class="compare reveal">
+      <div class="compare-row compare-head">
+        <div class="compare-label"></div>
+        <div class="compare-awx">AWX / Ansible Tower</div>
+        <div class="compare-pine">
+          <svg viewBox="0 0 32 32" width="14" height="14" aria-hidden="true"><path d="M16 2 L25 14 H20 L27 24 H18 V30 H14 V24 H5 L12 14 H7 Z" fill="#4ade80"/></svg>
+          Pine
+        </div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-label">Deployment</div>
+        <div class="compare-awx">Kubernetes cluster + awx-operator + Helm + ingress</div>
+        <div class="compare-pine"><code>docker compose up -d</code> — or just run the binary</div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-label">Time to first job</div>
+        <div class="compare-awx">An afternoon, if everything goes well</div>
+        <div class="compare-pine">About 30 seconds</div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-label">Dependencies</div>
+        <div class="compare-awx">PostgreSQL, Redis, receptor, nginx, an operator…</div>
+        <div class="compare-pine">None. One static Go binary.</div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-label">Data storage</div>
+        <div class="compare-awx">A managed Postgres database with migrations</div>
+        <div class="compare-pine">Plain JSON files you can read, back up and git-diff</div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-label">Interfaces</div>
+        <div class="compare-awx">Web UI, REST API</div>
+        <div class="compare-pine">Web UI, full terminal TUI, REST API</div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-label">Footprint</div>
+        <div class="compare-awx">Several pods, gigabytes of RAM</div>
+        <div class="compare-pine">~30&nbsp;MB binary — happily runs on a Raspberry&nbsp;Pi</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== FEATURES ============================== -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Features</span>
+      <h2>Point it at your repos. Pine does the rest.</h2>
+      <p>Pine scans real Ansible repositories — no special project format, no surveys, no job templates to maintain.</p>
+    </div>
+    <div class="features-grid">
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M12 2 21 7v10l-9 5-9-5V7l9-5Z"/><path d="M12 12 21 7M12 12v10M12 12 3 7"/></svg></div>
+        <h3>Single static binary</h3>
+        <p>One Go binary, zero runtime dependencies. Deploy with Docker, docker-compose, or <code>scp</code> it to a box and run it.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7M8.2 6.8 15.6 11M8.2 17.2 15.6 13"/></svg></div>
+        <h3>Multiple repos, auto-synced</h3>
+        <p>Connect any number of Ansible repositories — git URLs or local paths. Pine keeps them fresh automatically.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg></div>
+        <h3>Deep scanning</h3>
+        <p>Playbooks, plays, tasks, roles — defaults, handlers, meta, dependencies — plus INI &amp; YAML inventories, <code>group_vars</code> and <code>host_vars</code>.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><circle cx="12" cy="13" r="2"/><path d="M12 7.5V11M10.8 14.6 6.3 17.2M13.2 14.6l4.5 2.6"/></svg></div>
+        <h3>Interactive topology graph</h3>
+        <p>Your inventories rendered live — groups, children and hosts as an explorable graph, not a wall of INI.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="6" height="5" rx="1.5"/><rect x="16" y="4" width="6" height="5" rx="1.5"/><rect x="9" y="15" width="6" height="5" rx="1.5"/><path d="M5 9v3a2 2 0 0 0 2 2h2m10-5v3a2 2 0 0 1-2 2h-2"/></svg></div>
+        <h3>Playbook task-flow</h3>
+        <p>See every playbook as plays → roles → tasks, with tags, handlers and <code>notify</code> edges. Understand before you run.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M7 4.5 18.5 12 7 19.5Z"/></svg></div>
+        <h3>Job engine with live streaming</h3>
+        <p>Run playbooks with <code>--check</code>, <code>--limit</code>, <code>--tags</code>. Output streams live over SSE; history keeps a per-host ok / changed / failed recap. No Ansible installed? Simulation mode still works.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3M12 15h6"/></svg></div>
+        <h3>Web UI + TUI + REST API</h3>
+        <p>An embedded web UI, a full terminal UI for SSH sessions, and a clean REST API for everything else. Same data, three doors.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/><path d="m3 21 18-18" class="slash"/></svg></div>
+        <h3>No moving parts</h3>
+        <p>State is plain JSON on disk. No external database, no Kubernetes operator, no RabbitMQ. Nothing to babysit at 3&nbsp;a.m.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== EXAMPLES ============================== -->
+<section class="section section-examples" id="examples">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">See it</span>
+      <h2>Acme Corp, mapped end to end.</h2>
+      <p>Everything below is rendered from Pine's bundled demo infrastructure (<code>examples/demo-infra</code>) — 2 inventories, 12 roles, 11 playbooks. Run <code>pine serve --demo</code> to explore it yourself.</p>
+    </div>
+
+    <!-- a. Topology graph -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3><span class="example-num">01</span> Inventory topology</h3>
+          <p>The production inventory as a live graph. Hover a node to trace its group lineage.</p>
+        </div>
+        <span class="example-tag">inventories/production</span>
+      </div>
+      <div class="panel topo-panel">
+        <div class="topo-toolbar">
+          <span class="topo-legend"><i class="lg lg-group"></i> group</span>
+          <span class="topo-legend"><i class="lg lg-host"></i> host</span>
+          <span class="topo-readout" id="topo-readout">acme — 11 hosts, 8 child groups</span>
+        </div>
+        <svg id="topo" viewBox="0 0 860 540" role="img" aria-label="Topology graph of the Acme production inventory"></svg>
+      </div>
+    </div>
+
+    <!-- b. Task-flow -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3><span class="example-num">02</span> Playbook task-flow</h3>
+          <p><code>rolling-update.yml</code> — one host at a time, drained from the load balancer first.</p>
+        </div>
+        <span class="example-tag">playbooks/rolling-update.yml</span>
+      </div>
+      <div class="panel flow-panel">
+        <div class="flow-scroller">
+          <div class="flow">
+            <div class="flow-col">
+              <div class="flow-col-title">Play</div>
+              <div class="flow-card flow-play">
+                <div class="flow-card-title">Rolling update — web tier</div>
+                <div class="flow-meta"><span class="kv">hosts:</span> web</div>
+                <div class="flow-meta"><span class="kv">become:</span> true</div>
+                <div class="flow-chips">
+                  <span class="chip chip-serial">serial: 1</span>
+                  <span class="chip chip-flag">max_fail: 0</span>
+                </div>
+              </div>
+            </div>
+            <div class="flow-arrow" aria-hidden="true"></div>
+            <div class="flow-col">
+              <div class="flow-col-title">pre_tasks</div>
+              <div class="flow-card">
+                <div class="flow-card-title">Drain node from haproxy</div>
+                <div class="flow-meta mono">delegate_to: <b>lb01</b></div>
+                <div class="flow-chips"><span class="chip">drain</span><span class="chip">lb</span></div>
+              </div>
+              <div class="flow-card">
+                <div class="flow-card-title">Wait for active sessions = 0</div>
+                <div class="flow-meta mono">until · retries: 30</div>
+                <div class="flow-chips"><span class="chip">drain</span></div>
+              </div>
+            </div>
+            <div class="flow-arrow" aria-hidden="true"></div>
+            <div class="flow-col">
+              <div class="flow-col-title">roles</div>
+              <div class="flow-card flow-role">
+                <div class="flow-card-title">app_deploy</div>
+                <div class="flow-meta">depends on <b>common</b></div>
+                <div class="flow-chips"><span class="chip">deploy</span><span class="chip">app</span></div>
+              </div>
+              <div class="flow-card flow-role">
+                <div class="flow-card-title">nginx</div>
+                <div class="flow-meta">handlers · templates</div>
+                <div class="flow-chips"><span class="chip">web</span></div>
+              </div>
+            </div>
+            <div class="flow-arrow" aria-hidden="true"></div>
+            <div class="flow-col">
+              <div class="flow-col-title">tasks</div>
+              <div class="flow-card">
+                <div class="flow-card-title">Verify /healthz returns 200</div>
+                <div class="flow-meta mono">block / rescue</div>
+                <div class="flow-chips"><span class="chip">verify</span></div>
+              </div>
+              <div class="flow-card">
+                <div class="flow-card-title">Re-enable node in haproxy</div>
+                <div class="flow-meta mono">delegate_to: <b>lb01</b></div>
+                <div class="flow-chips"><span class="chip">lb</span></div>
+              </div>
+            </div>
+            <div class="flow-arrow" aria-hidden="true"></div>
+            <div class="flow-col">
+              <div class="flow-col-title">handlers</div>
+              <div class="flow-card flow-handler">
+                <div class="flow-card-title">reload nginx</div>
+                <div class="flow-meta">notified by <b>nginx : template</b></div>
+              </div>
+              <div class="flow-card flow-handler">
+                <div class="flow-card-title">restart app</div>
+                <div class="flow-meta">notified by <b>app_deploy : release</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- c. Job run -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3><span class="example-num">03</span> Live job output</h3>
+          <p>Streamed line by line over SSE — exactly what your terminal would show, kept forever in job history.</p>
+        </div>
+        <span class="example-tag">jobs/01HZX…/events</span>
+      </div>
+      <div class="panel term-panel">
+        <div class="term-bar">
+          <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+          <span class="term-title">pine — job #142 · rolling-update.yml --limit web</span>
+          <button class="btn btn-ghost btn-xs" id="job-replay" type="button">↺ Replay</button>
+        </div>
+        <pre class="term" id="job-term" aria-live="off"><code id="job-out"></code><span class="cursor" id="job-cursor"></span></pre>
+        <div class="term-foot">
+          <span class="recap-chip rc-ok">ok 27</span>
+          <span class="recap-chip rc-changed">changed 14</span>
+          <span class="recap-chip rc-failed">failed 0</span>
+          <span class="recap-chip rc-skipped">skipped 3</span>
+          <span class="recap-chip rc-unreachable">unreachable 0</span>
+          <span class="term-duration" id="job-status">finished in 1m 12s</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- d. TUI -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3><span class="example-num">04</span> The TUI</h3>
+          <p>SSH'd into a bastion with no browser in sight? <code>pine tui</code> is the whole product in your terminal.</p>
+        </div>
+        <span class="example-tag">$ pine tui</span>
+      </div>
+      <div class="panel term-panel tui-panel">
+        <div class="term-bar">
+          <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+          <span class="term-title">ssh bastion — pine tui</span>
+        </div>
+        <div class="tui">
+          <div class="tui-top">
+            <span class="tui-brand">🌲 Pine <span class="tui-dim">v1.4</span></span>
+            <span class="tui-tabs">
+              <span class="tui-tab">Repos</span><span class="tui-tab tui-tab-active">Playbooks</span><span class="tui-tab">Roles</span><span class="tui-tab">Inventory</span><span class="tui-tab">Jobs</span>
+            </span>
+            <span class="tui-dim">? help · q quit</span>
+          </div>
+          <div class="tui-panes">
+            <div class="tui-pane tui-list">
+              <div class="tui-pane-title">─ acme-infra · playbooks ─</div>
+              <pre><span class="tl">  site.yml</span>
+<span class="tl">  webservers.yml</span>
+<span class="tl">  databases.yml</span>
+<span class="tl">  loadbalancers.yml</span>
+<span class="tl">  docker-stack.yml</span>
+<span class="tl">  monitoring.yml</span>
+<span class="tl">  hardening.yml</span>
+<span class="tl">  backup.yml</span>
+<span class="tl tl-sel">▸ rolling-update.yml</span>
+<span class="tl">  provision-users.yml</span>
+<span class="tl">  …</span></pre>
+            </div>
+            <div class="tui-pane tui-detail">
+              <div class="tui-pane-title">─ rolling-update.yml ─</div>
+              <pre><span class="tk">play</span>     Rolling update — web tier
+<span class="tk">hosts</span>    web                <span class="tbadge">serial: 1</span>
+
+<span class="th">pre_tasks</span>
+  • Drain node from haproxy   <span class="td">→ delegate_to: lb01</span>
+  • Wait for sessions = 0     <span class="td">retries: 30</span>
+<span class="th">roles</span>
+  • app_deploy                <span class="tt">[deploy, app]</span>
+  • nginx                     <span class="tt">[web]</span>
+<span class="th">handlers</span>
+  • reload nginx · restart app
+
+<span class="tk">last run</span> <span class="tok">✓ ok</span> 2m ago · 3 hosts</pre>
+            </div>
+          </div>
+          <div class="tui-status">
+            <span><b>↑/↓</b> move · <b>enter</b> run · <b>c</b> --check · <b>t</b> tags · <b>/</b> filter</span>
+            <span class="tui-dim">repo: acme-infra <span class="tok">✓ synced</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- e. Inventory browser -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3><span class="example-num">05</span> Inventory browser</h3>
+          <p>Groups, hosts and merged variables side by side. Click anything in the tree.</p>
+        </div>
+        <span class="example-tag">group_vars · host_vars</span>
+      </div>
+      <div class="panel inv-panel">
+        <div class="inv-tree" id="inv-tree" role="tree" aria-label="Production inventory tree"></div>
+        <div class="inv-detail">
+          <div class="inv-detail-head">
+            <span class="inv-detail-path" id="inv-path">production / web / web01</span>
+            <span class="example-tag">merged vars</span>
+          </div>
+          <pre class="inv-json" id="inv-json"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== QUICKSTART ============================== -->
+<section class="section" id="quickstart">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Quickstart</span>
+      <h2>Running before your coffee cools.</h2>
+      <p>Pick your flavor. All three end at <code>http://localhost:8743</code>.</p>
+    </div>
+    <div class="quickstart reveal" data-tabs>
+      <div class="tabbar" role="tablist" aria-label="Install methods">
+        <button class="tab active" role="tab" aria-selected="true" data-tab="qs-docker" type="button">docker run</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="qs-compose" type="button">docker-compose</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="qs-binary" type="button">binary / go install</button>
+      </div>
+      <div class="tabpanes">
+        <div class="tabpane active" id="qs-docker" role="tabpanel">
+          <div class="codeblock">
+            <button class="copy-btn" type="button" aria-label="Copy command">Copy</button>
+            <pre><code><span class="t-comment"># pull &amp; run — data persists in a named volume</span>
+<span class="t-prompt">$</span> docker run -d --name pine \
+    -p <span class="t-num">8743</span>:<span class="t-num">8743</span> \
+    -v pine-data:/data \
+    -v ~/ansible:/repos/ansible:ro \
+    ghcr.io/jgsqware/pine:latest
+
+<span class="t-prompt">$</span> open http://localhost:8743</code></pre>
+          </div>
+        </div>
+        <div class="tabpane" id="qs-compose" role="tabpanel">
+          <div class="codeblock">
+            <button class="copy-btn" type="button" aria-label="Copy docker-compose.yml">Copy</button>
+            <pre><code><span class="t-comment"># docker-compose.yml</span>
+<span class="t-key">services</span>:
+  <span class="t-key">pine</span>:
+    <span class="t-key">image</span>: ghcr.io/jgsqware/pine:latest
+    <span class="t-key">ports</span>:
+      - <span class="t-str">"8743:8743"</span>
+    <span class="t-key">volumes</span>:
+      - <span class="t-str">pine-data:/data</span>
+      - <span class="t-str">~/ansible:/repos/ansible:ro</span>
+<span class="t-key">volumes</span>:
+  <span class="t-key">pine-data</span>:
+
+<span class="t-prompt">$</span> docker compose up -d   <span class="t-comment"># → http://localhost:8743</span></code></pre>
+          </div>
+        </div>
+        <div class="tabpane" id="qs-binary" role="tabpanel">
+          <div class="codeblock">
+            <button class="copy-btn" type="button" aria-label="Copy commands">Copy</button>
+            <pre><code><span class="t-comment"># grab the binary (or download a release)</span>
+<span class="t-prompt">$</span> go install github.com/jgsqware/pine@latest
+
+<span class="t-comment"># serve the web UI with the bundled Acme demo</span>
+<span class="t-prompt">$</span> pine serve --demo      <span class="t-comment"># → http://localhost:8743</span>
+
+<span class="t-comment"># or stay in the terminal</span>
+<span class="t-prompt">$</span> pine tui</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== API ============================== -->
+<section class="section" id="api">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">REST API</span>
+      <h2>Everything the UI does, your scripts can too.</h2>
+      <p>A small, predictable JSON API. List repos, inspect inventories, launch jobs, follow the SSE stream.</p>
+    </div>
+    <div class="api-grid reveal">
+      <div class="codeblock api-block">
+        <div class="api-method"><span class="method method-get">GET</span> <code>/api/repos</code></div>
+        <pre><code>[
+  {
+    <span class="t-key">"id"</span>: <span class="t-str">"acme-infra"</span>,
+    <span class="t-key">"source"</span>: <span class="t-str">"git@github.com:acme/infra.git"</span>,
+    <span class="t-key">"branch"</span>: <span class="t-str">"main"</span>,
+    <span class="t-key">"playbooks"</span>: <span class="t-num">11</span>,
+    <span class="t-key">"roles"</span>: <span class="t-num">12</span>,
+    <span class="t-key">"inventories"</span>: [<span class="t-str">"production"</span>, <span class="t-str">"staging"</span>],
+    <span class="t-key">"synced_at"</span>: <span class="t-str">"2026-06-09T08:12:44Z"</span>
+  }
+]</code></pre>
+      </div>
+      <div class="codeblock api-block">
+        <div class="api-method"><span class="method method-post">POST</span> <code>/api/jobs</code></div>
+        <pre><code>{
+  <span class="t-key">"repo"</span>: <span class="t-str">"acme-infra"</span>,
+  <span class="t-key">"playbook"</span>: <span class="t-str">"rolling-update.yml"</span>,
+  <span class="t-key">"inventory"</span>: <span class="t-str">"production"</span>,
+  <span class="t-key">"limit"</span>: <span class="t-str">"web"</span>,
+  <span class="t-key">"tags"</span>: [<span class="t-str">"deploy"</span>],
+  <span class="t-key">"check"</span>: <span class="t-bool">false</span>
+}
+
+<span class="t-comment">→ 201 Created</span>
+{
+  <span class="t-key">"id"</span>: <span class="t-str">"job_01HZX4Q8"</span>,
+  <span class="t-key">"status"</span>: <span class="t-str">"running"</span>,
+  <span class="t-key">"stream"</span>: <span class="t-str">"/api/jobs/job_01HZX4Q8/events"</span>  <span class="t-comment">// SSE</span>
+}</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== FOOTER CTA ============================== -->
+<section class="section section-final reveal">
+  <div class="container final-cta">
+    <svg class="logo logo-big" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 L25 14 H20 L27 24 H18 V30 H14 V24 H5 L12 14 H7 Z" fill="currentColor"/></svg>
+    <h2>Your playbooks deserve better than a YAML graveyard.</h2>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="#quickstart">Get Started</a>
+      <a class="btn btn-ghost" href="https://github.com/jgsqware/pine" rel="noopener">Star on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2 L25 14 H20 L27 24 H18 V30 H14 V24 H5 L12 14 H7 Z" fill="currentColor"/></svg>
+      <span class="wordmark">Pine</span>
+      <span class="footer-note">Built as a modern alternative to AWX.</span>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/jgsqware/pine" rel="noopener">github.com/jgsqware/pine</a>
+      <span class="footer-sep">·</span>
+      <span>MIT License</span>
+      <span class="footer-sep">·</span>
+      <span>© 2026 Pine contributors</span>
+    </div>
+  </div>
+</footer>
+
+<script src="js/site.js"></script>
+</body>
+</html>

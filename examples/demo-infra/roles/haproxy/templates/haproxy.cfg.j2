@@ -1,0 +1,48 @@
+# {{ ansible_managed }}
+# Acme Corp HAProxy configuration - backends generated from the inventory
+
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+    maxconn {{ haproxy_maxconn }}
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    option  forwardfor
+    timeout connect 5s
+    timeout client  50s
+    timeout server  50s
+    errorfile 503 /etc/haproxy/errors/503.http
+
+frontend acme_http_in
+    bind {{ keepalived_vip }}:{{ haproxy_frontend_port }}
+    bind *:{{ haproxy_frontend_port }}
+    default_backend {{ haproxy_backend_name }}
+    http-request set-header X-Forwarded-Proto http
+
+backend {{ haproxy_backend_name }}
+    balance {{ haproxy_balance_algorithm }}
+    option httpchk GET /healthz
+    http-check expect status 200
+    default-server inter {{ haproxy_check_interval }} rise {{ haproxy_check_rise }} fall {{ haproxy_check_fall }}
+{% for host in groups['web'] | sort %}
+    server {{ host }} {{ hostvars[host]['ansible_host'] }}:{{ haproxy_backend_port }} check weight {{ hostvars[host]['haproxy_weight'] | default(100) }}
+{% endfor %}
+
+listen stats
+    bind *:{{ haproxy_stats_port }}
+    mode http
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth {{ haproxy_stats_user }}:{{ haproxy_stats_password }}
+    stats admin if TRUE

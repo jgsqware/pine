@@ -1,0 +1,24 @@
+---
+# haproxy role defaults
+haproxy_frontend_port: 80
+haproxy_stats_port: 8404
+haproxy_stats_user: acme-stats
+haproxy_stats_password: CHANGEME-haproxy-stats
+haproxy_backend_name: acme_web_backend
+haproxy_balance_algorithm: roundrobin
+haproxy_maxconn: 4096
+haproxy_check_interval: 2s
+haproxy_check_rise: 2
+haproxy_check_fall: 3
+haproxy_backend_port: 80
+
+# systemd override
+haproxy_limit_nofile: 65536
+haproxy_restart_sec: 2
+
+# keepalived-style VIP (overridden in host_vars/lb01.yml)
+keepalived_state: BACKUP
+keepalived_priority: 100
+keepalived_vip: 10.0.1.100
+keepalived_interface: eth0
+keepalived_router_id: 51

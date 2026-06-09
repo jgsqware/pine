@@ -1,0 +1,15 @@
+---
+# backup role defaults
+backup_target_dir: /var/backups/acme
+backup_script_path: /usr/local/bin/acme-backup.sh
+backup_on_calendar: "*-*-* 03:00:00"
+backup_randomized_delay: 900
+backup_retention_days: 7
+backup_use_cron: false
+backup_cron_hour: "3"
+backup_cron_minute: "15"
+backup_compress_cmd: zstd
+vault_backup_encryption_passphrase: CHANGEME-backup-gpg-passphrase
+
+# What gets backed up depends on group membership; extra paths can be added.
+backup_extra_paths: []

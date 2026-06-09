@@ -1,0 +1,48 @@
+---
+# security role - firewall, fail2ban, CIS-ish hardening
+
+- name: Configure ufw firewall (Debian family)
+  ansible.builtin.include_tasks:
+    file: ufw.yml
+    apply:
+      tags: [firewall]
+  when: ansible_facts['os_family'] == 'Debian'
+  tags: [firewall]
+
+- name: Configure firewalld (RedHat family)
+  ansible.builtin.include_tasks:
+    file: firewalld.yml
+    apply:
+      tags: [firewall]
+  when: ansible_facts['os_family'] == 'RedHat'
+  tags: [firewall]
+
+- name: Install fail2ban
+  ansible.builtin.package:
+    name: fail2ban
+    state: present
+  tags: [fail2ban, packages]
+
+- name: Deploy fail2ban jail configuration
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart fail2ban
+  tags: [fail2ban, config]
+
+- name: Enable and start fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: started
+    enabled: true
+  tags: [fail2ban, services]
+
+- name: Apply CIS-inspired hardening tasks
+  ansible.builtin.include_tasks:
+    file: cis.yml
+    apply:
+      tags: [cis]
+  tags: [cis, hardening]

@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# systemd drop-in for haproxy.service
+[Service]
+LimitNOFILE={{ haproxy_limit_nofile }}
+Restart=always
+RestartSec={{ haproxy_restart_sec }}
+# Hardening
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true

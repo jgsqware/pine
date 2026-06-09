@@ -1,0 +1,101 @@
+---
+# postgresql role - install, configure, replication, databases and users
+
+- name: Install PostgreSQL server and client libraries
+  ansible.builtin.package:
+    name:
+      - "postgresql-{{ pg_version }}"
+      - "postgresql-client-{{ pg_version }}"
+      - postgresql-contrib
+      - python3-psycopg2
+    state: present
+  tags: [postgresql, packages]
+
+- name: Make sure PostgreSQL is started before we manage objects
+  ansible.builtin.systemd:
+    name: postgresql
+    state: started
+    enabled: true
+  tags: [postgresql, services]
+
+- name: Deploy postgresql.conf
+  ansible.builtin.template:
+    src: postgresql.conf.j2
+    dest: "{{ pg_config_dir }}/postgresql.conf"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+    backup: true
+  notify: Restart postgresql
+  tags: [postgresql, config]
+
+- name: Deploy pg_hba.conf
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "{{ pg_config_dir }}/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: "0640"
+    backup: true
+  notify: Reload postgresql
+  tags: [postgresql, config, security]
+
+- name: Flush handlers so config changes apply before object management
+  ansible.builtin.meta: flush_handlers
+  tags: [always]
+
+- name: Create application roles
+  community.postgresql.postgresql_user:
+    name: "{{ item.name }}"
+    password: "{{ item.password }}"
+    role_attr_flags: "{{ item.role_attrs }}"
+    state: present
+  loop: "{{ pg_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: postgres
+  no_log: true
+  tags: [postgresql, db_objects]
+
+- name: Create application databases
+  community.postgresql.postgresql_db:
+    name: "{{ item.name }}"
+    owner: "{{ item.owner }}"
+    encoding: "{{ item.encoding | default('UTF-8') }}"
+    template: template0
+    state: present
+  loop: "{{ pg_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  become: true
+  become_user: postgres
+  tags: [postgresql, db_objects]
+
+- name: Grant each role full privileges on its database
+  community.postgresql.postgresql_privs:
+    db: "{{ item.priv_db }}"
+    role: "{{ item.name }}"
+    type: database
+    privs: ALL
+    state: present
+  loop: "{{ pg_users }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.priv_db | default('-') }}"
+  when: item.priv_db | default('') | length > 0
+  become: true
+  become_user: postgres
+  tags: [postgresql, db_objects]
+
+- name: Create physical replication slots for each replica (primary only)
+  community.postgresql.postgresql_slot:
+    name: "slot_{{ item.name | replace('-', '_') }}"
+    slot_type: physical
+    state: present
+  loop: "{{ pg_replica_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: pg_role == 'primary'
+  become: true
+  become_user: postgres
+  tags: [postgresql, replication]

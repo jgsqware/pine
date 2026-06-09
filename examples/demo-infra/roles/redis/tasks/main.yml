@@ -1,0 +1,43 @@
+---
+# redis role - package, config, systemd
+
+- name: Install redis
+  ansible.builtin.package:
+    name: redis-server
+    state: present
+  when: ansible_facts['os_family'] == 'Debian'
+  tags: [redis, packages]
+
+- name: Install redis (RedHat family)
+  ansible.builtin.package:
+    name: redis
+    state: present
+  when: ansible_facts['os_family'] == 'RedHat'
+  tags: [redis, packages]
+
+- name: Deploy redis.conf
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: "{{ redis_config_path }}"
+    owner: redis
+    group: redis
+    mode: "0640"
+    backup: true
+  notify: Restart redis
+  tags: [redis, config]
+
+- name: Lower vm.overcommit_memory friction for Redis persistence
+  ansible.posix.sysctl:
+    name: vm.overcommit_memory
+    value: "1"
+    sysctl_file: /etc/sysctl.d/92-redis.conf
+    state: present
+    reload: true
+  tags: [redis, sysctl]
+
+- name: Enable and start redis
+  ansible.builtin.systemd:
+    name: "{{ redis_service_name }}"
+    state: started
+    enabled: true
+  tags: [redis, services]

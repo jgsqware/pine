@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: Acme Corp Platform Team
+  description: Deploy Acme docker compose stacks (shop, registry, minio) via compose v2
+  company: Acme Corp
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - docker
+    - compose
+    - deployment
+dependencies:
+  # Docker must be installed and running before compose stacks can deploy.
+  - role: docker

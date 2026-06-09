@@ -1,0 +1,10 @@
+---
+# Debian/Ubuntu specifics for the common role
+common_os_packages:
+  - apt-transport-https
+  - software-properties-common
+  - python3-apt
+ntp_package: chrony
+ntp_service: chrony
+ntp_config_path: /etc/chrony/chrony.conf
+sshd_service: ssh

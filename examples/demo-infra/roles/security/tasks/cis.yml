@@ -1,0 +1,76 @@
+---
+# CIS-inspired hardening checks (subset, demo)
+
+- name: "CIS 1.1 - Blacklist uncommon kernel modules"
+  ansible.builtin.lineinfile:
+    path: /etc/modprobe.d/acme-blacklist.conf
+    line: "install {{ item }} /bin/true"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ security_blacklisted_modules }}"
+  tags: [cis, kernel]
+
+- name: "CIS 1.5 - Disable core dumps for all users"
+  ansible.builtin.lineinfile:
+    path: /etc/security/limits.d/90-acme-coredump.conf
+    line: "* hard core 0"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: security_disable_core_dumps | bool
+  tags: [cis, kernel]
+
+- name: "CIS 5.4 - Enforce password aging policy"
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - regexp: "^PASS_MAX_DAYS"
+      line: "PASS_MAX_DAYS {{ security_password_max_days }}"
+    - regexp: "^PASS_MIN_DAYS"
+      line: "PASS_MIN_DAYS {{ security_password_min_days }}"
+  tags: [cis, passwords]
+
+- name: "CIS 6.1 - Restrict permissions on sensitive files"
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /etc/shadow
+      group: shadow
+      mode: "0640"
+    - path: /etc/gshadow
+      group: shadow
+      mode: "0640"
+    - path: /etc/passwd
+      group: root
+      mode: "0644"
+    - path: /etc/crontab
+      group: root
+      mode: "0600"
+  when: ansible_facts['os_family'] == 'Debian'
+  tags: [cis, permissions]
+
+- name: "CIS 1.7 - Install the pre-login warning banner"
+  ansible.builtin.copy:
+    src: issue.net
+    dest: "{{ security_login_banner_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, banner]
+
+- name: "CIS 1.7 - Point sshd at the warning banner"
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?Banner"
+    line: "Banner {{ security_login_banner_path }}"
+    validate: "sshd -t -f %s"
+  notify: Restart sshd (security)
+  tags: [cis, ssh, banner]

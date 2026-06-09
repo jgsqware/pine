@@ -1,0 +1,11 @@
+---
+# nginx role defaults
+nginx_vhosts: []
+nginx_worker_processes: auto
+nginx_worker_connections: 4096
+nginx_client_max_body_size: 16m
+nginx_keepalive_timeout: 65
+nginx_server_tokens: "off"
+nginx_conf_dir: /etc/nginx
+nginx_tls_dir: /etc/nginx/tls
+nginx_dhparam_path: /etc/nginx/tls/dhparam.pem

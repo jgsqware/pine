@@ -1,0 +1,119 @@
+---
+# common role - baseline configuration applied to every Acme host
+
+- name: Load OS-family specific variables
+  ansible.builtin.include_vars: "{{ ansible_facts['os_family'] }}.yml"
+  tags: [always]
+
+- name: Install baseline packages (with retry/rescue safety net)
+  block:
+    - name: Refresh apt cache (Debian family)
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Refresh dnf metadata (RedHat family)
+      ansible.builtin.dnf:
+        update_cache: true
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Install common packages (generic package module)
+      ansible.builtin.package:
+        name: "{{ common_packages }}"
+        state: present
+
+    - name: Install OS-family specific helper packages
+      ansible.builtin.package:
+        name: "{{ common_os_packages }}"
+        state: present
+  rescue:
+    - name: Report package installation failure
+      ansible.builtin.debug:
+        msg: >-
+          Package installation failed on {{ inventory_hostname }}
+          ({{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}).
+          Check mirror reachability from {{ ansible_default_ipv4.address | default('unknown') }}.
+
+    - name: Fail the host explicitly after reporting
+      ansible.builtin.fail:
+        msg: "Baseline package installation failed - aborting this host"
+  always:
+    - name: Record the provisioning timestamp
+      ansible.builtin.copy:
+        dest: /etc/acme-provisioned
+        content: "provisioned_by=pine\nlast_run={{ ansible_date_time.iso8601 }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+  tags: [packages]
+
+- name: Set the system timezone
+  community.general.timezone:
+    name: "{{ acme_timezone }}"
+  tags: [config]
+
+- name: Deploy the message of the day
+  ansible.builtin.template:
+    src: motd.j2
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [config, motd]
+
+- name: Apply kernel tuning via sysctl
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-acme.conf
+    state: present
+    reload: true
+  loop: "{{ sysctl_settings }}"
+  loop_control:
+    label: "{{ item.name }}={{ item.value }}"
+  tags: [config, sysctl]
+
+- name: Install chrony for time synchronisation
+  ansible.builtin.package:
+    name: "{{ ntp_package }}"
+    state: present
+  tags: [packages, ntp]
+
+- name: Deploy chrony configuration
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: "{{ ntp_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart chrony
+  tags: [config, ntp]
+
+- name: Enable and start the chrony service
+  ansible.builtin.systemd:
+    name: "{{ ntp_service }}"
+    state: started
+    enabled: true
+  tags: [services, ntp]
+
+- name: Harden the SSH daemon configuration
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+    validate: "sshd -t -f %s"
+  loop: "{{ sshd_settings }}"
+  loop_control:
+    label: "{{ item.line }}"
+  notify: Restart sshd
+  tags: [config, ssh, security]
+
+- name: Limit journald disk usage
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/journald.conf
+    regexp: "^#?SystemMaxUse="
+    line: "SystemMaxUse={{ common_journal_max_use }}"
+  notify: Restart journald
+  tags: [config, logging]

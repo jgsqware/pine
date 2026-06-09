@@ -1,0 +1,35 @@
+---
+- name: Apply Acme security baseline to every node
+  hosts: acme
+  become: true
+  gather_facts: true
+  # If hardening fails anywhere we stop the whole run: a half-hardened
+  # fleet is worse than a consistently un-hardened one.
+  any_errors_fatal: true
+  vars_files:
+    - vars/secrets.yml
+
+  pre_tasks:
+    - name: Record the hardening run in the system log
+      ansible.builtin.command:
+        cmd: logger -t pine-hardening "security baseline applied by Pine job {{ lookup('env', 'PINE_JOB_ID') | default('manual', true) }}"
+      changed_when: false
+      tags: [always]
+
+  roles:
+    - role: common
+      tags: [common, config]
+    - role: security
+      tags: [security, hardening, firewall]
+
+  post_tasks:
+    - name: Confirm fail2ban is active
+      ansible.builtin.service_facts:
+      tags: [verify]
+
+    - name: Assert fail2ban service state
+      ansible.builtin.assert:
+        that:
+          - "'fail2ban.service' in ansible_facts.services"
+        fail_msg: "fail2ban is not installed on {{ inventory_hostname }}"
+      tags: [verify]

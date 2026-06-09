@@ -1,0 +1,55 @@
+---
+# monitoring role - Prometheus + Grafana + Alertmanager via docker compose
+
+- name: Create monitoring directory layout
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ monitoring_base_dir }}"
+    - "{{ monitoring_base_dir }}/prometheus"
+    - "{{ monitoring_base_dir }}/grafana/provisioning/datasources"
+    - "{{ monitoring_base_dir }}/alertmanager"
+  tags: [monitoring, config]
+
+- name: Render prometheus.yml with scrape targets from the inventory
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ monitoring_base_dir }}/prometheus/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart monitoring stack
+  tags: [monitoring, config]
+
+- name: Install the Grafana datasource provisioning file
+  ansible.builtin.copy:
+    src: grafana-datasource.yml
+    dest: "{{ monitoring_base_dir }}/grafana/provisioning/datasources/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart monitoring stack
+  tags: [monitoring, config]
+
+- name: Render the monitoring compose file
+  ansible.builtin.template:
+    src: monitoring-compose.yml.j2
+    dest: "{{ monitoring_base_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart monitoring stack
+  tags: [monitoring, compose, config]
+
+- name: Converge the monitoring stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ monitoring_base_dir }}"
+    state: present
+    remove_orphans: true
+    wait: true
+    wait_timeout: 180
+  tags: [monitoring, compose, deploy]

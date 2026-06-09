@@ -1,0 +1,8 @@
+---
+# lb01: active node of the keepalived-style VRRP pair
+keepalived_state: MASTER
+keepalived_priority: 150
+keepalived_vip: 10.0.1.100
+keepalived_interface: eth0
+keepalived_router_id: 51
+haproxy_node_weight: 100

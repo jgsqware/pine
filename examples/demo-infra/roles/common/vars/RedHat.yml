@@ -1,0 +1,9 @@
+---
+# RHEL/Rocky/Alma specifics for the common role
+common_os_packages:
+  - dnf-plugins-core
+  - python3-libdnf5
+ntp_package: chrony
+ntp_service: chronyd
+ntp_config_path: /etc/chrony.conf
+sshd_service: sshd

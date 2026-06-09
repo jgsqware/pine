@@ -1,0 +1,60 @@
+---
+# ufw firewall configuration (Debian / Ubuntu)
+
+- name: Install ufw
+  ansible.builtin.package:
+    name: ufw
+    state: present
+  tags: [firewall, packages]
+
+- name: Set default ufw policies (deny incoming, allow outgoing)
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - direction: incoming
+      policy: deny
+    - direction: outgoing
+      policy: allow
+  tags: [firewall]
+
+- name: Allow baseline TCP ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ security_open_tcp_ports }}"
+  tags: [firewall]
+
+- name: Allow HTTP/HTTPS on frontend hosts
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: ["80", "443"]
+  when: "'frontend' in group_names"
+  tags: [firewall]
+
+- name: Allow PostgreSQL from the internal network on db hosts
+  community.general.ufw:
+    rule: allow
+    port: "5432"
+    proto: tcp
+    src: 10.0.0.0/16
+  when: "'db' in group_names"
+  tags: [firewall]
+
+- name: Allow Redis from the internal network on cache hosts
+  community.general.ufw:
+    rule: allow
+    port: "6379"
+    proto: tcp
+    src: 10.0.0.0/16
+  when: "'cache' in group_names"
+  tags: [firewall]
+
+- name: Enable ufw with logging
+  community.general.ufw:
+    state: enabled
+    logging: "on"
+  tags: [firewall]

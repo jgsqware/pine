@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Acme Corp nightly backup ({{ inventory_hostname }})
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ backup_script_path }}
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=2h

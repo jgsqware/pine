@@ -1,0 +1,16 @@
+---
+# Acme Corp - load balancer tier variables
+haproxy_frontend_port: 80
+haproxy_stats_port: 8404
+haproxy_stats_user: acme-stats
+haproxy_stats_password: "{{ vault_haproxy_stats_password | default('CHANGEME-haproxy-stats') }}"
+haproxy_backend_name: acme_web_backend
+haproxy_balance_algorithm: leastconn
+haproxy_maxconn: 8192
+haproxy_check_interval: 2s
+haproxy_check_rise: 2
+haproxy_check_fall: 3
+
+# systemd override values (roles/haproxy/templates/override.conf.j2)
+haproxy_limit_nofile: 65536
+haproxy_restart_sec: 2

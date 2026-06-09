@@ -1,0 +1,21 @@
+---
+# Staging overrides - keep staging cheap and chatty.
+acme_domain: staging.acme-corp.example
+acme_admin_email: ops+staging@acme-corp.example
+acme_timezone: Etc/UTC
+
+# Smaller resource footprints in staging.
+pg_max_connections: 50
+pg_shared_buffers: 128MB
+redis_maxmemory: 128mb
+prometheus_retention: 3d
+
+# Deploy bleeding-edge images in staging.
+acme_shop_image_tag: latest
+app_git_version: develop
+
+# Staging boxes keep root login for break-glass debugging (NOT in prod).
+sshd_permit_root_login: "yes"
+
+backup_on_calendar: "*-*-* 04:30:00"
+backup_use_cron: false

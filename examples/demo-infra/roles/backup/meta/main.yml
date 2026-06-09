@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: Acme Corp SRE Team
+  description: Nightly backups via systemd timers with a cron fallback
+  company: Acme Corp
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+    - name: EL
+      versions:
+        - "9"
+  galaxy_tags:
+    - backup
+    - systemd
+dependencies: []

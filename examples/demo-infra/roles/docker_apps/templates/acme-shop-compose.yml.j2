@@ -1,0 +1,51 @@
+# {{ ansible_managed }}
+# Acme shop stack: application + background worker + edge nginx
+name: acme-shop
+
+services:
+  app:
+    image: "registry.{{ acme_domain }}/acme/acme-shop:{{ acme_shop_image_tag }}"
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: "{{ vault_app_secret_key }}"
+      DATABASE_URL: "postgresql://acme_shop:{{ vault_pg_app_password }}@{{ hostvars['db-primary']['ansible_host'] | default('db-primary') }}:5432/acme_shop"
+      REDIS_URL: "redis://:{{ vault_redis_password }}@{{ hostvars['redis01']['ansible_host'] | default('redis01') }}:6379/0"
+      GUNICORN_WORKERS: "4"
+    ports:
+      - "{{ acme_shop_app_port }}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ docker_log_max_size | default('50m') }}"
+
+  worker:
+    image: "registry.{{ acme_domain }}/acme/acme-shop:{{ acme_shop_image_tag }}"
+    restart: unless-stopped
+    command: ["celery", "-A", "acme_shop", "worker", "--loglevel=info"]
+    deploy:
+      replicas: {{ acme_shop_worker_replicas }}
+    environment:
+      DJANGO_SECRET_KEY: "{{ vault_app_secret_key }}"
+      DATABASE_URL: "postgresql://acme_shop:{{ vault_pg_app_password }}@{{ hostvars['db-primary']['ansible_host'] | default('db-primary') }}:5432/acme_shop"
+      REDIS_URL: "redis://:{{ vault_redis_password }}@{{ hostvars['redis01']['ansible_host'] | default('redis01') }}:6379/0"
+    depends_on:
+      app:
+        condition: service_healthy
+
+  nginx:
+    image: "nginx:1.27-alpine"
+    restart: unless-stopped
+    ports:
+      - "{{ acme_shop_nginx_port }}:80"
+    depends_on:
+      - app
+    volumes:
+      - shop-static:/usr/share/nginx/html/static:ro
+
+volumes:
+  shop-static: {}

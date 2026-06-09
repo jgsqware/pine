@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  author: Acme Corp Application Team
+  description: Git-based deployment of the Acme shop application with rollback
+  company: Acme Corp
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - deployment
+    - application
+dependencies:
+  # Baseline packages (git, etc.) and motd must exist before app deploys.
+  - role: common

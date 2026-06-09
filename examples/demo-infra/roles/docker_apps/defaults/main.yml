@@ -1,0 +1,24 @@
+---
+# docker_apps role defaults
+compose_projects: []
+compose_base_dir: /opt/acme-compose
+
+# acme-shop stack
+acme_shop_image_tag: latest
+acme_shop_app_port: 8080
+acme_shop_worker_replicas: 1
+acme_shop_nginx_port: 8088
+
+# registry / minio stack
+registry_image_tag: "2.8.3"
+registry_port: 5000
+minio_image_tag: "RELEASE.2026-01-15T00-00-00Z"
+minio_api_port: 9000
+minio_console_port: 9001
+
+# secrets (override from vars/secrets.yml)
+vault_redis_password: CHANGEME-redis
+vault_pg_app_password: CHANGEME-acme-shop-db
+vault_minio_root_user: acme-minio-admin
+vault_minio_root_password: CHANGEME-minio-root
+vault_app_secret_key: CHANGEME-secret-key

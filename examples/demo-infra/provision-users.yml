@@ -1,0 +1,27 @@
+---
+- name: Provision Acme operating system users and groups everywhere
+  hosts: acme
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Show how many user accounts are managed
+      ansible.builtin.debug:
+        msg: >-
+          Managing {{ acme_users | length }} accounts
+          ({{ acme_users | selectattr('state', 'equalto', 'absent') | list | length }} marked for removal)
+      run_once: true
+      tags: [always]
+
+  tasks:
+    - name: Apply the users role
+      ansible.builtin.import_role:
+        name: users
+      tags: [users]
+
+  post_tasks:
+    - name: Verify sudoers syntax across the fleet
+      ansible.builtin.command:
+        cmd: visudo -c
+      changed_when: false
+      tags: [users, verify]

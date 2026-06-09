@@ -1,0 +1,46 @@
+# {{ ansible_managed }}
+# Acme Corp monitoring stack
+name: acme-monitoring
+
+services:
+  prometheus:
+    image: "prom/prometheus:{{ prometheus_image_tag }}"
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time={{ prometheus_retention }}"
+      - "--web.enable-lifecycle"
+    ports:
+      - "{{ prometheus_port }}:9090"
+    volumes:
+      - {{ monitoring_base_dir }}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: "grafana/grafana:{{ grafana_image_tag }}"
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: "{{ grafana_admin_user }}"
+      GF_SECURITY_ADMIN_PASSWORD: "{{ vault_grafana_admin_password }}"
+      GF_SERVER_ROOT_URL: "http://grafana.{{ acme_domain | default('acme-corp.example') }}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "{{ grafana_port }}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - {{ monitoring_base_dir }}/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+  alertmanager:
+    image: "prom/alertmanager:{{ alertmanager_image_tag }}"
+    restart: unless-stopped
+    ports:
+      - "{{ alertmanager_port }}:9093"
+    volumes:
+      - alertmanager-data:/alertmanager
+
+volumes:
+  prometheus-data: {}
+  grafana-data: {}
+  alertmanager-data: {}

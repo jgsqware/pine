@@ -1,0 +1,15 @@
+{{ ansible_managed | comment }}
+   _    ____ __  __ _____    ____ ___  ____  ____
+  / \  / ___|  \/  | ____|  / ___/ _ \|  _ \|  _ \
+ / _ \| |   | |\/| |  _|   | |  | | | | |_) | |_) |
+/ ___ \ |___| |  | | |___  | |__| |_| |  _ <|  __/
+/_/  \_\____|_|  |_|_____|  \____\___/|_| \_\_|
+
+ Host........: {{ inventory_hostname }} ({{ ansible_host | default('n/a') }})
+ Environment.: {{ env_name | default('unknown') }}
+ Role groups.: {{ group_names | join(', ') }}
+ OS..........: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+ Contact.....: {{ acme_admin_email }}
+
+ {{ common_motd_banner }}
+ This host is managed by Ansible via Pine - manual changes will be reverted.

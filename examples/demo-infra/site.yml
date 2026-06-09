@@ -1,0 +1,28 @@
+---
+# Acme Corp - master playbook.
+# Runs the entire infrastructure end to end. Each stage can also be run
+# individually (e.g. `ansible-playbook webservers.yml --tags nginx`).
+
+- name: Stage 0 - Provision operating system users
+  ansible.builtin.import_playbook: provision-users.yml
+
+- name: Stage 1 - Baseline hardening of every node
+  ansible.builtin.import_playbook: hardening.yml
+
+- name: Stage 2 - Database and cache tier
+  ansible.builtin.import_playbook: databases.yml
+
+- name: Stage 3 - Web application tier
+  ansible.builtin.import_playbook: webservers.yml
+
+- name: Stage 4 - Load balancer tier
+  ansible.builtin.import_playbook: loadbalancers.yml
+
+- name: Stage 5 - Docker hosts and compose stacks
+  ansible.builtin.import_playbook: docker-stack.yml
+
+- name: Stage 6 - Monitoring stack and exporters
+  ansible.builtin.import_playbook: monitoring.yml
+
+- name: Stage 7 - Backup jobs
+  ansible.builtin.import_playbook: backup.yml

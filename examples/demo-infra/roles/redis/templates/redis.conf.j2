@@ -1,0 +1,34 @@
+# {{ ansible_managed }}
+# Acme Corp Redis configuration
+
+bind {{ redis_bind_address }}
+port {{ redis_port }}
+protected-mode yes
+requirepass {{ vault_redis_password }}
+
+tcp-backlog {{ redis_tcp_backlog }}
+timeout {{ redis_timeout }}
+tcp-keepalive 300
+
+daemonize no
+supervised systemd
+pidfile /run/redis/redis-server.pid
+loglevel notice
+logfile /var/log/redis/redis-server.log
+databases {{ redis_databases }}
+
+# --- Memory management ---
+maxmemory {{ redis_maxmemory }}
+maxmemory-policy {{ redis_maxmemory_policy }}
+
+# --- Persistence ---
+appendonly {{ redis_appendonly }}
+appendfsync everysec
+dir /var/lib/redis
+save 900 1
+save 300 10
+save 60 10000
+
+# --- Safety ---
+rename-command FLUSHALL "ACME_FLUSHALL_{{ inventory_hostname | upper | replace('-', '_') }}"
+rename-command CONFIG "ACME_CONFIG_ADMIN"

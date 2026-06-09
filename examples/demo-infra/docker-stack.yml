@@ -1,0 +1,40 @@
+---
+- name: Configure Acme Docker hosts and deploy compose stacks
+  hosts: docker_hosts
+  become: true
+  gather_facts: true
+  # Hosts proceed independently; image pulls on dock01 do not block dock02.
+  strategy: free
+  vars_files:
+    - vars/secrets.yml
+
+  pre_tasks:
+    - name: Make sure the data volume mount point exists
+      ansible.builtin.file:
+        path: "{{ docker_data_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0711"
+      tags: [docker, config]
+
+  roles:
+    - role: common
+      tags: [common, packages, config]
+    - role: docker
+      tags: [docker, packages, services]
+    - role: docker_apps
+      tags: [docker, compose, deploy]
+
+  post_tasks:
+    - name: List the compose projects that ended up running
+      ansible.builtin.command:
+        cmd: docker compose ls --format json
+      register: compose_ls
+      changed_when: false
+      tags: [verify]
+
+    - name: Show running compose projects
+      ansible.builtin.debug:
+        msg: "{{ compose_ls.stdout | default('no output') }}"
+      tags: [verify]

@@ -1,0 +1,46 @@
+# {{ ansible_managed }}
+# Acme Corp Prometheus configuration - targets generated from the inventory
+
+global:
+  scrape_interval: {{ prometheus_scrape_interval }}
+  evaluation_interval: {{ prometheus_evaluation_interval }}
+  external_labels:
+    environment: {{ env_name | default('production') }}
+    datacenter: {{ dc_location | default('eu-west-1') }}
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:{{ alertmanager_port }}"
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "localhost:{{ prometheus_port }}"
+
+  - job_name: node
+    static_configs:
+{% for group in prometheus_node_groups %}
+{% for host in groups[group] | default([]) | sort %}
+      - targets:
+          - "{{ hostvars[host]['ansible_host'] | default(host) }}:{{ node_exporter_port }}"
+        labels:
+          instance_name: "{{ host }}"
+          tier: "{{ group }}"
+{% endfor %}
+{% endfor %}
+
+  - job_name: haproxy
+    static_configs:
+      - targets:
+{% for host in groups['lb'] | default([]) | sort %}
+          - "{{ hostvars[host]['ansible_host'] | default(host) }}:8404"
+{% endfor %}
+    metrics_path: /stats;csv
+
+  - job_name: grafana
+    static_configs:
+      - targets:
+          - "grafana:{{ grafana_port }}"

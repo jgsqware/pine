@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Schedule for the Acme Corp nightly backup
+
+[Timer]
+OnCalendar={{ backup_on_calendar }}
+RandomizedDelaySec={{ backup_randomized_delay }}
+Persistent=true
+Unit=acme-backup.service
+
+[Install]
+WantedBy=timers.target

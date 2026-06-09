@@ -1,0 +1,26 @@
+---
+# security role defaults
+security_ssh_port: 22
+
+# Ports opened per group membership; extend in group_vars if needed.
+security_open_tcp_ports:
+  - "{{ security_ssh_port }}"
+  - "{{ node_exporter_port | default(9100) }}"
+
+# fail2ban
+fail2ban_bantime: 1h
+fail2ban_findtime: 10m
+fail2ban_maxretry: 5
+fail2ban_ignoreip:
+  - 127.0.0.1/8
+  - 10.0.0.0/16
+
+# CIS-ish toggles
+security_disable_core_dumps: true
+security_password_max_days: 365
+security_password_min_days: 1
+security_blacklisted_modules:
+  - dccp
+  - sctp
+  - usb-storage
+security_login_banner_path: /etc/issue.net

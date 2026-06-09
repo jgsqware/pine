@@ -1,0 +1,133 @@
+---
+# =============================================================================
+# Acme Corp - global variables (production)
+# =============================================================================
+acme_domain: acme-corp.example
+acme_admin_email: ops@acme-corp.example
+acme_timezone: Etc/UTC
+
+# --- Common packages installed on every node -------------------------------
+common_packages:
+  - vim
+  - htop
+  - curl
+  - wget
+  - git
+  - tmux
+  - unzip
+  - rsync
+  - jq
+  - ca-certificates
+  - socat
+
+# --- Time sync ---------------------------------------------------------------
+ntp_servers:
+  - 0.europe.pool.ntp.org
+  - 1.europe.pool.ntp.org
+  - 2.europe.pool.ntp.org
+
+# --- Kernel tuning applied by the common role -------------------------------
+sysctl_settings:
+  - name: net.ipv4.tcp_syncookies
+    value: "1"
+  - name: net.ipv4.conf.all.rp_filter
+    value: "1"
+  - name: net.ipv4.conf.all.accept_redirects
+    value: "0"
+  - name: net.core.somaxconn
+    value: "4096"
+  - name: vm.swappiness
+    value: "10"
+  - name: fs.file-max
+    value: "262144"
+
+# --- SSH daemon hardening (lineinfile in common role) ------------------------
+sshd_permit_root_login: "no"
+sshd_settings:
+  - regexp: "^#?PermitRootLogin"
+    line: "PermitRootLogin {{ sshd_permit_root_login }}"
+  - regexp: "^#?PasswordAuthentication"
+    line: "PasswordAuthentication no"
+  - regexp: "^#?X11Forwarding"
+    line: "X11Forwarding no"
+  - regexp: "^#?MaxAuthTries"
+    line: "MaxAuthTries 4"
+  - regexp: "^#?ClientAliveInterval"
+    line: "ClientAliveInterval 300"
+
+# --- OS groups managed by the users role ------------------------------------
+acme_groups:
+  - name: acme-ops
+    gid: 2000
+  - name: acme-dev
+    gid: 2001
+  - name: acme-svc
+    gid: 2002
+
+# --- Human accounts managed by the users role -------------------------------
+# state: absent removes leavers; sudo: true drops a sudoers.d snippet.
+acme_users:
+  - name: alice
+    uid: 2001
+    comment: "Alice Moreau - SRE lead"
+    groups: [acme-ops]
+    shell: /bin/bash
+    sudo: true
+    state: present
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyAliceXXXXXXXXXXXXXXXXXXXXXXXXXXXXX alice@acme-corp.example"
+  - name: bob
+    uid: 2002
+    comment: "Bob Tanaka - backend developer"
+    groups: [acme-dev]
+    shell: /usr/bin/zsh
+    sudo: false
+    state: present
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyBobXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX bob@acme-corp.example"
+  - name: carol
+    uid: 2003
+    comment: "Carol Diaz - database administrator"
+    groups: [acme-ops, acme-dev]
+    shell: /bin/bash
+    sudo: true
+    state: present
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyCarolXXXXXXXXXXXXXXXXXXXXXXXXXXXXX carol@acme-corp.example"
+      - "ssh-rsa AAAAB3NzaC1yc2EDemoKeyCarolLaptopXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX carol@laptop"
+  - name: dave
+    uid: 2004
+    comment: "Dave Okafor - frontend developer"
+    groups: [acme-dev]
+    shell: /bin/bash
+    sudo: false
+    state: present
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyDaveXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX dave@acme-corp.example"
+  - name: erin
+    uid: 2005
+    comment: "Erin Kowalski - security engineer"
+    groups: [acme-ops]
+    shell: /bin/bash
+    sudo: true
+    state: present
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyErinXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX erin@acme-corp.example"
+  - name: mallory
+    uid: 2006
+    comment: "Mallory Smith - left the company 2026-03"
+    groups: []
+    shell: /bin/bash
+    sudo: false
+    state: absent
+    ssh_keys: []
+
+# --- Monitoring agents --------------------------------------------------------
+node_exporter_version: "1.8.1"
+node_exporter_port: 9100
+
+# --- Backups ------------------------------------------------------------------
+backup_on_calendar: "*-*-* 02:15:00"
+backup_use_cron: false
+backup_retention_days: 14
+backup_target_dir: /var/backups/acme

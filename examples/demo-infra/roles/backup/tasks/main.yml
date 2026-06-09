@@ -1,0 +1,77 @@
+---
+# backup role - script + systemd service/timer (cron fallback)
+
+- name: Install backup tooling
+  ansible.builtin.package:
+    name:
+      - zstd
+      - gnupg
+    state: present
+  tags: [backup, packages]
+
+- name: Create the backup target directory
+  ansible.builtin.file:
+    path: "{{ backup_target_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  tags: [backup, config]
+
+- name: Install the backup script
+  ansible.builtin.template:
+    src: acme-backup.sh.j2
+    dest: "{{ backup_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [backup, config]
+
+- name: Install the acme-backup systemd service unit
+  ansible.builtin.template:
+    src: acme-backup.service.j2
+    dest: /etc/systemd/system/acme-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for backup units
+  when: not backup_use_cron | bool
+  tags: [backup, systemd]
+
+- name: Install the acme-backup systemd timer unit
+  ansible.builtin.template:
+    src: acme-backup.timer.j2
+    dest: /etc/systemd/system/acme-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for backup units
+  when: not backup_use_cron | bool
+  tags: [backup, systemd]
+
+- name: Enable the backup timer (with explicit daemon_reload)
+  ansible.builtin.systemd:
+    name: acme-backup.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: not backup_use_cron | bool
+  tags: [backup, systemd, services]
+
+- name: Remove the legacy cron entry when the timer is in use
+  ansible.builtin.cron:
+    name: "acme nightly backup"
+    state: absent
+  when: not backup_use_cron | bool
+  tags: [backup, cron]
+
+- name: Fall back to cron on hosts without systemd timers
+  ansible.builtin.cron:
+    name: "acme nightly backup"
+    minute: "{{ backup_cron_minute }}"
+    hour: "{{ backup_cron_hour }}"
+    job: "{{ backup_script_path }} >> /var/log/acme-backup.log 2>&1"
+    user: root
+    state: present
+  when: backup_use_cron | bool
+  tags: [backup, cron]

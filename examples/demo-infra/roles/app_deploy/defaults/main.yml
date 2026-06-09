@@ -1,0 +1,24 @@
+---
+# app_deploy role defaults (gunicorn-style Python app)
+app_name: acme-shop
+app_git_repo: "https://git.acme-corp.example/acme/acme-shop.git"
+app_git_version: main
+app_user: acme-shop
+app_group: acme-svc
+app_base_dir: /var/www/acme-shop
+app_port: 8000
+app_workers: 2
+app_healthcheck_path: /healthz
+app_healthcheck_retries: 12
+app_healthcheck_delay: 5
+
+app_db_host: 127.0.0.1
+app_db_name: acme_shop
+app_db_user: acme_shop
+app_redis_host: 127.0.0.1
+
+# Secrets - override from vars/secrets.yml
+vault_app_secret_key: CHANGEME-secret-key
+vault_app_api_token: CHANGEME-api-token
+vault_pg_app_password: CHANGEME-acme-shop-db
+vault_redis_password: CHANGEME-redis

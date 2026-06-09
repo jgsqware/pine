@@ -1,0 +1,1951 @@
+/* ============================================================
+   Pine — embedded web UI (vanilla ES2020+, no build step)
+   Sections:
+     1. helpers (dom, time, icons, toasts, api, modals)
+     2. global state + repo selector
+     3. router
+     4. pages: dashboard, repos, playbooks, playbook detail,
+        roles, role detail, inventory, topology, jobs, job detail
+     5. run-playbook modal, keyboard shortcuts, boot
+   ============================================================ */
+"use strict";
+
+/* ============================================================
+   1. Helpers
+   ============================================================ */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+/** Create a DOM element. el('div', {class:'x', onclick:fn}, child1, 'text', [more]) */
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v === null || v === undefined || v === false) continue;
+      if (k === "class") node.className = v;
+      else if (k === "html") node.innerHTML = v; // trusted fragments only
+      else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
+      else if (k === "style" && typeof v === "object") Object.assign(node.style, v);
+      else if (v === true) node.setAttribute(k, "");
+      else node.setAttribute(k, String(v));
+    }
+  }
+  appendChildren(node, children);
+  return node;
+}
+
+function appendChildren(node, children) {
+  for (const c of children) {
+    if (c === null || c === undefined || c === false) continue;
+    if (Array.isArray(c)) appendChildren(node, c);
+    else if (c instanceof Node) node.appendChild(c);
+    else node.appendChild(document.createTextNode(String(c)));
+  }
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (m) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+
+/* ---- time formatting ---- */
+
+function relTime(iso) {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  const diff = Date.now() - t;
+  if (diff < 0) return "just now";
+  const s = Math.floor(diff / 1000);
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function fmtDuration(ms) {
+  if (ms === null || ms === undefined || ms <= 0) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rs = Math.round(s % 60);
+  if (m < 60) return `${m}m ${String(rs).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+/* ---- inline icons (trusted SVG strings) ---- */
+
+const ICONS = {
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5l12 7.5-12 7.5z"/></svg>',
+  sync: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  loop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
+  branch: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>',
+  question: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><circle cx="12" cy="17.2" r="0.5" fill="currentColor"/></svg>',
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
+  group: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  host: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4" stroke-linecap="round"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+  role: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>',
+  tree: '<svg viewBox="0 0 24 24"><path d="M12 1 L16.5 8.5 H7.5 Z" fill="#4ade80"/><path d="M12 5.5 L18 14.5 H6 Z" fill="#34c46a"/><path d="M12 10.5 L20 20.5 H4 Z" fill="#22a356"/><rect x="10.9" y="20" width="2.2" height="3.2" rx="0.6" fill="#8a5a3b"/></svg>',
+};
+
+function icon(name) {
+  const span = el("span", { class: "icon-wrap", style: { display: "inline-flex" } });
+  span.innerHTML = ICONS[name] || "";
+  const svg = span.firstChild;
+  if (svg) { svg.setAttribute("width", "14"); svg.setAttribute("height", "14"); }
+  return span;
+}
+
+/* ---- toasts ---- */
+
+function toast(msg, kind = "success", title) {
+  const box = $("#toasts");
+  const t = el("div", { class: `toast ${kind}` },
+    el("span", { class: "toast-title" }, title || (kind === "error" ? "Error" : "Done")),
+    el("span", { class: "toast-msg" }, msg));
+  box.appendChild(t);
+  const remove = () => { t.classList.add("leaving"); setTimeout(() => t.remove(), 220); };
+  t.addEventListener("click", remove);
+  setTimeout(remove, kind === "error" ? 6500 : 3500);
+}
+
+/* ---- api ---- */
+
+async function api(path, opts = {}) {
+  let res;
+  try {
+    res = await fetch("/api" + path, {
+      headers: opts.body ? { "Content-Type": "application/json" } : undefined,
+      ...opts,
+    });
+  } catch (e) {
+    throw new Error("Network error — is the Pine server running?");
+  }
+  if (res.status === 204) return null;
+  const text = await res.text();
+  let data = null;
+  if (text) { try { data = JSON.parse(text); } catch { /* non-JSON */ } }
+  if (!res.ok) {
+    throw new Error((data && data.error) || `Request failed (HTTP ${res.status})`);
+  }
+  return data;
+}
+
+/* ---- modals ---- */
+
+let activeModal = null;
+
+function openModal({ title, body, footer, width }) {
+  closeModal();
+  const modal = el("div", { class: "modal", role: "dialog", "aria-modal": "true" });
+  if (width) modal.style.maxWidth = width;
+  modal.appendChild(el("div", { class: "modal-head" },
+    el("h2", null, title),
+    el("button", { class: "x", "aria-label": "Close", onclick: closeModal }, "✕")));
+  const bodyEl = el("div", { class: "modal-body" });
+  appendChildren(bodyEl, [body]);
+  modal.appendChild(bodyEl);
+  if (footer) {
+    const footEl = el("div", { class: "modal-foot" });
+    appendChildren(footEl, Array.isArray(footer) ? footer : [footer]);
+    modal.appendChild(footEl);
+  }
+  const overlay = el("div", { class: "modal-overlay", onclick: (e) => { if (e.target === overlay) closeModal(); } }, modal);
+  $("#modal-root").appendChild(overlay);
+  activeModal = overlay;
+  const firstInput = modal.querySelector("input, select, button.btn-primary");
+  if (firstInput) firstInput.focus();
+  return { overlay, modal, body: bodyEl };
+}
+
+function closeModal() {
+  if (activeModal) { activeModal.remove(); activeModal = null; }
+}
+
+function confirmModal(title, message, confirmLabel = "Delete") {
+  return new Promise((resolve) => {
+    const ok = el("button", { class: "btn btn-danger", onclick: () => { closeModal(); resolve(true); } }, confirmLabel);
+    const cancel = el("button", { class: "btn", onclick: () => { closeModal(); resolve(false); } }, "Cancel");
+    const { overlay } = openModal({ title, body: el("p", { class: "muted", style: { margin: 0 } }, message), footer: [cancel, ok] });
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) resolve(false); });
+  });
+}
+
+/* ---- skeletons ---- */
+
+function skeletonRows(n = 3, height = 72) {
+  return el("div", { class: "grid", style: { gap: "12px" } },
+    Array.from({ length: n }, () => el("div", { class: "skeleton", style: { height: height + "px" } })));
+}
+
+/* ---- status pills ---- */
+
+function statusPill(status) {
+  const s = status || "unknown";
+  return el("span", { class: `pill st-${s}` }, s);
+}
+
+function repoStatusBadge(repo) {
+  if (repo.status === "syncing") {
+    return el("span", { class: "pill st-syncing" }, el("span", { class: "spinner", style: { marginRight: "2px" } }), "syncing");
+  }
+  return statusPill(repo.status);
+}
+
+/* ============================================================
+   2. Global state + repo selector
+   ============================================================ */
+
+const State = {
+  repos: [],
+  reposLoaded: false,
+  repoId: localStorage.getItem("pine.repo") || "",
+  scanCache: new Map(),   // repoId -> Promise<scan>
+  cleanups: [],           // run on navigation
+  invSelection: new Map(),// repoId -> inventory name (inventory + topology pages)
+};
+
+function onCleanup(fn) { State.cleanups.push(fn); }
+function runCleanups() {
+  for (const fn of State.cleanups.splice(0)) { try { fn(); } catch { /* noop */ } }
+}
+
+function currentRepo() {
+  return State.repos.find((r) => r.id === State.repoId) || null;
+}
+
+async function loadRepos(force = false) {
+  if (State.reposLoaded && !force) return State.repos;
+  State.repos = (await api("/repos")) || [];
+  State.reposLoaded = true;
+  // reconcile selection
+  if (!State.repos.some((r) => r.id === State.repoId)) {
+    State.repoId = State.repos.length ? State.repos[0].id : "";
+    persistRepoSelection();
+  }
+  renderRepoSelector();
+  return State.repos;
+}
+
+function persistRepoSelection() {
+  if (State.repoId) localStorage.setItem("pine.repo", State.repoId);
+  else localStorage.removeItem("pine.repo");
+}
+
+function renderRepoSelector() {
+  const sel = $("#repo-select");
+  sel.innerHTML = "";
+  if (!State.repos.length) {
+    sel.appendChild(el("option", { value: "" }, "No repositories"));
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const r of State.repos) {
+    sel.appendChild(el("option", { value: r.id, selected: r.id === State.repoId || null }, r.name));
+  }
+  sel.value = State.repoId;
+}
+
+function setRepo(id) {
+  if (id === State.repoId) return;
+  State.repoId = id;
+  persistRepoSelection();
+  renderRepoSelector();
+  // repo-scoped pages re-render on selection change
+  const seg = currentRoute()[0];
+  if (["playbooks", "roles", "inventory", "topology", "playbook", "role"].includes(seg)) {
+    if (seg === "playbook" || seg === "role") location.hash = "#/" + (seg === "playbook" ? "playbooks" : "roles");
+    else route();
+  }
+}
+
+function getScan(repoId, force = false) {
+  if (force) State.scanCache.delete(repoId);
+  if (!State.scanCache.has(repoId)) {
+    const p = api(`/repos/${repoId}/scan`).catch((e) => {
+      State.scanCache.delete(repoId);
+      throw e;
+    });
+    State.scanCache.set(repoId, p);
+  }
+  return State.scanCache.get(repoId);
+}
+
+/** Guard for repo-scoped pages: returns repo or renders an empty state. */
+async function requireRepo(view) {
+  await loadRepos();
+  const repo = currentRepo();
+  if (repo) return repo;
+  view.appendChild(el("div", { class: "hero" },
+    el("div", { html: ICONS.tree, class: "hero-ic", style: { width: "56px", margin: "0 auto 14px" } }),
+    el("h2", null, "No repository selected"),
+    el("p", null, "Pine reads playbooks, roles and inventories straight from your Ansible repositories. Connect one to get started."),
+    el("button", { class: "btn btn-primary", onclick: () => { location.hash = "#/repos"; setTimeout(openAddRepoModal, 50); } },
+      icon("plus"), "Connect repository")));
+  return null;
+}
+
+/* ============================================================
+   3. Router
+   ============================================================ */
+
+const PAGE_TITLES = {
+  dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
+  playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
+  topology: "Topology", jobs: "Jobs", job: "Job",
+};
+
+function currentRoute() {
+  const hash = location.hash.replace(/^#\/?/, "");
+  return hash.split("/").map((s) => s); // segments stay encoded; pages decode as needed
+}
+
+async function route() {
+  runCleanups();
+  const segs = currentRoute();
+  let name = segs[0] || "dashboard";
+  const handlers = {
+    dashboard: pageDashboard,
+    repos: pageRepos,
+    playbooks: pagePlaybooks,
+    playbook: pagePlaybookDetail,
+    roles: pageRoles,
+    role: pageRoleDetail,
+    inventory: pageInventory,
+    topology: pageTopology,
+    jobs: pageJobs,
+    job: pageJobDetail,
+  };
+  if (!handlers[name]) { location.hash = "#/dashboard"; return; }
+
+  // nav highlight
+  const navKey = { playbook: "playbooks", role: "roles", job: "jobs" }[name] || name;
+  $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.nav === navKey));
+  $("#topbar-title").textContent = PAGE_TITLES[name] || "Pine";
+
+  const view = $("#view");
+  view.innerHTML = "";
+  const page = el("div", { class: "page" + (name === "topology" ? " wide" : "") });
+  view.appendChild(page);
+  try {
+    await handlers[name](page, segs.slice(1));
+  } catch (e) {
+    console.error(e);
+    page.innerHTML = "";
+    page.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Something went wrong"),
+      el("p", null, e.message || String(e)),
+      el("button", { class: "btn", onclick: route }, "Retry")));
+    toast(e.message || String(e), "error");
+  }
+}
+
+/* ============================================================
+   4a. Dashboard
+   ============================================================ */
+
+async function pageDashboard(page) {
+  page.appendChild(skeletonRows(2, 90));
+  const [stats] = await Promise.all([api("/stats"), loadRepos()]);
+  page.innerHTML = "";
+
+  if (!stats.repos) {
+    page.appendChild(el("div", { class: "hero" },
+      el("div", { html: ICONS.tree.replace("<svg", '<svg class="tree"') }),
+      el("h2", null, "Connect your first repository"),
+      el("p", null, "Point Pine at a Git URL or a local path containing your Ansible project. Pine scans playbooks, roles and inventories, visualizes task flows and host topology, and runs jobs with live logs."),
+      el("button", { class: "btn btn-primary", onclick: () => { location.hash = "#/repos"; setTimeout(openAddRepoModal, 50); } },
+        icon("plus"), "Add repository")));
+    return;
+  }
+
+  // stat cards
+  const cards = [
+    ["Repositories", stats.repos, "", "#/repos"],
+    ["Playbooks", stats.playbooks, "accent", "#/playbooks"],
+    ["Roles", stats.roles, "accent", "#/roles"],
+    ["Hosts", stats.hosts, "secondary", "#/inventory"],
+    ["Jobs running", stats.running_jobs, stats.running_jobs ? "warning" : "", "#/jobs"],
+  ];
+  page.appendChild(el("div", { class: "grid cols-4", style: { gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" } },
+    cards.map(([lbl, num, cls, href]) =>
+      el("div", { class: "card stat-card clickable", onclick: () => (location.hash = href) },
+        el("div", { class: `num ${cls}` }, String(num ?? 0)),
+        el("div", { class: "lbl" }, lbl)))));
+
+  // quick actions
+  page.appendChild(el("div", { class: "row mt" },
+    el("button", { class: "btn btn-primary", onclick: () => openRunModal() }, icon("play"), "Run playbook"),
+    el("button", { class: "btn", onclick: () => { location.hash = "#/repos"; setTimeout(openAddRepoModal, 50); } }, icon("plus"), "Add repository"),
+    el("button", { class: "btn", onclick: () => (location.hash = "#/topology") }, "View topology")));
+
+  // recent jobs
+  page.appendChild(el("div", { class: "section-title" }, "Recent jobs"));
+  const recent = stats.recent_jobs || [];
+  if (!recent.length) {
+    page.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No jobs yet"),
+      el("p", null, "Run a playbook to see execution history here."),
+      el("button", { class: "btn btn-primary", onclick: () => openRunModal() }, icon("play"), "Run playbook")));
+  } else {
+    page.appendChild(jobsTable(recent));
+  }
+}
+
+function jobsTable(jobs) {
+  return el("div", { class: "table-wrap" },
+    el("table", { class: "data" },
+      el("thead", null, el("tr", null,
+        ["Status", "Playbook", "Repository", "Inventory", "Flags", "Duration", "Started"].map((h) => el("th", null, h)))),
+      el("tbody", null, jobs.map((j) =>
+        el("tr", { class: "clickable", onclick: () => (location.hash = `#/job/${j.id}`) },
+          el("td", null, statusPill(j.status)),
+          el("td", null, el("span", { class: "mono", style: { color: "var(--text)" } }, j.playbook)),
+          el("td", null, j.repo_name || "—"),
+          el("td", { class: "mono" }, j.inventory || "—"),
+          el("td", null, el("span", { class: "row", style: { gap: "5px" } },
+            j.check ? el("span", { class: "flag-badge check" }, "check") : null,
+            j.simulated ? el("span", { class: "flag-badge sim" }, "sim") : null)),
+          el("td", { class: "mono" }, fmtDuration(j.duration_ms)),
+          el("td", { class: "muted", title: j.started || j.created }, relTime(j.started || j.created)))))));
+}
+
+/* ============================================================
+   4b. Repositories
+   ============================================================ */
+
+async function pageRepos(page) {
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Repositories"),
+    el("span", { class: "sub" }, "Git or local Ansible projects"),
+    el("div", { class: "grow" }),
+    el("button", { class: "btn btn-primary", onclick: openAddRepoModal }, icon("plus"), "Add repository")));
+
+  const listBox = el("div", { class: "grid cols-3" });
+  page.appendChild(listBox);
+  listBox.appendChild(skeletonRows(2, 180));
+
+  let pollTimer = null;
+  onCleanup(() => clearInterval(pollTimer));
+
+  const refresh = async () => {
+    await loadRepos(true);
+    drawRepoCards(listBox, refresh);
+    const anySyncing = State.repos.some((r) => r.status === "syncing" || r.status === "new");
+    clearInterval(pollTimer);
+    if (anySyncing) pollTimer = setInterval(async () => {
+      try {
+        const before = State.repos.map((r) => r.id + r.status).join();
+        await loadRepos(true);
+        const after = State.repos.map((r) => r.id + r.status).join();
+        if (before !== after) {
+          drawRepoCards(listBox, refresh);
+          for (const r of State.repos) State.scanCache.delete(r.id);
+        }
+        if (!State.repos.some((r) => r.status === "syncing" || r.status === "new")) clearInterval(pollTimer);
+      } catch { /* keep polling */ }
+    }, 2000);
+  };
+  await refresh();
+}
+
+function drawRepoCards(listBox, refresh) {
+  listBox.innerHTML = "";
+  if (!State.repos.length) {
+    listBox.style.display = "block";
+    listBox.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No repositories connected"),
+      el("p", null, "Add a Git URL (https or ssh) or a local filesystem path. Pine clones/pulls and scans it for playbooks, roles and inventories."),
+      el("button", { class: "btn btn-primary", onclick: openAddRepoModal }, icon("plus"), "Add repository")));
+    return;
+  }
+  listBox.style.display = "grid";
+  for (const repo of State.repos) {
+    const src = repo.url || repo.path || "—";
+    const sum = repo.summary || {};
+    const card = el("div", { class: "card repo-card" },
+      el("div", { class: "top" },
+        el("span", { class: "name" }, repo.name),
+        repo.branch ? el("span", { class: "chip" }, icon("branch"), repo.branch) : null,
+        el("div", { class: "grow", style: { flex: 1 } }),
+        repoStatusBadge(repo)),
+      el("div", { class: "src" }, src),
+      repo.status === "error" && repo.error ? el("div", { class: "err" }, repo.error) : null,
+      el("div", { class: "counts" },
+        [["playbooks", sum.playbooks], ["roles", sum.roles], ["inventories", sum.inventories], ["hosts", sum.hosts], ["groups", sum.groups]]
+          .map(([k, v]) => el("div", { class: "c" }, el("b", null, String(v ?? 0)), el("span", null, k)))),
+      el("div", { class: "row small muted" },
+        repo.last_synced ? `Last synced ${relTime(repo.last_synced)}` : "Never synced"),
+      el("div", { class: "actions" },
+        el("button", {
+          class: "btn btn-sm", disabled: repo.status === "syncing" || null,
+          onclick: async (e) => {
+            e.currentTarget.disabled = true;
+            try {
+              await api(`/repos/${repo.id}/sync`, { method: "POST" });
+              State.scanCache.delete(repo.id);
+              toast(`Syncing ${repo.name}…`, "success", "Sync started");
+              refresh();
+            } catch (err) { toast(err.message, "error"); refresh(); }
+          },
+        }, icon("sync"), "Sync"),
+        el("button", {
+          class: "btn btn-sm",
+          onclick: () => { setRepo(repo.id); location.hash = "#/playbooks"; },
+        }, icon("folder"), "Browse"),
+        el("div", { style: { flex: 1 } }),
+        el("button", {
+          class: "btn btn-sm btn-danger",
+          onclick: async () => {
+            const ok = await confirmModal("Delete repository", `Remove “${repo.name}” from Pine? The source repository itself is not touched. Job history referencing it remains.`);
+            if (!ok) return;
+            try {
+              await api(`/repos/${repo.id}`, { method: "DELETE" });
+              State.scanCache.delete(repo.id);
+              toast(`Removed ${repo.name}`, "success");
+              refresh();
+            } catch (err) { toast(err.message, "error"); }
+          },
+        }, icon("trash"), "Delete")));
+    listBox.appendChild(card);
+  }
+}
+
+function openAddRepoModal() {
+  let mode = "git";
+  const nameIn = el("input", { type: "text", placeholder: "demo-infra", autocomplete: "off" });
+  const urlIn = el("input", { type: "text", placeholder: "https://github.com/acme/infra.git", autocomplete: "off" });
+  const branchIn = el("input", { type: "text", placeholder: "main", autocomplete: "off" });
+  const pathIn = el("input", { type: "text", placeholder: "/srv/ansible/infra", autocomplete: "off" });
+
+  const gitFields = el("div", null,
+    el("div", { class: "field" }, el("label", null, "Git URL"), urlIn,
+      el("span", { class: "hint" }, "https:// or git@ remote. Pine clones it into its workspace.")),
+    el("div", { class: "field" }, el("label", null, "Branch"), branchIn,
+      el("span", { class: "hint" }, "Defaults to main.")));
+  const pathFields = el("div", { style: { display: "none" } },
+    el("div", { class: "field" }, el("label", null, "Local path"), pathIn,
+      el("span", { class: "hint" }, "Absolute path on the Pine server, e.g. /srv/ansible/infra.")));
+
+  const tabGit = el("span", { class: "tab active" }, "Git URL");
+  const tabPath = el("span", { class: "tab" }, "Local path");
+  const setMode = (m) => {
+    mode = m;
+    tabGit.classList.toggle("active", m === "git");
+    tabPath.classList.toggle("active", m === "path");
+    gitFields.style.display = m === "git" ? "" : "none";
+    pathFields.style.display = m === "path" ? "" : "none";
+  };
+  tabGit.onclick = () => setMode("git");
+  tabPath.onclick = () => setMode("path");
+
+  const submitBtn = el("button", { class: "btn btn-primary" }, icon("plus"), "Add repository");
+  submitBtn.onclick = async () => {
+    const name = nameIn.value.trim();
+    if (!name) { toast("Repository name is required", "error"); nameIn.focus(); return; }
+    let body;
+    if (mode === "git") {
+      const url = urlIn.value.trim();
+      if (!url) { toast("Git URL is required", "error"); urlIn.focus(); return; }
+      body = { name, url, branch: branchIn.value.trim() || "main" };
+    } else {
+      const path = pathIn.value.trim();
+      if (!path) { toast("Local path is required", "error"); pathIn.focus(); return; }
+      body = { name, path };
+    }
+    submitBtn.disabled = true;
+    try {
+      const repo = await api("/repos", { method: "POST", body: JSON.stringify(body) });
+      closeModal();
+      toast(`${repo.name} added — syncing now`, "success", "Repository added");
+      State.repoId = State.repoId || repo.id;
+      persistRepoSelection();
+      await loadRepos(true);
+      if (currentRoute()[0] === "repos") route();
+      else location.hash = "#/repos";
+    } catch (e) {
+      submitBtn.disabled = false;
+      toast(e.message, "error");
+    }
+  };
+
+  const body = el("div", null,
+    el("div", { class: "seg-tabs", style: { marginBottom: "16px" } }, tabGit, tabPath),
+    el("div", { class: "field" }, el("label", null, "Name"), nameIn,
+      el("span", { class: "hint" }, "A short identifier shown across Pine.")),
+    gitFields, pathFields);
+  body.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") submitBtn.click(); });
+
+  openModal({
+    title: "Add repository",
+    body,
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), submitBtn],
+  });
+  nameIn.focus();
+}
+
+/* ============================================================
+   4c. Playbooks (list)
+   ============================================================ */
+
+function encodePath(p) { return p.split("/").map(encodeURIComponent).join("/"); }
+function decodeSegs(segs) { return segs.map(decodeURIComponent).join("/"); }
+
+async function pagePlaybooks(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Playbooks"),
+    el("span", { class: "sub" }, `in ${repo.name}`),
+    el("div", { class: "grow" }),
+    el("button", { class: "btn btn-primary", onclick: () => openRunModal({ repoId: repo.id }) }, icon("play"), "Run playbook")));
+
+  const box = el("div", { class: "grid cols-3" });
+  page.appendChild(box);
+  box.appendChild(skeletonRows(2, 130));
+
+  const scan = await getScan(repo.id);
+  box.innerHTML = "";
+  const playbooks = scan.playbooks || [];
+  if (!playbooks.length) {
+    box.style.display = "block";
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No playbooks found"),
+      el("p", null, "Pine looks for YAML playbooks at the repository root and in playbooks/. If the repo just synced, try re-syncing or check the repo status."),
+      el("button", { class: "btn", onclick: () => (location.hash = "#/repos") }, "Go to repositories")));
+    return;
+  }
+
+  for (const pb of playbooks) {
+    const plays = pb.plays || [];
+    const hostPatterns = [...new Set(plays.map((p) => p.hosts).filter(Boolean))];
+    const tags = [...new Set(plays.flatMap((p) => [
+      ...(p.tags || []),
+      ...((p.tasks || []).flatMap((t) => t.tags || [])),
+    ]))].slice(0, 8);
+    const href = `#/playbook/${repo.id}/${encodePath(pb.path)}`;
+    const card = el("div", { class: "card pb-card clickable", onclick: () => (location.hash = href) },
+      el("div", { class: "top" },
+        el("div", { style: { flex: 1, minWidth: 0 } },
+          el("div", { class: "name" }, pb.name || pb.path),
+          el("div", { class: "path" }, pb.path)),
+        el("button", {
+          class: "btn btn-sm btn-primary",
+          onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path }); },
+        }, icon("play"), "Run")),
+      el("div", { class: "meta-row" },
+        el("span", { class: "chip" }, `${plays.length} play${plays.length === 1 ? "" : "s"}`),
+        hostPatterns.slice(0, 4).map((h) => el("span", { class: "chip", style: { color: "var(--secondary)" } }, h)),
+        tags.map((t) => el("span", { class: "chip tag" }, t))));
+    box.appendChild(card);
+  }
+}
+
+/* ============================================================
+   4d. Playbook detail — task flow visualization
+   ============================================================ */
+
+const MODULE_CATEGORIES = [
+  ["pkg", /(^|\.)(apt|apt_key|apt_repository|yum|dnf|pip|package|gem|npm|apk|pacman|homebrew|snap|zypper|yum_repository|easy_install)$/],
+  ["svc", /(^|\.)(service|systemd|systemd_service|sysvinit|supervisorctl|cron|launchd|runit|service_facts)$/],
+  ["file", /(^|\.)(copy|template|file|lineinfile|blockinfile|fetch|unarchive|archive|synchronize|stat|find|replace|assemble|tempfile|slurp|get_url|git|mount)$/],
+  ["docker", /(docker|podman|k8s|kubernetes|helm|ecs|ec2|aws|s3|azure|gcp|gce|openstack|terraform)/],
+  ["cmd", /(^|\.)(command|shell|script|raw|expect|win_command|win_shell)$/],
+  ["flow", /(^|\.)(block|meta|include_tasks|import_tasks|include_role|import_role|include_vars|import_playbook|set_fact|debug|assert|fail|wait_for|wait_for_connection|pause|add_host|group_by)$/],
+];
+
+function moduleCategory(mod) {
+  const m = (mod || "").toLowerCase();
+  for (const [cat, re] of MODULE_CATEGORIES) if (re.test(m)) return cat;
+  return "other";
+}
+
+function shortModule(mod) {
+  if (!mod) return "task";
+  const parts = mod.split(".");
+  return parts.length > 2 ? parts.slice(-1)[0] : mod;
+}
+
+let taskUid = 0;
+
+function renderTaskNode(task, opts = {}) {
+  // blocks render as bordered groups
+  const hasBlock = (task.block && task.block.length) || (task.rescue && task.rescue.length) || (task.always && task.always.length);
+  if (hasBlock) {
+    const group = el("div", { class: "block-group" });
+    const label = el("div", { class: "block-label" }, "block");
+    if (task.name) label.appendChild(el("span", { style: { color: "var(--text)", textTransform: "none", letterSpacing: 0, fontSize: "12px", fontWeight: 550 } }, task.name));
+    if (task.when) label.appendChild(whenChip(task.when));
+    (task.tags || []).forEach((t) => label.appendChild(el("span", { class: "chip tag" }, t)));
+    group.appendChild(label);
+    const sub = (label2, items, cls) => {
+      if (!items || !items.length) return;
+      const box = el("div", { class: `block-sub ${cls || ""}` });
+      if (label2) box.appendChild(el("div", { class: "block-label", style: { marginTop: "4px" } }, label2));
+      box.appendChild(taskColumn(items, opts));
+      group.appendChild(box);
+    };
+    sub(null, task.block);
+    if (task.rescue && task.rescue.length) {
+      const r = el("div", { class: "block-group rescue-group", style: { marginTop: "10px" } },
+        el("div", { class: "block-label" }, "rescue"), taskColumn(task.rescue, opts));
+      group.appendChild(r);
+    }
+    if (task.always && task.always.length) {
+      const a = el("div", { class: "block-group always-group", style: { marginTop: "10px" } },
+        el("div", { class: "block-label" }, "always"), taskColumn(task.always, opts));
+      group.appendChild(a);
+    }
+    return group;
+  }
+
+  const cat = moduleCategory(task.module);
+  const node = el("div", { class: "task-node" + (opts.handler ? " handler-node" : "") });
+  node.dataset.uid = String(++taskUid);
+  if (opts.handler && task.name) node.dataset.handlerName = task.name;
+  if (task.notify && task.notify.length) node.dataset.notify = task.notify.join("\u0001");
+
+  node.appendChild(el("span", { class: `module mod-${cat}`, title: task.module || "" }, shortModule(task.module)));
+
+  const main = el("div", { class: "t-main" });
+  main.appendChild(el("div", { class: "t-name" + (task.name ? "" : " unnamed") }, task.name || "(unnamed task)"));
+  const chips = el("div", { class: "t-chips" });
+  (task.tags || []).forEach((t) => chips.appendChild(el("span", { class: "chip tag" }, t)));
+  if (task.when) chips.appendChild(whenChip(task.when));
+  (task.notify || []).forEach((n) => chips.appendChild(el("span", { class: "chip notify-chip", title: `notifies handler “${n}”` }, icon("bell"), n)));
+  if (chips.childNodes.length) main.appendChild(chips);
+  node.appendChild(main);
+
+  const icons = el("div", { class: "t-icons" });
+  if (task.loop) icons.appendChild(el("span", { class: "ic loop-ic", title: "Loops over items", html: ICONS.loop }));
+  if (icons.childNodes.length) node.appendChild(icons);
+  return node;
+}
+
+function whenChip(expr) {
+  return el("span", { class: "chip when-chip", title: `when: ${expr}` }, "when");
+}
+
+function taskColumn(tasks, opts = {}) {
+  const col = el("div", { class: "flow-col" });
+  tasks.forEach((t, i) => {
+    if (i > 0) col.appendChild(el("div", { class: "flow-connector" }));
+    col.appendChild(renderTaskNode(t, opts));
+  });
+  return col;
+}
+
+async function pagePlaybookDetail(page, segs) {
+  await loadRepos();
+  const repoId = segs[0];
+  const path = decodeSegs(segs.slice(1));
+  const repo = State.repos.find((r) => r.id === repoId);
+  if (!repo) { page.appendChild(el("div", { class: "empty" }, el("h3", null, "Repository not found"))); return; }
+
+  page.appendChild(skeletonRows(3, 110));
+  const scan = await getScan(repoId);
+  const pb = (scan.playbooks || []).find((p) => p.path === path);
+  page.innerHTML = "";
+  if (!pb) {
+    page.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Playbook not found"),
+      el("p", null, `“${path}” is not in the latest scan of ${repo.name}. It may have been removed or renamed.`),
+      el("button", { class: "btn", onclick: () => (location.hash = "#/playbooks") }, "Back to playbooks")));
+    return;
+  }
+
+  $("#topbar-title").textContent = pb.name || pb.path;
+  page.appendChild(el("div", { class: "page-head" },
+    el("a", { href: "#/playbooks", class: "btn btn-ghost btn-sm" }, "← Playbooks"),
+    el("div", null,
+      el("h1", null, pb.name || pb.path),
+      el("div", { class: "muted mono small" }, `${repo.name} / ${pb.path}`)),
+    el("div", { class: "grow" }),
+    el("button", { class: "btn btn-primary", onclick: () => openRunModal({ repoId, playbook: pb.path }) },
+      icon("play"), "Run playbook")));
+
+  const sections = [];
+  (pb.plays || []).forEach((play, idx) => {
+    const section = renderPlaySection(play, idx, repoId);
+    sections.push(section);
+    page.appendChild(section);
+  });
+  if (!(pb.plays || []).length) {
+    page.appendChild(el("div", { class: "empty" }, el("h3", null, "Empty playbook"), el("p", null, "No plays were parsed from this file.")));
+  }
+
+  // draw notify → handler arrows once layout settles
+  const redraw = () => sections.forEach(drawNotifyArrows);
+  requestAnimationFrame(() => requestAnimationFrame(redraw));
+  window.addEventListener("resize", redraw);
+  onCleanup(() => window.removeEventListener("resize", redraw));
+}
+
+function renderPlaySection(play, idx, repoId) {
+  const head = el("div", { class: "play-head" },
+    el("span", { class: "play-name" }, play.name || `Play ${idx + 1}`),
+    el("span", { class: "hosts-pat", title: "Host pattern" }, play.hosts || "all"),
+    play.become ? el("span", { class: "chip warn", title: "Privilege escalation enabled" }, "become") : null,
+    play.serial ? el("span", { class: "chip", title: "Rolling batch size" }, `serial: ${play.serial}`) : null,
+    play.strategy ? el("span", { class: "chip" }, `strategy: ${play.strategy}`) : null,
+    (play.tags || []).map((t) => el("span", { class: "chip tag" }, t)),
+    (play.vars_files || []).length
+      ? el("span", { class: "chip", title: "vars_files: " + play.vars_files.join(", ") }, `${play.vars_files.length} vars file${play.vars_files.length === 1 ? "" : "s"}`)
+      : null);
+
+  const body = el("div", { class: "play-body" });
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "flow-svg");
+  body.appendChild(svg);
+
+  const phase = (label, node, cls) => {
+    if (!node) return;
+    body.appendChild(el("div", { class: "flow-phase" },
+      el("div", { class: `flow-phase-label ${cls || ""}` }, label), node));
+  };
+
+  if ((play.pre_tasks || []).length) phase("pre_tasks", taskColumn(play.pre_tasks));
+  if ((play.roles || []).length) {
+    phase("roles", el("div", { class: "roles-strip" },
+      play.roles.map((r) => el("a", { class: "role-chip-lg", href: `#/role/${repoId}/${encodeURIComponent(r)}` }, icon("role"), r))));
+  }
+  if ((play.tasks || []).length) phase("tasks", taskColumn(play.tasks));
+  if ((play.post_tasks || []).length) phase("post_tasks", taskColumn(play.post_tasks));
+  if ((play.handlers || []).length) phase("handlers", taskColumn(play.handlers, { handler: true }), "handlers-lbl");
+
+  if (body.children.length === 1) {
+    body.appendChild(el("div", { class: "muted small" }, "Nothing to show for this play."));
+  }
+  return el("div", { class: "play-section" }, head, body);
+}
+
+/** Curved SVG lines from tasks with notify → matching handler nodes within a play section. */
+function drawNotifyArrows(section) {
+  const body = section.querySelector(".play-body");
+  const svg = section.querySelector(".flow-svg");
+  if (!body || !svg) return;
+  svg.innerHTML = "";
+  const ns = "http://www.w3.org/2000/svg";
+  const bodyRect = body.getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${bodyRect.width} ${bodyRect.height}`);
+  svg.setAttribute("width", bodyRect.width);
+  svg.setAttribute("height", bodyRect.height);
+
+  // arrowhead marker
+  const defs = document.createElementNS(ns, "defs");
+  const marker = document.createElementNS(ns, "marker");
+  marker.setAttribute("id", "arrow-" + (section.dataset.mid || (section.dataset.mid = String(++taskUid))));
+  marker.setAttribute("viewBox", "0 0 8 8");
+  marker.setAttribute("refX", "7"); marker.setAttribute("refY", "4");
+  marker.setAttribute("markerWidth", "7"); marker.setAttribute("markerHeight", "7");
+  marker.setAttribute("orient", "auto-start-reverse");
+  const tip = document.createElementNS(ns, "path");
+  tip.setAttribute("d", "M0,0 L8,4 L0,8 z");
+  tip.setAttribute("fill", "#fbbf24");
+  marker.appendChild(tip);
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
+  const handlers = new Map();
+  for (const h of body.querySelectorAll("[data-handler-name]")) handlers.set(h.dataset.handlerName, h);
+  if (!handlers.size) return;
+
+  let lane = 0;
+  for (const src of body.querySelectorAll("[data-notify]")) {
+    for (const name of src.dataset.notify.split("\u0001")) {
+      const dst = handlers.get(name);
+      if (!dst) continue;
+      const a = src.getBoundingClientRect();
+      const b = dst.getBoundingClientRect();
+      const x1 = a.right - bodyRect.left;
+      const y1 = a.top + a.height / 2 - bodyRect.top;
+      const x2 = b.right - bodyRect.left;
+      const y2 = b.top + b.height / 2 - bodyRect.top;
+      const bend = Math.min(bodyRect.width - Math.max(x1, x2) - 12, 70 + (lane % 5) * 26);
+      lane++;
+      const cx = Math.max(x1, x2) + Math.max(24, bend);
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2 + 6} ${y2}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "rgba(251, 191, 36, 0.55)");
+      path.setAttribute("stroke-width", "1.5");
+      path.setAttribute("stroke-dasharray", "5 4");
+      path.setAttribute("marker-end", `url(#${marker.getAttribute("id")})`);
+      svg.appendChild(path);
+    }
+  }
+}
+
+/* ============================================================
+   4e. Roles
+   ============================================================ */
+
+async function pageRoles(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Roles"),
+    el("span", { class: "sub" }, `in ${repo.name}`)));
+
+  const box = el("div", { class: "grid cols-3" });
+  page.appendChild(box);
+  box.appendChild(skeletonRows(2, 130));
+  const scan = await getScan(repo.id);
+  box.innerHTML = "";
+
+  const roles = scan.roles || [];
+  if (!roles.length) {
+    box.style.display = "block";
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No roles found"),
+      el("p", null, "Pine scans the roles/ directory for Ansible roles (tasks, defaults, handlers, meta).")));
+    return;
+  }
+
+  for (const role of roles) {
+    const card = el("div", { class: "card role-card clickable", onclick: () => (location.hash = `#/role/${repo.id}/${encodeURIComponent(role.name)}`) },
+      el("div", { class: "name" }, icon("role"), role.name),
+      el("div", { class: "desc" }, role.description || el("span", { class: "muted", style: { fontStyle: "italic" } }, "No description (meta/main.yml)")),
+      el("div", { class: "stats" },
+        el("span", null, el("b", null, String(role.tasks_count ?? (role.tasks || []).length)), " tasks"),
+        el("span", null, el("b", null, String((role.handlers || []).length)), " handlers"),
+        el("span", null, el("b", null, String((role.templates || []).length)), " templates"),
+        el("span", null, el("b", null, String((role.files || []).length)), " files")),
+      (role.dependencies || []).length
+        ? el("div", { class: "deps" },
+            el("span", { class: "muted small", style: { marginRight: "2px" } }, "deps:"),
+            role.dependencies.map((d) => el("span", {
+              class: "chip link",
+              onclick: (e) => { e.stopPropagation(); location.hash = `#/role/${repo.id}/${encodeURIComponent(d)}`; },
+            }, d)))
+        : null);
+    box.appendChild(card);
+  }
+}
+
+async function pageRoleDetail(page, segs) {
+  await loadRepos();
+  const repoId = segs[0];
+  const name = decodeURIComponent(segs[1] || "");
+  const repo = State.repos.find((r) => r.id === repoId);
+  if (!repo) { page.appendChild(el("div", { class: "empty" }, el("h3", null, "Repository not found"))); return; }
+
+  page.appendChild(skeletonRows(2, 110));
+  const scan = await getScan(repoId);
+  const role = (scan.roles || []).find((r) => r.name === name);
+  page.innerHTML = "";
+  if (!role) {
+    page.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Role not found"),
+      el("p", null, `“${name}” is not in the latest scan of ${repo.name}.`),
+      el("button", { class: "btn", onclick: () => (location.hash = "#/roles") }, "Back to roles")));
+    return;
+  }
+
+  $("#topbar-title").textContent = role.name;
+  page.appendChild(el("div", { class: "page-head" },
+    el("a", { href: "#/roles", class: "btn btn-ghost btn-sm" }, "← Roles"),
+    el("div", null,
+      el("h1", null, role.name),
+      el("div", { class: "muted small" }, role.description || el("span", { class: "mono" }, role.path))),
+    el("div", { class: "grow" }),
+    el("span", { class: "chip" }, `${role.tasks_count ?? (role.tasks || []).length} tasks`)));
+
+  const tabsDef = [
+    ["tasks", `Tasks (${(role.tasks || []).length})`],
+    ["defaults", "Defaults"],
+    ["handlers", `Handlers (${(role.handlers || []).length})`],
+    ["meta", "Meta"],
+  ];
+  const tabBar = el("div", { class: "tabs" });
+  const content = el("div");
+  page.appendChild(tabBar);
+  page.appendChild(content);
+
+  const show = (key) => {
+    $$(".tab", tabBar).forEach((t) => t.classList.toggle("active", t.dataset.k === key));
+    content.innerHTML = "";
+    if (key === "tasks") {
+      content.appendChild((role.tasks || []).length
+        ? el("div", { class: "panel", style: { padding: "18px 22px" } }, taskColumn(role.tasks))
+        : el("div", { class: "empty" }, el("h3", null, "No tasks"), el("p", null, "tasks/main.yml is empty or missing.")));
+    } else if (key === "defaults") {
+      const hasDefaults = role.defaults && Object.keys(role.defaults).length;
+      const hasVars = role.vars && Object.keys(role.vars).length;
+      if (!hasDefaults && !hasVars) {
+        content.appendChild(el("div", { class: "empty" }, el("h3", null, "No defaults"), el("p", null, "defaults/main.yml defines no variables.")));
+      } else {
+        if (hasDefaults) {
+          content.appendChild(el("div", { class: "section-title" }, "defaults/main.yml"));
+          content.appendChild(el("div", { class: "panel", style: { padding: "14px 18px" } }, kvTree(role.defaults)));
+        }
+        if (hasVars) {
+          content.appendChild(el("div", { class: "section-title" }, "vars/main.yml"));
+          content.appendChild(el("div", { class: "panel", style: { padding: "14px 18px" } }, kvTree(role.vars)));
+        }
+      }
+    } else if (key === "handlers") {
+      content.appendChild((role.handlers || []).length
+        ? el("div", { class: "panel", style: { padding: "18px 22px" } }, taskColumn(role.handlers, { handler: true }))
+        : el("div", { class: "empty" }, el("h3", null, "No handlers"), el("p", null, "handlers/main.yml is empty or missing.")));
+    } else if (key === "meta") {
+      content.appendChild(roleMetaView(role, repoId));
+    }
+  };
+  for (const [k, label] of tabsDef) {
+    tabBar.appendChild(el("span", { class: "tab", "data-k": k, onclick: () => show(k) }, label));
+  }
+  show("tasks");
+}
+
+/** YAML-ish pretty-printed key:value tree for arbitrary JSON objects. */
+function kvTree(obj) {
+  const root = el("div", { class: "kv-tree" });
+  const walk = (val, indent, keyLabel) => {
+    const pad = "  ".repeat(indent);
+    const keyHtml = keyLabel !== undefined
+      ? `<span class="kv-key">${esc(keyLabel)}</span>: `
+      : "";
+    if (val === null || val === undefined) {
+      root.appendChild(el("div", { class: "kv-row", html: pad + keyHtml + '<span class="kv-null">null</span>' }));
+    } else if (Array.isArray(val)) {
+      root.appendChild(el("div", { class: "kv-row", html: pad + keyHtml }));
+      for (const item of val) {
+        if (item !== null && typeof item === "object") {
+          root.appendChild(el("div", { class: "kv-row", html: "  ".repeat(indent + 1) + '<span class="kv-dash">-</span>' }));
+          for (const [k2, v2] of Object.entries(item)) walk(v2, indent + 2, k2);
+        } else {
+          root.appendChild(el("div", { class: "kv-row", html: "  ".repeat(indent + 1) + '<span class="kv-dash">- </span>' + scalarHtml(item) }));
+        }
+      }
+    } else if (typeof val === "object") {
+      if (keyLabel !== undefined) root.appendChild(el("div", { class: "kv-row", html: pad + keyHtml }));
+      for (const [k2, v2] of Object.entries(val)) walk(v2, keyLabel !== undefined ? indent + 1 : indent, k2);
+    } else {
+      root.appendChild(el("div", { class: "kv-row", html: pad + keyHtml + scalarHtml(val) }));
+    }
+  };
+  walk(obj, 0, undefined);
+  return root;
+}
+
+function scalarHtml(v) {
+  if (typeof v === "number") return `<span class="kv-num">${esc(v)}</span>`;
+  if (typeof v === "boolean") return `<span class="kv-bool">${v}</span>`;
+  return `<span class="kv-str">${esc(JSON.stringify(String(v)))}</span>`;
+}
+
+/** Meta tab: description + simple SVG dependency graph (deps → role). */
+function roleMetaView(role, repoId) {
+  const box = el("div");
+  const deps = role.dependencies || [];
+  box.appendChild(el("div", { class: "panel", style: { padding: "16px 18px", marginBottom: "16px" } },
+    el("div", { class: "row" },
+      el("span", { class: "muted small" }, "Path"),
+      el("span", { class: "mono" }, role.path || "—")),
+    el("div", { class: "row mt" },
+      el("span", { class: "muted small" }, "Description"),
+      el("span", null, role.description || "—")),
+    (role.templates || []).length ? el("div", { class: "row mt" },
+      el("span", { class: "muted small" }, "Templates"),
+      role.templates.map((t) => el("span", { class: "chip" }, t))) : null,
+    (role.files || []).length ? el("div", { class: "row mt" },
+      el("span", { class: "muted small" }, "Files"),
+      role.files.map((f) => el("span", { class: "chip" }, f))) : null));
+
+  box.appendChild(el("div", { class: "section-title" }, "Dependencies"));
+  if (!deps.length) {
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No dependencies"),
+      el("p", null, "This role declares no dependencies in meta/main.yml.")));
+    return box;
+  }
+
+  // simple SVG: dep nodes (left column) → arrows → this role (right)
+  const ns = "http://www.w3.org/2000/svg";
+  const rowH = 54, w = 560, h = Math.max(deps.length * rowH + 20, 120);
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", "100%");
+  svg.style.maxWidth = w + "px";
+
+  const mkNode = (x, y, label, accent, href) => {
+    const g = document.createElementNS(ns, "g");
+    if (href) { g.style.cursor = "pointer"; g.addEventListener("click", () => (location.hash = href)); }
+    const bw = Math.max(label.length * 7.5 + 34, 90);
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", x); rect.setAttribute("y", y - 17);
+    rect.setAttribute("width", bw); rect.setAttribute("height", 34);
+    rect.setAttribute("rx", 9);
+    rect.setAttribute("fill", accent ? "rgba(74,222,128,0.12)" : "#161d19");
+    rect.setAttribute("stroke", accent ? "#4ade80" : "#2c3e34");
+    const text = document.createElementNS(ns, "text");
+    text.setAttribute("x", x + bw / 2); text.setAttribute("y", y + 4.5);
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("fill", accent ? "#4ade80" : "#e7efe9");
+    text.setAttribute("font-size", "13");
+    text.setAttribute("font-weight", "600");
+    text.setAttribute("font-family", "var(--font)");
+    text.textContent = label;
+    g.appendChild(rect); g.appendChild(text);
+    svg.appendChild(g);
+    return { x, y, w: bw };
+  };
+
+  const targetY = h / 2;
+  const target = mkNode(w - 180, targetY, role.name, true, null);
+  deps.forEach((d, i) => {
+    const y = 28 + i * rowH;
+    const n = mkNode(20, y, d, false, `#/role/${repoId}/${encodeURIComponent(d)}`);
+    const path = document.createElementNS(ns, "path");
+    const x1 = n.x + n.w, x2 = target.x;
+    path.setAttribute("d", `M ${x1} ${y} C ${x1 + 70} ${y}, ${x2 - 70} ${targetY}, ${x2 - 4} ${targetY}`);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "#3a5246");
+    path.setAttribute("stroke-width", "1.6");
+    svg.insertBefore(path, svg.firstChild);
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", x2 - 4); dot.setAttribute("cy", targetY); dot.setAttribute("r", 3);
+    dot.setAttribute("fill", "#4ade80");
+    svg.appendChild(dot);
+  });
+
+  box.appendChild(el("div", { class: "panel dep-graph-box" }, svg));
+  return box;
+}
+
+/* ============================================================
+   4f. Inventory
+   ============================================================ */
+
+async function pageInventory(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(skeletonRows(2, 120));
+  const scan = await getScan(repo.id);
+  page.innerHTML = "";
+
+  const inventories = scan.inventories || [];
+  if (!inventories.length) {
+    page.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No inventories found"),
+      el("p", null, `Pine scans inventories/, inventory/ and hosts files in ${repo.name}. Add an INI or YAML inventory to the repo and re-sync.`)));
+    return;
+  }
+
+  let invName = State.invSelection.get(repo.id);
+  if (!inventories.some((i) => i.name === invName)) invName = inventories[0].name;
+  const inv = inventories.find((i) => i.name === invName);
+
+  const invSel = el("select", { onchange: (e) => { State.invSelection.set(repo.id, e.target.value); route(); } },
+    inventories.map((i) => el("option", { value: i.name, selected: i.name === invName || null }, i.name)));
+
+  const searchIn = el("input", { type: "search", placeholder: "Filter hosts…", style: { width: "220px" } });
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Inventory"),
+    inventories.length > 1 ? invSel : el("span", { class: "chip green" }, invName),
+    el("span", { class: "chip" }, inv.format || "?"),
+    el("span", { class: "sub mono" }, inv.path || ""),
+    el("div", { class: "grow" }),
+    searchIn));
+
+  const left = el("div", { class: "panel inv-tree" });
+  const right = el("div", { class: "panel", style: { padding: "18px 20px", minHeight: "300px" } });
+  page.appendChild(el("div", { class: "inv-layout" }, left, right));
+
+  const groups = inv.groups || [];
+  const hosts = inv.hosts || [];
+  const groupByName = new Map(groups.map((g) => [g.name, g]));
+  const hostByName = new Map(hosts.map((h) => [h.name, h]));
+  const isChild = new Set(groups.flatMap((g) => g.children || []));
+  const roots = groups.filter((g) => !isChild.has(g.name));
+
+  /** count hosts including descendants */
+  const groupHostCount = (g, seen = new Set()) => {
+    if (seen.has(g.name)) return 0;
+    seen.add(g.name);
+    let n = (g.hosts || []).length;
+    for (const c of g.children || []) {
+      const cg = groupByName.get(c);
+      if (cg) n += groupHostCount(cg, seen);
+    }
+    return n;
+  };
+
+  let selected = null; // {type:'group'|'host', name}
+
+  const showGroup = (g) => {
+    selected = { type: "group", name: g.name };
+    markSelection();
+    right.innerHTML = "";
+    right.appendChild(el("h3", { style: { margin: "0 0 2px", display: "flex", alignItems: "center", gap: "8px" } },
+      icon("group"), g.name,
+      el("span", { class: "chip" }, `${groupHostCount(g)} hosts`)));
+    if ((g.children || []).length) {
+      right.appendChild(el("div", { class: "row mt" },
+        el("span", { class: "muted small" }, "Children:"),
+        g.children.map((c) => el("span", {
+          class: "chip link",
+          onclick: () => { const cg = groupByName.get(c); if (cg) showGroup(cg); },
+        }, c))));
+    }
+    const vars = g.vars || {};
+    right.appendChild(el("div", { class: "section-title" }, "Group vars"));
+    right.appendChild(Object.keys(vars).length ? varsTable(vars)
+      : el("div", { class: "muted small" }, "No group variables."));
+    right.appendChild(el("div", { class: "section-title" }, "Hosts"));
+    const direct = (g.hosts || []).map((hn) => hostByName.get(hn) || { name: hn, groups: [], vars: {} });
+    right.appendChild(direct.length
+      ? el("div", null, direct.map((h) => hostRow(h)))
+      : el("div", { class: "muted small" }, "No hosts directly in this group."));
+  };
+
+  const showHost = (h) => {
+    selected = { type: "host", name: h.name };
+    markSelection();
+    right.innerHTML = "";
+    right.appendChild(el("div", { class: "crumb", style: { marginBottom: "8px" } },
+      (h.groups || []).flatMap((g, i) => [
+        i ? el("span", { class: "sep" }, "/") : null,
+        el("span", { class: "chip link", onclick: () => { const gg = groupByName.get(g); if (gg) showGroup(gg); } }, g),
+      ])));
+    right.appendChild(el("h3", { style: { margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px" } },
+      icon("host"), h.name,
+      h.vars && h.vars.ansible_host ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, String(h.vars.ansible_host)) : null));
+    right.appendChild(el("div", { class: "section-title" }, "Host vars"));
+    const vars = h.vars || {};
+    right.appendChild(Object.keys(vars).length ? varsTable(vars)
+      : el("div", { class: "muted small" }, "No host variables."));
+  };
+
+  const hostRow = (h) => el("div", { class: "host-row", onclick: () => showHost(h) },
+    el("span", { class: "dot" }),
+    el("span", { class: "mono" }, h.name),
+    el("span", { class: "hgroups" }, (h.groups || []).slice(0, 3).map((g) => el("span", { class: "chip" }, g))));
+
+  const buildTree = () => {
+    left.innerHTML = "";
+    const ul = el("ul");
+    const visit = (g, parentUl, depth, seen) => {
+      if (seen.has(g.name) || depth > 12) return;
+      seen.add(g.name);
+      const li = el("li");
+      li.appendChild(el("div", {
+        class: "tree-row", "data-group": g.name,
+        onclick: () => showGroup(g),
+      }, icon("group"), el("span", null, g.name), el("span", { class: "cnt" }, String(groupHostCount(g)))));
+      const children = (g.children || []).map((c) => groupByName.get(c)).filter(Boolean);
+      if (children.length || (g.hosts || []).length) {
+        const sub = el("ul");
+        for (const c of children) visit(c, sub, depth + 1, seen);
+        for (const hn of g.hosts || []) {
+          const h = hostByName.get(hn) || { name: hn, groups: [g.name], vars: {} };
+          sub.appendChild(el("li", null, el("div", {
+            class: "tree-row", "data-host": h.name,
+            onclick: () => showHost(h),
+          }, icon("host"), el("span", { class: "mono", style: { fontSize: "12px" } }, h.name))));
+        }
+        li.appendChild(sub);
+      }
+      parentUl.appendChild(li);
+    };
+    const seen = new Set();
+    for (const g of roots) visit(g, ul, 0, seen);
+    // groups unreachable from roots (cycles) — append flat
+    for (const g of groups) if (!seen.has(g.name)) visit(g, ul, 0, new Set([...seen].filter((x) => x !== g.name)));
+    left.appendChild(ul);
+    markSelection();
+  };
+
+  const markSelection = () => {
+    $$(".tree-row", left).forEach((r) => {
+      const match = selected &&
+        ((selected.type === "group" && r.dataset.group === selected.name) ||
+         (selected.type === "host" && r.dataset.host === selected.name));
+      r.classList.toggle("selected", !!match);
+    });
+  };
+
+  // search → flat host results in right pane
+  searchIn.addEventListener("input", () => {
+    const q = searchIn.value.trim().toLowerCase();
+    if (!q) { if (roots.length) showGroup(roots[0]); return; }
+    const matches = hosts.filter((h) =>
+      h.name.toLowerCase().includes(q) ||
+      (h.vars && h.vars.ansible_host && String(h.vars.ansible_host).includes(q)));
+    selected = null; markSelection();
+    right.innerHTML = "";
+    right.appendChild(el("h3", { style: { margin: "0 0 10px" } }, `Hosts matching “${q}”`,
+      el("span", { class: "chip", style: { marginLeft: "8px" } }, String(matches.length))));
+    right.appendChild(matches.length
+      ? el("div", null, matches.map((h) => hostRow(h)))
+      : el("div", { class: "muted small" }, "No hosts match. Try a hostname or IP fragment."));
+  });
+
+  buildTree();
+  if (roots.length) showGroup(roots[0]);
+  else if (hosts.length) showHost(hosts[0]);
+  else right.appendChild(el("div", { class: "empty" }, el("h3", null, "Empty inventory"), el("p", null, "No groups or hosts were parsed.")));
+}
+
+function varsTable(vars) {
+  return el("table", { class: "vars-table" },
+    el("tbody", null, Object.entries(vars).map(([k, v]) =>
+      el("tr", null,
+        el("td", { class: "k" }, k),
+        el("td", { class: "v" }, typeof v === "object" && v !== null ? JSON.stringify(v, null, 1).replace(/\n\s*/g, " ") : String(v))))));
+}
+
+/* ============================================================
+   4g. Topology — force-directed graph (canvas)
+   ============================================================ */
+
+async function pageTopology(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(skeletonRows(1, 60));
+  const scan = await getScan(repo.id);
+  page.innerHTML = "";
+
+  const inventories = scan.inventories || [];
+  if (!inventories.length) {
+    page.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No inventories to visualize"),
+      el("p", null, `Add an inventory to ${repo.name} to see the host/group topology graph.`)));
+    return;
+  }
+
+  let invName = State.invSelection.get(repo.id);
+  if (!inventories.some((i) => i.name === invName)) invName = inventories[0].name;
+  const inv = inventories.find((i) => i.name === invName);
+  const hostVars = new Map((inv.hosts || []).map((h) => [h.name, h]));
+
+  const invSel = el("select", { onchange: (e) => { State.invSelection.set(repo.id, e.target.value); route(); } },
+    inventories.map((i) => el("option", { value: i.name, selected: i.name === invName || null }, i.name)));
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Topology"),
+    invSel,
+    el("span", { class: "sub" }, "drag nodes · wheel to zoom · drag background to pan"),
+    el("div", { class: "grow" })));
+
+  const wrap = el("div", { class: "topo-wrap" });
+  const canvasBox = el("div", { class: "topo-canvas-box" });
+  const canvas = el("canvas");
+  canvasBox.appendChild(canvas);
+  const legend = el("div", { class: "topo-legend" },
+    el("span", { class: "li" }, el("span", { class: "sw", style: { background: "var(--accent)" } }), "group"),
+    el("span", { class: "li" }, el("span", { class: "sw", style: { background: "var(--secondary)" } }), "host"),
+    el("span", { class: "li" }, el("span", { style: { width: "16px", borderTop: "2px solid #3a5246" } }), "child"),
+    el("span", { class: "li" }, el("span", { style: { width: "16px", borderTop: "1px dashed #2a3a32" } }), "member"));
+  canvasBox.appendChild(legend);
+  const sidePanel = el("div", { class: "topo-panel", style: { display: "none" } });
+  canvasBox.appendChild(sidePanel);
+  wrap.appendChild(canvasBox);
+  page.appendChild(wrap);
+
+  let topo;
+  try {
+    topo = await api(`/repos/${repo.id}/topology?inventory=${encodeURIComponent(invName)}`);
+  } catch (e) {
+    wrap.innerHTML = "";
+    wrap.appendChild(el("div", { class: "empty" }, el("h3", null, "Could not load topology"), el("p", null, e.message)));
+    return;
+  }
+  const nodes = (topo.nodes || []).map((n) => ({ ...n }));
+  const links = (topo.links || []).map((l) => ({ ...l }));
+  if (!nodes.length) {
+    wrap.innerHTML = "";
+    wrap.appendChild(el("div", { class: "empty" }, el("h3", null, "Empty topology"), el("p", null, "This inventory has no groups or hosts.")));
+    return;
+  }
+
+  startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel });
+}
+
+function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel }) {
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  let W = 0, H = 0;
+
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  for (const l of links) { l.a = byId.get(l.source); l.b = byId.get(l.target); }
+  const validLinks = links.filter((l) => l.a && l.b);
+  const neighbors = new Map(nodes.map((n) => [n.id, new Set()]));
+  for (const l of validLinks) { neighbors.get(l.a.id).add(l.b.id); neighbors.get(l.b.id).add(l.a.id); }
+
+  // init positions: groups in inner ring, hosts near their group
+  const groupsArr = nodes.filter((n) => n.type === "group");
+  groupsArr.forEach((g, i) => {
+    const a = (i / Math.max(groupsArr.length, 1)) * Math.PI * 2;
+    g.x = Math.cos(a) * 160; g.y = Math.sin(a) * 160;
+  });
+  nodes.forEach((n) => {
+    if (n.type !== "group") {
+      const g = n.group ? byId.get("g:" + n.group) : null;
+      n.x = (g ? g.x : 0) + (Math.random() - 0.5) * 120;
+      n.y = (g ? g.y : 0) + (Math.random() - 0.5) * 120;
+    }
+    n.vx = 0; n.vy = 0;
+    n.r = n.type === "group" ? Math.min(11 + Math.sqrt(n.size || 1) * 3, 26) : 5.5;
+  });
+
+  // view transform
+  let scale = 1, tx = 0, ty = 0;
+  let alpha = 1;
+  let hovered = null, dragNode = null, panning = false;
+  let lastMouse = { x: 0, y: 0 };
+  let raf = 0, stopped = false;
+
+  const resize = () => {
+    W = canvasBox.clientWidth; H = canvasBox.clientHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + "px"; canvas.style.height = H + "px";
+    if (!tx && !ty) { tx = W / 2; ty = H / 2; }
+  };
+  resize();
+  window.addEventListener("resize", resize);
+  onCleanup(() => window.removeEventListener("resize", resize));
+
+  const toWorld = (px, py) => ({ x: (px - tx) / scale, y: (py - ty) / scale });
+
+  function tick() {
+    // repulsion (O(n^2), fine for inventories of a few hundred nodes)
+    const k = 1100;
+    for (let i = 0; i < nodes.length; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
+        if (d2 > 90000) continue;
+        const f = (k / d2) * alpha;
+        const d = Math.sqrt(d2);
+        const fx = (dx / d) * f, fy = (dy / d) * f;
+        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+      }
+    }
+    // link springs
+    for (const l of validLinks) {
+      const rest = l.type === "child" ? 110 : 62;
+      const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+      const d = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01);
+      const f = ((d - rest) / d) * 0.05 * alpha * 8;
+      l.a.vx += dx * f; l.a.vy += dy * f;
+      l.b.vx -= dx * f; l.b.vy -= dy * f;
+    }
+    // centering + integrate
+    for (const n of nodes) {
+      n.vx -= n.x * 0.004 * alpha;
+      n.vy -= n.y * 0.004 * alpha;
+      if (n.fx !== undefined) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
+      n.vx *= 0.82; n.vy *= 0.82;
+      n.x += n.vx; n.y += n.vy;
+    }
+    if (alpha > 0.02) alpha *= 0.995;
+  }
+
+  function draw() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.translate(tx, ty);
+    ctx.scale(scale, scale);
+
+    const hoverSet = hovered ? neighbors.get(hovered.id) : null;
+    const dim = (n) => hovered && n !== hovered && !(hoverSet && hoverSet.has(n.id));
+
+    // links
+    for (const l of validLinks) {
+      const active = hovered && (l.a === hovered || l.b === hovered);
+      ctx.beginPath();
+      ctx.moveTo(l.a.x, l.a.y);
+      ctx.lineTo(l.b.x, l.b.y);
+      if (l.type === "child") {
+        ctx.strokeStyle = active ? "rgba(74,222,128,0.85)" : (hovered ? "rgba(58,82,70,0.25)" : "rgba(58,82,70,0.8)");
+        ctx.lineWidth = (active ? 2 : 1.4) / scale;
+        ctx.setLineDash([]);
+      } else {
+        ctx.strokeStyle = active ? "rgba(34,211,238,0.7)" : (hovered ? "rgba(42,58,50,0.25)" : "rgba(42,58,50,0.75)");
+        ctx.lineWidth = (active ? 1.5 : 1) / scale;
+        ctx.setLineDash([3 / scale, 3 / scale]);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // nodes
+    for (const n of nodes) {
+      const dimmed = dim(n);
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+      if (n.type === "group") {
+        ctx.fillStyle = dimmed ? "rgba(74,222,128,0.15)" : "rgba(74,222,128,0.18)";
+        ctx.fill();
+        ctx.strokeStyle = dimmed ? "rgba(74,222,128,0.25)" : "#4ade80";
+        ctx.lineWidth = (n === hovered ? 2.4 : 1.6) / scale;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = dimmed ? "rgba(34,211,238,0.18)" : "#22d3ee";
+        ctx.fill();
+        if (n === hovered) {
+          ctx.strokeStyle = "#e7efe9"; ctx.lineWidth = 1.5 / scale; ctx.stroke();
+        }
+      }
+    }
+
+    // labels: groups always (when zoomed enough), hosts on hover/neighbor
+    ctx.textAlign = "center";
+    for (const n of nodes) {
+      const showLabel = n.type === "group"
+        ? scale > 0.45 && !dim(n)
+        : n === hovered || (hoverSet && hoverSet.has(n.id));
+      if (!showLabel) continue;
+      const fs = (n.type === "group" ? 12.5 : 11) / scale;
+      ctx.font = `600 ${fs}px ui-monospace, Menlo, monospace`;
+      ctx.fillStyle = n.type === "group" ? "#a7e8c0" : "#bdeef7";
+      ctx.fillText(n.label, n.x, n.y - n.r - 5 / scale);
+    }
+  }
+
+  function frame() {
+    if (stopped) return;
+    tick();
+    draw();
+    raf = requestAnimationFrame(frame);
+  }
+  frame();
+  onCleanup(() => { stopped = true; cancelAnimationFrame(raf); });
+
+  function nodeAt(px, py) {
+    const p = toWorld(px, py);
+    let best = null, bestD = Infinity;
+    for (const n of nodes) {
+      const dx = n.x - p.x, dy = n.y - p.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const hit = Math.max(n.r + 4, 9 / scale);
+      if (d < hit && d < bestD) { best = n; bestD = d; }
+    }
+    return best;
+  }
+
+  canvas.addEventListener("mousedown", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    lastMouse = { x: px, y: py };
+    const n = nodeAt(px, py);
+    if (n) {
+      dragNode = n;
+      const p = toWorld(px, py);
+      n.fx = p.x; n.fy = p.y;
+      alpha = Math.max(alpha, 0.35);
+    } else {
+      panning = true;
+    }
+    canvas.classList.add("dragging");
+  });
+
+  window.addEventListener("mousemove", onMove);
+  onCleanup(() => window.removeEventListener("mousemove", onMove));
+  function onMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    if (dragNode) {
+      const p = toWorld(px, py);
+      dragNode.fx = p.x; dragNode.fy = p.y;
+      alpha = Math.max(alpha, 0.25);
+    } else if (panning) {
+      tx += px - lastMouse.x; ty += py - lastMouse.y;
+    } else {
+      const n = nodeAt(px, py);
+      if (n !== hovered) hovered = n;
+      canvas.style.cursor = n ? "pointer" : "grab";
+    }
+    lastMouse = { x: px, y: py };
+  }
+
+  window.addEventListener("mouseup", onUp);
+  onCleanup(() => window.removeEventListener("mouseup", onUp));
+  function onUp() {
+    if (dragNode) { delete dragNode.fx; delete dragNode.fy; dragNode = null; }
+    panning = false;
+    canvas.classList.remove("dragging");
+  }
+
+  canvas.addEventListener("click", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const n = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
+    if (!n) { sidePanel.style.display = "none"; return; }
+    showTopoPanel(n);
+  });
+
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const ns = Math.min(Math.max(scale * factor, 0.18), 5);
+    // zoom about cursor
+    tx = px - ((px - tx) / scale) * ns;
+    ty = py - ((py - ty) / scale) * ns;
+    scale = ns;
+  }, { passive: false });
+
+  function showTopoPanel(n) {
+    sidePanel.style.display = "";
+    sidePanel.innerHTML = "";
+    const isHost = n.type === "host";
+    sidePanel.appendChild(el("h3", null,
+      el("span", { class: "sw", style: { width: "10px", height: "10px", borderRadius: "50%", display: "inline-block", background: isHost ? "var(--secondary)" : "var(--accent)" } }),
+      n.label,
+      el("span", { style: { flex: 1 } }),
+      el("button", { class: "x", style: { background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }, onclick: () => (sidePanel.style.display = "none") }, "✕")));
+    sidePanel.appendChild(el("div", { class: "muted small", style: { marginBottom: "10px" } },
+      isHost ? `host${n.group ? " · in " + n.group : ""}` : `group · ${n.size ?? "?"} members`));
+    if (isHost) {
+      const h = hostVars.get(n.label);
+      if (h && (h.groups || []).length) {
+        sidePanel.appendChild(el("div", { class: "row", style: { marginBottom: "10px", gap: "5px" } },
+          h.groups.map((g) => el("span", { class: "chip" }, g))));
+      }
+      const vars = h ? h.vars || {} : {};
+      sidePanel.appendChild(el("div", { class: "section-title", style: { margin: "10px 0 8px" } }, "Vars"));
+      sidePanel.appendChild(Object.keys(vars).length ? varsTable(vars)
+        : el("div", { class: "muted small" }, "No host vars."));
+    } else {
+      const conn = [...(neighbors.get(n.id) || [])].map((id) => byId.get(id)).filter(Boolean);
+      sidePanel.appendChild(el("div", { class: "section-title", style: { margin: "10px 0 8px" } }, "Connected"));
+      sidePanel.appendChild(el("div", { class: "row", style: { gap: "5px" } },
+        conn.slice(0, 30).map((c) => el("span", { class: "chip", style: c.type === "host" ? { color: "var(--secondary)" } : { color: "var(--accent)" } }, c.label))));
+    }
+  }
+}
+
+/* ============================================================
+   4h. Jobs (list)
+   ============================================================ */
+
+async function pageJobs(page) {
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Jobs"),
+    el("span", { class: "sub" }, "playbook runs and history"),
+    el("div", { class: "grow" }),
+    el("button", { class: "btn btn-primary", onclick: () => openRunModal() }, icon("play"), "Run playbook")));
+
+  const box = el("div");
+  page.appendChild(box);
+  box.appendChild(skeletonRows(4, 48));
+
+  const draw = (jobs) => {
+    box.innerHTML = "";
+    if (!jobs.length) {
+      box.appendChild(el("div", { class: "empty" },
+        el("h3", null, "No jobs yet"),
+        el("p", null, "Run a playbook against an inventory — Pine streams the output live and keeps the history here."),
+        el("button", { class: "btn btn-primary", onclick: () => openRunModal() }, icon("play"), "Run playbook")));
+      return;
+    }
+    box.appendChild(jobsTable(jobs));
+  };
+
+  let jobs = await api("/jobs") || [];
+  draw(jobs);
+
+  // light polling to keep statuses fresh
+  const timer = setInterval(async () => {
+    try {
+      const next = await api("/jobs") || [];
+      const sig = (a) => a.map((j) => j.id + j.status + (j.duration_ms || 0)).join();
+      if (sig(next) !== sig(jobs)) { jobs = next; draw(jobs); }
+    } catch { /* transient */ }
+  }, 4000);
+  onCleanup(() => clearInterval(timer));
+}
+
+/* ============================================================
+   4i. Job detail — live log via SSE
+   ============================================================ */
+
+const TERMINAL_STATUSES = new Set(["success", "failed", "canceled"]);
+
+function logLineClass(line) {
+  if (line.startsWith("PLAY RECAP")) return "ll-recap";
+  if (line.startsWith("PLAY ")) return "ll-play";
+  if (line.startsWith("TASK [") || line.startsWith("HANDLER [") || line.startsWith("RUNNING HANDLER [")) return "ll-task";
+  const t = line.trimStart();
+  if (t.startsWith("ok:") || t.startsWith("ok ")) return "ll-ok";
+  if (t.startsWith("changed:")) return "ll-changed";
+  if (t.startsWith("failed:") || t.startsWith("fatal:") || t.startsWith("ERROR")) return "ll-failed";
+  if (t.startsWith("unreachable:")) return "ll-failed";
+  if (t.startsWith("skipping:") || t.startsWith("skipped:")) return "ll-skip";
+  if (t.startsWith("[WARNING]") || t.startsWith("[DEPRECATION")) return "ll-warn";
+  return "";
+}
+
+async function pageJobDetail(page, segs) {
+  const jobId = segs[0];
+  page.appendChild(skeletonRows(2, 80));
+  let job = await api(`/jobs/${jobId}`);
+  page.innerHTML = "";
+
+  $("#topbar-title").textContent = `Job · ${job.playbook}`;
+
+  const headBox = el("div", { class: "panel", style: { padding: "16px 20px", marginBottom: "4px" } });
+  page.appendChild(headBox);
+
+  const cancelBtn = el("button", {
+    class: "btn btn-danger btn-sm",
+    onclick: async () => {
+      cancelBtn.disabled = true;
+      try {
+        job = await api(`/jobs/${jobId}/cancel`, { method: "POST" });
+        toast("Cancel requested", "success");
+        renderHead();
+      } catch (e) { toast(e.message, "error"); cancelBtn.disabled = false; }
+    },
+  }, icon("stop"), "Cancel");
+
+  const renderHead = () => {
+    headBox.innerHTML = "";
+    const running = job.status === "running" || job.status === "pending";
+    headBox.appendChild(el("div", { class: "row", style: { marginBottom: "10px" } },
+      el("a", { href: "#/jobs", class: "btn btn-ghost btn-sm" }, "← Jobs"),
+      statusPill(job.status),
+      el("span", { class: "mono", style: { fontWeight: 650, fontSize: "15px" } }, job.playbook),
+      job.check ? el("span", { class: "flag-badge check" }, "check mode") : null,
+      job.simulated ? el("span", { class: "flag-badge sim", title: "Simulated run (no real ansible-playbook execution)" }, "simulated") : null,
+      el("span", { style: { flex: 1 } }),
+      running ? cancelBtn : null,
+      el("a", { class: "btn btn-sm", href: `/api/jobs/${jobId}/log`, download: `${jobId}.log` }, icon("download"), "Download log")));
+    headBox.appendChild(el("div", { class: "row small muted", style: { marginBottom: "12px", gap: "16px" } },
+      el("span", null, "repo ", el("b", { style: { color: "var(--text)" } }, job.repo_name || job.repo_id)),
+      el("span", null, "inventory ", el("b", { class: "mono", style: { color: "var(--text)" } }, job.inventory || "—")),
+      job.limit ? el("span", null, "limit ", el("b", { class: "mono", style: { color: "var(--text)" } }, job.limit)) : null,
+      job.tags ? el("span", null, "tags ", el("b", { class: "mono", style: { color: "var(--text)" } }, job.tags)) : null,
+      el("span", { title: job.started || job.created }, running ? `started ${relTime(job.started || job.created)}` : `ran ${relTime(job.started || job.created)}`),
+      el("span", null, "duration ", el("b", { class: "mono", style: { color: "var(--text)" } }, fmtDuration(job.duration_ms)))));
+    const s = job.summary || {};
+    headBox.appendChild(el("div", { class: "summary-chips" },
+      el("span", { class: "sum-chip ok" }, el("b", null, String(s.ok ?? 0)), el("span", null, "ok")),
+      el("span", { class: "sum-chip changed" }, el("b", null, String(s.changed ?? 0)), el("span", null, "changed")),
+      el("span", { class: "sum-chip failed" }, el("b", null, String(s.failed ?? 0)), el("span", null, "failed")),
+      el("span", { class: "sum-chip skipped" }, el("b", null, String(s.skipped ?? 0)), el("span", null, "skipped")),
+      el("span", { class: "sum-chip unreachable" }, el("b", null, String(s.unreachable ?? 0)), el("span", null, "unreachable"))));
+  };
+  renderHead();
+
+  // log toolbar + terminal
+  let autoscroll = true;
+  const autoBox = el("input", { type: "checkbox", checked: true, onchange: (e) => { autoscroll = e.target.checked; if (autoscroll) scrollLog(); } });
+  page.appendChild(el("div", { class: "log-toolbar" },
+    el("span", { class: "section-title", style: { margin: 0 } }, "Output"),
+    el("div", { class: "grow" }),
+    el("label", { class: "check-row muted small" }, autoBox, "Autoscroll")));
+
+  const logBox = el("div", { class: "job-log" });
+  page.appendChild(logBox);
+  const cursor = el("span", { class: "cursor" });
+
+  const scrollLog = () => { if (autoscroll) logBox.scrollTop = logBox.scrollHeight; };
+  const appendLine = (line) => {
+    const div = el("div", { class: "ll " + logLineClass(line) }, line);
+    if (cursor.parentNode) logBox.insertBefore(div, cursor);
+    else logBox.appendChild(div);
+    scrollLog();
+  };
+
+  if (TERMINAL_STATUSES.has(job.status)) {
+    // finished: fetch full log once
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/log`);
+      const text = res.ok ? await res.text() : "";
+      logBox.innerHTML = "";
+      if (!text.trim()) {
+        logBox.appendChild(el("div", { class: "muted" }, "(no output captured)"));
+      } else {
+        for (const line of text.replace(/\n$/, "").split("\n")) appendLine(line);
+      }
+    } catch {
+      logBox.appendChild(el("div", { class: "ll ll-failed" }, "Failed to load log."));
+    }
+    logBox.scrollTop = 0;
+  } else {
+    // live: stream via SSE (server replays from the start of the run)
+    logBox.appendChild(cursor);
+    const es = new EventSource(`/api/jobs/${jobId}/events`);
+    onCleanup(() => es.close());
+    es.addEventListener("line", (e) => appendLine(e.data));
+    es.addEventListener("status", (e) => {
+      try {
+        job = JSON.parse(e.data);
+        renderHead();
+        if (TERMINAL_STATUSES.has(job.status)) {
+          es.close();
+          cursor.remove();
+          toast(`Job ${job.status}: ${job.playbook}`, job.status === "success" ? "success" : "error",
+            job.status === "success" ? "Job finished" : "Job " + job.status);
+        }
+      } catch { /* malformed status frame */ }
+    });
+    es.onerror = () => {
+      // EventSource auto-reconnects; if the job finished meanwhile, refresh state
+      api(`/jobs/${jobId}`).then((j) => {
+        job = j; renderHead();
+        if (TERMINAL_STATUSES.has(j.status)) { es.close(); cursor.remove(); }
+      }).catch(() => {});
+    };
+  }
+}
+
+/* ============================================================
+   5. Run-playbook modal
+   ============================================================ */
+
+async function openRunModal(prefill = {}) {
+  try { await loadRepos(); } catch (e) { toast(e.message, "error"); return; }
+  if (!State.repos.length) {
+    toast("Connect a repository first", "error", "No repositories");
+    location.hash = "#/repos";
+    setTimeout(openAddRepoModal, 60);
+    return;
+  }
+
+  const repoSel = el("select");
+  const pbSel = el("select");
+  const invSel = el("select");
+  const limitIn = el("input", { type: "text", placeholder: "e.g. web01,db* (optional)" });
+  const tagsIn = el("input", { type: "text", placeholder: "e.g. config,deploy (optional)" });
+  const checkBox = el("input", { type: "checkbox" });
+  const runBtn = el("button", { class: "btn btn-primary" }, icon("play"), "Launch");
+
+  for (const r of State.repos) repoSel.appendChild(el("option", { value: r.id }, r.name));
+  repoSel.value = prefill.repoId || State.repoId || State.repos[0].id;
+
+  const fillScanOptions = async () => {
+    pbSel.innerHTML = ""; invSel.innerHTML = "";
+    pbSel.appendChild(el("option", { value: "" }, "Loading…"));
+    invSel.appendChild(el("option", { value: "" }, "Loading…"));
+    pbSel.disabled = invSel.disabled = runBtn.disabled = true;
+    try {
+      const scan = await getScan(repoSel.value);
+      pbSel.innerHTML = ""; invSel.innerHTML = "";
+      const pbs = scan.playbooks || [];
+      const invs = scan.inventories || [];
+      if (!pbs.length) pbSel.appendChild(el("option", { value: "" }, "No playbooks found"));
+      for (const p of pbs) pbSel.appendChild(el("option", { value: p.path }, `${p.name || p.path}  (${p.path})`));
+      if (!invs.length) invSel.appendChild(el("option", { value: "" }, "No inventories found"));
+      for (const i of invs) invSel.appendChild(el("option", { value: i.path || i.name }, i.name));
+      if (prefill.playbook && pbs.some((p) => p.path === prefill.playbook)) pbSel.value = prefill.playbook;
+      if (prefill.inventory) {
+        const opt = [...invSel.options].find((o) => o.value === prefill.inventory);
+        if (opt) invSel.value = prefill.inventory;
+      }
+      pbSel.disabled = !pbs.length;
+      invSel.disabled = !invs.length;
+      runBtn.disabled = !pbs.length;
+    } catch (e) {
+      pbSel.innerHTML = ""; invSel.innerHTML = "";
+      pbSel.appendChild(el("option", { value: "" }, "Scan failed"));
+      invSel.appendChild(el("option", { value: "" }, "Scan failed"));
+      toast(e.message, "error");
+    }
+  };
+  repoSel.addEventListener("change", fillScanOptions);
+
+  runBtn.onclick = async () => {
+    if (!pbSel.value) { toast("Pick a playbook to run", "error"); return; }
+    runBtn.disabled = true;
+    try {
+      const job = await api("/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          repo_id: repoSel.value,
+          playbook: pbSel.value,
+          inventory: invSel.value || "",
+          limit: limitIn.value.trim(),
+          tags: tagsIn.value.trim(),
+          check: checkBox.checked,
+        }),
+      });
+      closeModal();
+      toast(`${job.playbook} queued`, "success", "Job started");
+      location.hash = `#/job/${job.id}`;
+    } catch (e) {
+      runBtn.disabled = false;
+      toast(e.message, "error");
+    }
+  };
+
+  const body = el("div", null,
+    el("div", { class: "field" }, el("label", null, "Repository"), repoSel),
+    el("div", { class: "field" }, el("label", null, "Playbook"), pbSel),
+    el("div", { class: "field" }, el("label", null, "Inventory"), invSel,
+      el("span", { class: "hint" }, "Inventory the play targets.")),
+    el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" } },
+      el("div", { class: "field" }, el("label", null, "Limit"), limitIn),
+      el("div", { class: "field" }, el("label", null, "Tags"), tagsIn)),
+    el("label", { class: "check-row" }, checkBox,
+      el("span", null, "Check mode ", el("span", { class: "muted" }, "(dry run, no changes applied)"))));
+
+  openModal({
+    title: "Run playbook",
+    body,
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), runBtn],
+  });
+  fillScanOptions();
+}
+
+/* ============================================================
+   6. Keyboard shortcuts + boot
+   ============================================================ */
+
+let gPressed = false, gTimer = 0;
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeModal(); return; }
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "select" || tag === "textarea" || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "g") {
+    gPressed = true;
+    clearTimeout(gTimer);
+    gTimer = setTimeout(() => (gPressed = false), 900);
+    return;
+  }
+  if (gPressed) {
+    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", j: "jobs" };
+    if (map[e.key]) { location.hash = "#/" + map[e.key]; e.preventDefault(); }
+    gPressed = false;
+  } else if (e.key === "n") {
+    openRunModal();
+  }
+});
+
+$("#repo-select").addEventListener("change", (e) => setRepo(e.target.value));
+$("#topbar-run").addEventListener("click", () => openRunModal());
+window.addEventListener("hashchange", route);
+
+(async function boot() {
+  if (!location.hash) location.hash = "#/dashboard";
+  try { await loadRepos(); } catch { /* page handlers surface errors */ }
+  route();
+})();

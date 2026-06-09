@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Acme Corp pg_hba.conf - host-based access control
+
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+local   all             postgres                                peer
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            scram-sha-256
+host    all             all             ::1/128                 scram-sha-256
+
+# Application networks
+{% for net in pg_allowed_networks %}
+host    all             all             {{ net.cidr | ljust(23) }} scram-sha-256   # {{ net.comment }}
+{% endfor %}
+
+{% if pg_role == 'primary' %}
+# Streaming replication from replicas
+{% for replica in pg_replica_hosts %}
+host    replication     {{ pg_replication_user }}      {{ replica.address }}/32           scram-sha-256   # {{ replica.name }}
+{% endfor %}
+{% endif %}

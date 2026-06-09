@@ -1,0 +1,35 @@
+---
+# Acme Corp - docker host variables
+docker_data_root: /srv/docker
+docker_log_max_size: 50m
+docker_log_max_file: 3
+docker_insecure_registries: []
+docker_registry_mirror: "https://registry.{{ acme_domain }}"
+docker_admin_users:
+  - alice
+  - carol
+  - erin
+
+# Compose projects deployed by roles/docker_apps (community.docker.docker_compose_v2)
+compose_projects:
+  - name: acme-shop
+    template: acme-shop-compose.yml.j2
+    state: present
+    pull_policy: missing
+  - name: acme-registry
+    template: registry-compose.yml.j2
+    state: present
+    pull_policy: missing
+
+# acme-shop stack tunables (consumed by acme-shop-compose.yml.j2)
+acme_shop_image_tag: "2.4.1"
+acme_shop_app_port: 8080
+acme_shop_worker_replicas: 2
+acme_shop_nginx_port: 8088
+
+# registry / minio stack tunables (consumed by registry-compose.yml.j2)
+registry_image_tag: "2.8.3"
+registry_port: 5000
+minio_image_tag: "RELEASE.2026-01-15T00-00-00Z"
+minio_api_port: 9000
+minio_console_port: 9001

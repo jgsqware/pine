@@ -1,0 +1,15 @@
+---
+- name: Restart chrony
+  ansible.builtin.systemd:
+    name: "{{ ntp_service }}"
+    state: restarted
+
+- name: Restart sshd
+  ansible.builtin.systemd:
+    name: "{{ sshd_service }}"
+    state: restarted
+
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted

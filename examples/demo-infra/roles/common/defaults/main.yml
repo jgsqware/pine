@@ -1,0 +1,19 @@
+---
+# common role defaults - override in group_vars/all.yml
+common_packages:
+  - vim
+  - curl
+  - git
+
+acme_timezone: Etc/UTC
+acme_admin_email: root@localhost
+
+ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+
+sysctl_settings: []
+sshd_settings: []
+
+common_motd_banner: "Acme Corp managed host - all activity is logged"
+common_journal_max_use: 500M

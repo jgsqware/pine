@@ -1,0 +1,30 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Acme shop application ({{ app_name }}, gunicorn)
+After=network.target postgresql.service
+
+[Service]
+Type=notify
+User={{ app_user }}
+Group={{ app_group }}
+WorkingDirectory={{ app_base_dir }}/current
+EnvironmentFile={{ app_base_dir }}/shared/.env
+ExecStart={{ app_base_dir }}/venv/bin/gunicorn acme_shop.wsgi:application \
+    --workers {{ app_workers }} \
+    --bind 127.0.0.1:{{ app_port }} \
+    --access-logfile {{ app_base_dir }}/shared/log/gunicorn-access.log \
+    --error-logfile {{ app_base_dir }}/shared/log/gunicorn-error.log
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ app_base_dir }}/shared
+
+[Install]
+WantedBy=multi-user.target

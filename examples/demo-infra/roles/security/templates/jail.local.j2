@@ -1,0 +1,30 @@
+# {{ ansible_managed }}
+# Acme Corp fail2ban configuration
+
+[DEFAULT]
+bantime  = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_maxretry }}
+ignoreip = {{ fail2ban_ignoreip | join(' ') }}
+destemail = {{ acme_admin_email }}
+sender = fail2ban@{{ inventory_hostname }}.{{ acme_domain | default('acme-corp.example') }}
+action = %(action_)s
+backend = systemd
+
+[sshd]
+enabled = true
+port    = {{ security_ssh_port }}
+
+{% if 'web' in group_names %}
+[nginx-http-auth]
+enabled = true
+port    = http,https
+
+[nginx-limit-req]
+enabled = true
+port    = http,https
+{% endif %}
+{% if 'lb' in group_names %}
+[haproxy-http-auth]
+enabled = true
+{% endif %}

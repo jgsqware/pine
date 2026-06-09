@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: Acme Corp Platform Team
+  description: Baseline configuration shared by every Acme host (packages, time, kernel, SSH)
+  company: Acme Corp
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+    - name: EL
+      versions:
+        - "9"
+  galaxy_tags:
+    - baseline
+    - system
+dependencies: []

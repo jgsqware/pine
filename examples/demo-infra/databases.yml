@@ -1,0 +1,50 @@
+---
+- name: Configure Acme PostgreSQL servers
+  hosts: db
+  become: true
+  gather_facts: true
+  vars_files:
+    - vars/secrets.yml
+
+  pre_tasks:
+    - name: Assert that database hosts have enough memory
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['memtotal_mb'] | int >= 1024
+        fail_msg: "Database hosts need at least 1 GiB of RAM"
+        success_msg: "Memory check passed"
+      tags: [always]
+
+  roles:
+    - role: common
+      tags: [common, packages, config]
+    - role: postgresql
+      tags: [postgresql, db, config, services]
+
+  post_tasks:
+    - name: Verify PostgreSQL is accepting connections
+      ansible.builtin.wait_for:
+        port: "{{ pg_port }}"
+        host: 127.0.0.1
+        timeout: 30
+      tags: [verify]
+
+- name: Configure Acme Redis cache servers
+  hosts: cache
+  become: true
+  vars_files:
+    - vars/secrets.yml
+
+  roles:
+    - role: common
+      tags: [common, packages, config]
+    - role: redis
+      tags: [redis, cache, config, services]
+
+  post_tasks:
+    - name: Verify Redis is accepting connections
+      ansible.builtin.wait_for:
+        port: "{{ redis_port }}"
+        host: 127.0.0.1
+        timeout: 30
+      tags: [verify]

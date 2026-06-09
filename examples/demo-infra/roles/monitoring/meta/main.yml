@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: Acme Corp SRE Team
+  description: Prometheus/Grafana stack via docker compose plus node_exporter systemd units
+  company: Acme Corp
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - monitoring
+    - prometheus
+    - grafana
+dependencies:
+  # The Prometheus/Grafana stack runs in containers on mon01.
+  - role: docker

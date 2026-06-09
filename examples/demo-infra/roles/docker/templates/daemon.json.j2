@@ -1,0 +1,15 @@
+{
+  "data-root": "{{ docker_data_root }}",
+  "log-driver": "{{ docker_log_driver }}",
+  "log-opts": {
+    "max-size": "{{ docker_log_max_size }}",
+    "max-file": "{{ docker_log_max_file }}"
+  },
+  "live-restore": {{ docker_live_restore | lower }},
+  "default-address-pools": [
+    {"base": "172.30.0.0/16", "size": 24}
+  ]{% if docker_registry_mirror | length > 0 %},
+  "registry-mirrors": ["{{ docker_registry_mirror }}"]{% endif %}{% if docker_insecure_registries | length > 0 %},
+  "insecure-registries": {{ docker_insecure_registries | to_json }}{% endif %}
+
+}

@@ -1,0 +1,94 @@
+---
+# nginx role - package, main config, vhosts, TLS material
+
+- name: Install nginx
+  ansible.builtin.package:
+    name: nginx
+    state: present
+  tags: [nginx, packages]
+
+- name: Create nginx config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ nginx_conf_dir }}/conf.d"
+    - "{{ nginx_conf_dir }}/sites-available"
+    - "{{ nginx_conf_dir }}/sites-enabled"
+    - "{{ nginx_tls_dir }}"
+  tags: [nginx, config]
+
+- name: Deploy the main nginx.conf (validated before install)
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_conf_dir }}/nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "nginx -t -c %s"
+  notify: Reload nginx
+  tags: [nginx, config]
+
+- name: Install the Diffie-Hellman parameters
+  ansible.builtin.copy:
+    src: dhparam.pem
+    dest: "{{ nginx_dhparam_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reload nginx
+  tags: [nginx, tls, config]
+
+- name: Render one vhost per entry in nginx_vhosts
+  ansible.builtin.template:
+    src: vhost.conf.j2
+    dest: "{{ nginx_conf_dir }}/sites-available/{{ item.server_name }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nginx_vhosts }}"
+  loop_control:
+    label: "{{ item.server_name }}"
+  notify: Reload nginx
+  tags: [nginx, vhosts, config]
+
+- name: Enable each vhost via symlink
+  ansible.builtin.file:
+    src: "{{ nginx_conf_dir }}/sites-available/{{ item.server_name }}.conf"
+    dest: "{{ nginx_conf_dir }}/sites-enabled/{{ item.server_name }}.conf"
+    state: link
+  loop: "{{ nginx_vhosts }}"
+  loop_control:
+    label: "{{ item.server_name }}"
+  notify: Reload nginx
+  tags: [nginx, vhosts, config]
+
+- name: Remove the distribution default vhost
+  ansible.builtin.file:
+    path: "{{ nginx_conf_dir }}/sites-enabled/default"
+    state: absent
+  notify: Reload nginx
+  tags: [nginx, vhosts, config]
+
+- name: Create web roots for static vhosts
+  ansible.builtin.file:
+    path: "{{ item.root }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+  loop: "{{ nginx_vhosts }}"
+  loop_control:
+    label: "{{ item.root }}"
+  when: ansible_facts['os_family'] == 'Debian'
+  tags: [nginx, config]
+
+- name: Enable and start nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+  tags: [nginx, services]

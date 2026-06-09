@@ -1,0 +1,45 @@
+---
+# Acme Corp - database tier variables
+pg_version: 16
+pg_port: 5432
+pg_listen_addresses: "0.0.0.0"
+pg_data_dir: "/var/lib/postgresql/{{ pg_version }}/main"
+pg_max_connections: 200
+pg_shared_buffers: 1GB
+pg_effective_cache_size: 3GB
+pg_work_mem: 16MB
+pg_log_min_duration_statement: 500
+
+# Networks allowed to reach PostgreSQL (rendered into pg_hba.conf)
+pg_allowed_networks:
+  - cidr: 10.0.2.0/24
+    comment: web tier
+  - cidr: 10.0.4.0/24
+    comment: docker hosts
+  - cidr: 10.0.5.0/24
+    comment: monitoring
+
+pg_databases:
+  - name: acme_shop
+    owner: acme_shop
+    encoding: UTF-8
+  - name: acme_analytics
+    owner: acme_analytics
+    encoding: UTF-8
+  - name: acme_billing
+    owner: acme_shop
+    encoding: UTF-8
+
+pg_users:
+  - name: acme_shop
+    password: "{{ vault_pg_app_password }}"
+    priv_db: acme_shop
+    role_attrs: "LOGIN"
+  - name: acme_analytics
+    password: "{{ vault_pg_analytics_password }}"
+    priv_db: acme_analytics
+    role_attrs: "LOGIN"
+  - name: replicator
+    password: "{{ vault_pg_replication_password }}"
+    priv_db: ""
+    role_attrs: "LOGIN,REPLICATION"

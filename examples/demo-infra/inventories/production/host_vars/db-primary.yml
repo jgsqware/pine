@@ -1,0 +1,16 @@
+---
+# db-primary: streaming replication primary
+pg_role: primary
+pg_wal_level: replica
+pg_max_wal_senders: 8
+pg_wal_keep_size: 1GB
+pg_hot_standby: "on"
+pg_synchronous_commit: "on"
+pg_replication_user: replicator
+pg_replica_hosts:
+  - name: db-replica
+    address: 10.0.3.12
+
+# Slightly beefier box than the replica.
+pg_shared_buffers: 2GB
+pg_effective_cache_size: 6GB

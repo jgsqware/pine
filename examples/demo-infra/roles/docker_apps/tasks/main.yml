@@ -1,0 +1,60 @@
+---
+# docker_apps role - render compose files and converge stacks
+
+- name: Create the compose base directory
+  ansible.builtin.file:
+    path: "{{ compose_base_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [compose, config]
+
+- name: Create one directory per compose project
+  ansible.builtin.file:
+    path: "{{ compose_base_dir }}/{{ item.name }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop: "{{ compose_projects }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [compose, config]
+
+- name: Render the compose file for each project
+  ansible.builtin.template:
+    src: "{{ item.template }}"
+    dest: "{{ compose_base_dir }}/{{ item.name }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  loop: "{{ compose_projects }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: compose_render
+  tags: [compose, config]
+
+- name: Converge compose projects (docker compose up -d)
+  community.docker.docker_compose_v2:
+    project_src: "{{ compose_base_dir }}/{{ item.name }}"
+    state: "{{ item.state | default('present') }}"
+    pull: "{{ item.pull_policy | default('missing') }}"
+    remove_orphans: true
+    wait: true
+    wait_timeout: 120
+  loop: "{{ compose_projects }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: compose_result
+  tags: [compose, deploy]
+
+- name: Summarise containers per project
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.name }}:
+      {{ item.containers | default([]) | map(attribute='Name') | list }}
+  loop: "{{ compose_result.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  tags: [compose, verify]

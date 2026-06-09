@@ -1,0 +1,9 @@
+---
+# users role defaults
+acme_groups: []
+acme_users: []
+
+users_default_shell: /bin/bash
+users_home_mode: "0750"
+users_sudo_nopasswd: false
+users_sudoers_dir: /etc/sudoers.d
