@@ -6,6 +6,16 @@ Pine is a modern, single-binary alternative to AWX / Ansible Tower. No
 Kubernetes operator, no PostgreSQL, no RabbitMQ — just one Go binary, plain
 JSON storage, a polished web UI, a full terminal UI and a REST API.
 
+![Dashboard](docs/screenshots/dashboard.png)
+
+| Inventory topology | Playbook task-flow |
+|---|---|
+| ![Topology](docs/screenshots/topology.png) | ![Task flow](docs/screenshots/taskflow.png) |
+
+| Live job output | Roles |
+|---|---|
+| ![Job](docs/screenshots/job.png) | ![Roles](docs/screenshots/roles.png) |
+
 ## Features
 
 - **Multi-repo** — connect any number of Ansible repositories (git URL or
