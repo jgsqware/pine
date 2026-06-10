@@ -113,9 +113,8 @@ func parseInventoryDir(root, dir, name string) (model.Inventory, bool) {
 
 func parseInventoryFile(root, file, name, varsDir string) (model.Inventory, bool) {
 	b := newInvBuilder()
-	format := "ini"
-	if strings.HasSuffix(file, ".yml") || strings.HasSuffix(file, ".yaml") {
-		format = "yaml"
+	format := detectInventoryFormat(file)
+	if format == "yaml" {
 		if !parseYAMLInventory(file, b) {
 			return model.Inventory{}, false
 		}
@@ -316,6 +315,56 @@ func parseScalar(s string) any {
 		return false
 	}
 	return strings.Trim(s, `"'`)
+}
+
+// detectInventoryFormat decides whether an inventory file is YAML or INI.
+// Ansible accepts both regardless of name (a YAML inventory is commonly just
+// "hosts" with no extension), so when the extension isn't decisive we sniff
+// the content.
+func detectInventoryFormat(file string) string {
+	switch {
+	case strings.HasSuffix(file, ".yml"), strings.HasSuffix(file, ".yaml"):
+		return "yaml"
+	case strings.HasSuffix(file, ".ini"):
+		return "ini"
+	}
+	if looksLikeYAMLInventory(file) {
+		return "yaml"
+	}
+	return "ini"
+}
+
+// looksLikeYAMLInventory reports whether file parses as a YAML mapping that
+// carries inventory structure (a group with hosts/children/vars, or the "all"
+// root). INI inventories fail to unmarshal into a map, so this stays false.
+func looksLikeYAMLInventory(file string) bool {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc) == 0 {
+		return false
+	}
+	if _, ok := doc["all"].(map[string]any); ok {
+		return true
+	}
+	for _, v := range doc {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := m["hosts"]; ok {
+			return true
+		}
+		if _, ok := m["children"]; ok {
+			return true
+		}
+		if _, ok := m["vars"]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // --- YAML format ---

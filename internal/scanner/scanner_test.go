@@ -1,10 +1,12 @@
 package scanner
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/jgsqware/pine/internal/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -194,6 +196,69 @@ func TestIncludePath(t *testing.T) {
 		if got := includePath(c.module, c.value); got != c.want {
 			t.Errorf("includePath(%q, %v) = %q, want %q", c.module, c.value, got, c.want)
 		}
+	}
+}
+
+func TestYAMLInventoryWithoutExtension(t *testing.T) {
+	// A YAML inventory commonly lives in a plain "hosts" file (no .yml), which
+	// must be detected by content, not extension.
+	dir := t.TempDir()
+	hosts := `
+all:
+  children:
+    web:
+      hosts:
+        web01:
+          ansible_host: 10.0.0.1
+        web02:
+          ansible_host: 10.0.0.2
+    db:
+      hosts:
+        db01:
+          ansible_host: 10.0.0.9
+`
+	if err := os.WriteFile(filepath.Join(dir, "hosts"), []byte(hosts), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, ok := parseInventoryFile(dir, filepath.Join(dir, "hosts"), "test", dir)
+	if !ok {
+		t.Fatal("inventory not parsed")
+	}
+	if inv.Format != "yaml" {
+		t.Errorf("format = %q, want yaml", inv.Format)
+	}
+	if len(inv.Hosts) != 3 {
+		t.Errorf("hosts = %d, want 3 (%v)", len(inv.Hosts), inv.Hosts)
+	}
+	var web01 *model.Host
+	for i := range inv.Hosts {
+		if inv.Hosts[i].Name == "web01" {
+			web01 = &inv.Hosts[i]
+		}
+	}
+	if web01 == nil {
+		t.Fatal("web01 not found")
+	}
+	if !contains(web01.Groups, "web") {
+		t.Errorf("web01 groups = %v, want to include web", web01.Groups)
+	}
+	if web01.Vars["ansible_host"] != "10.0.0.1" {
+		t.Errorf("web01 ansible_host = %v", web01.Vars["ansible_host"])
+	}
+}
+
+func TestDetectInventoryFormat(t *testing.T) {
+	dir := t.TempDir()
+	ini := filepath.Join(dir, "hosts.ini")
+	_ = os.WriteFile(ini, []byte("[web]\nweb01 ansible_host=1.2.3.4\n"), 0o644)
+	if got := detectInventoryFormat(ini); got != "ini" {
+		t.Errorf("ini ext = %q, want ini", got)
+	}
+	// extension-less INI must not be mistaken for YAML
+	plain := filepath.Join(dir, "hosts_ini")
+	_ = os.WriteFile(plain, []byte("[web]\nweb01\nweb02\n"), 0o644)
+	if got := detectInventoryFormat(plain); got != "ini" {
+		t.Errorf("extensionless INI = %q, want ini", got)
 	}
 }
 

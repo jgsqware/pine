@@ -1476,7 +1476,7 @@ async function pageTopology(page) {
   page.appendChild(el("div", { class: "page-head" },
     el("h1", null, "Topology"),
     invSel,
-    el("span", { class: "sub" }, "drag nodes · wheel to zoom · drag background to pan · double-click to fit"),
+    el("span", { class: "sub" }, "each bubble is a group · dots are hosts · wheel to zoom · drag to pan · double-click to fit"),
     el("div", { class: "grow" })));
 
   const wrap = el("div", { class: "topo-wrap" });
@@ -1484,10 +1484,9 @@ async function pageTopology(page) {
   const canvas = el("canvas");
   canvasBox.appendChild(canvas);
   const legend = el("div", { class: "topo-legend" },
-    el("span", { class: "li" }, el("span", { class: "sw", style: { background: "var(--accent)" } }), "group"),
-    el("span", { class: "li" }, el("span", { class: "sw", style: { background: "var(--secondary)" } }), "host"),
-    el("span", { class: "li" }, el("span", { style: { width: "16px", borderTop: "2px solid #3a5246" } }), "child"),
-    el("span", { class: "li" }, el("span", { style: { width: "16px", borderTop: "1px dashed #2a3a32" } }), "member"));
+    el("span", { class: "li" }, el("span", { class: "sw", style: { background: "rgba(74,222,128,0.18)", border: "1.5px solid var(--accent)" } }), "group"),
+    el("span", { class: "li" }, el("span", { class: "sw", style: { width: "8px", height: "8px", borderRadius: "50%", background: "var(--secondary)" } }), "host"),
+    el("span", { class: "li" }, "bubble size = host count"));
   canvasBox.appendChild(legend);
   const sidePanel = el("div", { class: "topo-panel", style: { display: "none" } });
   canvasBox.appendChild(sidePanel);
@@ -1510,59 +1509,74 @@ async function pageTopology(page) {
     return;
   }
 
-  startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel });
+  startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel });
 }
 
-function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel }) {
+function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   let W = 0, H = 0;
 
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  for (const l of links) { l.a = byId.get(l.source); l.b = byId.get(l.target); }
-  const validLinks = links.filter((l) => l.a && l.b);
-  const neighbors = new Map(nodes.map((n) => [n.id, new Set()]));
-  for (const l of validLinks) { neighbors.get(l.a.id).add(l.b.id); neighbors.get(l.b.id).add(l.a.id); }
+  // --- build clusters: bucket each host into its primary (most-specific) group ---
+  const groupByLabel = new Map(nodes.filter((n) => n.type === "group").map((g) => [g.label, g]));
+  const buckets = new Map();
+  for (const h of nodes.filter((n) => n.type === "host")) {
+    const key = h.group || "(ungrouped)";
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(h);
+  }
+  const clusters = [...buckets.entries()].map(([name, hosts]) => ({
+    name, hosts, group: groupByLabel.get(name) || null,
+  }));
+  clusters.sort((a, b) => b.hosts.length - a.hosts.length || a.name.localeCompare(b.name));
 
-  // init positions: groups in inner ring, hosts near their group
-  const groupsArr = nodes.filter((n) => n.type === "group");
-  groupsArr.forEach((g, i) => {
-    const a = (i / Math.max(groupsArr.length, 1)) * Math.PI * 2;
-    g.x = Math.cos(a) * 160; g.y = Math.sin(a) * 160;
-  });
-  nodes.forEach((n) => {
-    if (n.type !== "group") {
-      const g = n.group ? byId.get("g:" + n.group) : null;
-      n.x = (g ? g.x : 0) + (Math.random() - 0.5) * 120;
-      n.y = (g ? g.y : 0) + (Math.random() - 0.5) * 120;
-    }
-    n.vx = 0; n.vy = 0;
-    n.r = n.type === "group" ? Math.min(11 + Math.sqrt(n.size || 1) * 3, 26) : 5.5;
-  });
+  // --- inner layout: host dots on a centered grid; bubble radius encloses them ---
+  const DOT = 4.5, CELL = DOT * 2 + 5.5;
+  for (const c of clusters) {
+    const n = c.hosts.length;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+    const rows = Math.ceil(n / cols);
+    c.hosts.forEach((h, i) => {
+      h.dx = ((i % cols) - (cols - 1) / 2) * CELL;
+      h.dy = (Math.floor(i / cols) - (rows - 1) / 2) * CELL;
+    });
+    c.r = Math.max(Math.hypot((cols - 1) * CELL, (rows - 1) * CELL) / 2 + DOT + 14, 30);
+  }
+
+  // --- bubble layout: deterministic row-flow, largest first, never overlapping ---
+  const LABEL = 24, PAD = 32;
+  const totalArea = clusters.reduce((s, c) => s + Math.PI * c.r * c.r, 0);
+  const targetW = Math.max(Math.sqrt(totalArea) * 2.6, 360);
+  let cx = 0, cy = 0, rowH = 0;
+  for (const c of clusters) {
+    const w = c.r * 2 + PAD;
+    if (cx > 0 && cx + w > targetW) { cx = 0; cy += rowH; rowH = 0; }
+    c.cx = cx + c.r + PAD / 2;
+    c.cy = cy + c.r + PAD / 2 + LABEL;
+    cx += w;
+    rowH = Math.max(rowH, c.r * 2 + PAD + LABEL);
+  }
+  for (const c of clusters) for (const h of c.hosts) { h.x = c.cx + h.dx; h.y = c.cy + h.dy; }
 
   // view transform
   let scale = 1, tx = 0, ty = 0;
-  let alpha = 1;
-  let hovered = null, dragNode = null, panning = false;
+  let hovered = null, hoveredCluster = null;
+  let panning = false, userInteracted = false;
   let lastMouse = { x: 0, y: 0 };
   let raf = 0, stopped = false;
-  let userInteracted = false; // once true, stop auto-fitting the view
 
-  // fitView frames the whole graph inside the canvas. Called every tick until
-  // the user pans/zooms, so a large layout that spreads out never escapes view.
   function fitView() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
-      if (n.x - n.r < minX) minX = n.x - n.r;
-      if (n.y - n.r < minY) minY = n.y - n.r;
-      if (n.x + n.r > maxX) maxX = n.x + n.r;
-      if (n.y + n.r > maxY) maxY = n.y + n.r;
+    for (const c of clusters) {
+      minX = Math.min(minX, c.cx - c.r);
+      minY = Math.min(minY, c.cy - c.r - LABEL);
+      maxX = Math.max(maxX, c.cx + c.r);
+      maxY = Math.max(maxY, c.cy + c.r);
     }
     if (!Number.isFinite(minX) || W === 0 || H === 0) return;
     const gw = Math.max(maxX - minX, 1), gh = Math.max(maxY - minY, 1);
-    const pad = 80;
-    scale = Math.max(Math.min((W - pad) / gw, (H - pad) / gh, 1.4), 0.04);
+    const pad = 70;
+    scale = Math.max(Math.min((W - pad) / gw, (H - pad) / gh, 1.6), 0.05);
     tx = W / 2 - ((minX + maxX) / 2) * scale;
     ty = H / 2 - ((minY + maxY) / 2) * scale;
   }
@@ -1571,57 +1585,11 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
     W = canvasBox.clientWidth; H = canvasBox.clientHeight;
     canvas.width = W * dpr; canvas.height = H * dpr;
     canvas.style.width = W + "px"; canvas.style.height = H + "px";
-    if (!tx && !ty) { tx = W / 2; ty = H / 2; }
+    if (!userInteracted) fitView();
+    requestDraw();
   };
-  resize();
-  window.addEventListener("resize", resize);
-  onCleanup(() => window.removeEventListener("resize", resize));
 
   const toWorld = (px, py) => ({ x: (px - tx) / scale, y: (py - ty) / scale });
-
-  function tick() {
-    // repulsion (O(n^2), fine for inventories of a few hundred nodes)
-    const k = 1100;
-    for (let i = 0; i < nodes.length; i++) {
-      const a = nodes[i];
-      for (let j = i + 1; j < nodes.length; j++) {
-        const b = nodes[j];
-        let dx = a.x - b.x, dy = a.y - b.y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 1; }
-        if (d2 > 90000) continue;
-        const f = (k / d2) * alpha;
-        const d = Math.sqrt(d2);
-        const fx = (dx / d) * f, fy = (dy / d) * f;
-        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
-      }
-    }
-    // link springs
-    for (const l of validLinks) {
-      const rest = l.type === "child" ? 110 : 62;
-      const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
-      const d = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01);
-      const f = ((d - rest) / d) * 0.05 * alpha * 8;
-      l.a.vx += dx * f; l.a.vy += dy * f;
-      l.b.vx -= dx * f; l.b.vy -= dy * f;
-    }
-    // centering + integrate
-    const vmax = 90; // clamp velocity so dense graphs can't explode off-screen
-    for (const n of nodes) {
-      n.vx -= n.x * 0.004 * alpha;
-      n.vy -= n.y * 0.004 * alpha;
-      if (n.fx !== undefined) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
-      n.vx *= 0.82; n.vy *= 0.82;
-      n.vx = Math.max(-vmax, Math.min(vmax, n.vx));
-      n.vy = Math.max(-vmax, Math.min(vmax, n.vy));
-      n.x += n.vx; n.y += n.vy;
-      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
-        n.x = (Math.random() - 0.5) * 100; n.y = (Math.random() - 0.5) * 100;
-        n.vx = 0; n.vy = 0;
-      }
-    }
-    if (alpha > 0.02) alpha *= 0.995;
-  }
 
   function draw() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1629,80 +1597,69 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
     ctx.translate(tx, ty);
     ctx.scale(scale, scale);
 
-    const hoverSet = hovered ? neighbors.get(hovered.id) : null;
-    const dim = (n) => hovered && n !== hovered && !(hoverSet && hoverSet.has(n.id));
-
-    // links
-    for (const l of validLinks) {
-      const active = hovered && (l.a === hovered || l.b === hovered);
+    for (const c of clusters) {
+      const hot = c === hoveredCluster || (hovered && hovered.group === c.name);
       ctx.beginPath();
-      ctx.moveTo(l.a.x, l.a.y);
-      ctx.lineTo(l.b.x, l.b.y);
-      if (l.type === "child") {
-        ctx.strokeStyle = active ? "rgba(74,222,128,0.85)" : (hovered ? "rgba(58,82,70,0.25)" : "rgba(58,82,70,0.8)");
-        ctx.lineWidth = (active ? 2 : 1.4) / scale;
-        ctx.setLineDash([]);
-      } else {
-        ctx.strokeStyle = active ? "rgba(34,211,238,0.7)" : (hovered ? "rgba(42,58,50,0.25)" : "rgba(42,58,50,0.75)");
-        ctx.lineWidth = (active ? 1.5 : 1) / scale;
-        ctx.setLineDash([3 / scale, 3 / scale]);
-      }
+      ctx.arc(c.cx, c.cy, c.r, 0, Math.PI * 2);
+      ctx.fillStyle = hot ? "rgba(74,222,128,0.14)" : "rgba(74,222,128,0.06)";
+      ctx.fill();
+      ctx.strokeStyle = hot ? "#4ade80" : "rgba(74,222,128,0.38)";
+      ctx.lineWidth = (hot ? 2 : 1.3) / scale;
       ctx.stroke();
-    }
-    ctx.setLineDash([]);
-
-    // nodes
-    for (const n of nodes) {
-      const dimmed = dim(n);
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-      if (n.type === "group") {
-        ctx.fillStyle = dimmed ? "rgba(74,222,128,0.15)" : "rgba(74,222,128,0.18)";
+      for (const h of c.hosts) {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, h === hovered ? DOT + 1.5 : DOT, 0, Math.PI * 2);
+        ctx.fillStyle = h === hovered ? "#e7efe9" : "#22d3ee";
         ctx.fill();
-        ctx.strokeStyle = dimmed ? "rgba(74,222,128,0.25)" : "#4ade80";
-        ctx.lineWidth = (n === hovered ? 2.4 : 1.6) / scale;
-        ctx.stroke();
-      } else {
-        ctx.fillStyle = dimmed ? "rgba(34,211,238,0.18)" : "#22d3ee";
-        ctx.fill();
-        if (n === hovered) {
-          ctx.strokeStyle = "#e7efe9"; ctx.lineWidth = 1.5 / scale; ctx.stroke();
-        }
       }
+      ctx.textAlign = "center";
+      ctx.fillStyle = hot ? "#bdf3cf" : "#8fcfa6";
+      ctx.font = `600 ${12.5 / scale}px ui-monospace, Menlo, monospace`;
+      ctx.fillText(`${c.name}  ${c.hosts.length}`, c.cx, c.cy - c.r - 7 / scale);
     }
 
-    // labels: groups always (when zoomed enough), hosts on hover/neighbor
-    ctx.textAlign = "center";
-    for (const n of nodes) {
-      const showLabel = n.type === "group"
-        ? scale > 0.45 && !dim(n)
-        : n === hovered || (hoverSet && hoverSet.has(n.id));
-      if (!showLabel) continue;
-      const fs = (n.type === "group" ? 12.5 : 11) / scale;
-      ctx.font = `600 ${fs}px ui-monospace, Menlo, monospace`;
-      ctx.fillStyle = n.type === "group" ? "#a7e8c0" : "#bdeef7";
-      ctx.fillText(n.label, n.x, n.y - n.r - 5 / scale);
+    if (hovered) {
+      ctx.textAlign = "left";
+      ctx.font = `600 ${11 / scale}px ui-monospace, Menlo, monospace`;
+      const label = hovered.label;
+      const tw = ctx.measureText(label).width;
+      const px = hovered.x + DOT + 5 / scale, py = hovered.y - DOT - 5 / scale;
+      ctx.fillStyle = "rgba(8,12,10,0.92)";
+      ctx.fillRect(px - 3 / scale, py - 12 / scale, tw + 8 / scale, 17 / scale);
+      ctx.fillStyle = "#e7efe9";
+      ctx.fillText(label, px + 1 / scale, py);
     }
   }
 
-  function frame() {
-    if (stopped) return;
-    tick();
-    if (!userInteracted) fitView();
-    draw();
-    raf = requestAnimationFrame(frame);
+  function requestDraw() {
+    if (raf || stopped) return;
+    raf = requestAnimationFrame(() => { raf = 0; draw(); });
   }
-  frame();
-  onCleanup(() => { stopped = true; cancelAnimationFrame(raf); });
 
-  function nodeAt(px, py) {
+  resize();
+  window.addEventListener("resize", resize);
+  onCleanup(() => window.removeEventListener("resize", resize));
+  onCleanup(() => { stopped = true; if (raf) cancelAnimationFrame(raf); });
+  canvas.style.cursor = "grab";
+
+  function hostAt(px, py) {
     const p = toWorld(px, py);
     let best = null, bestD = Infinity;
-    for (const n of nodes) {
-      const dx = n.x - p.x, dy = n.y - p.y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const hit = Math.max(n.r + 4, 9 / scale);
-      if (d < hit && d < bestD) { best = n; bestD = d; }
+    for (const c of clusters) {
+      if (Math.hypot(c.cx - p.x, c.cy - p.y) > c.r + 8) continue;
+      for (const h of c.hosts) {
+        const d = Math.hypot(h.x - p.x, h.y - p.y);
+        if (d < Math.max(DOT + 3, 7 / scale) && d < bestD) { best = h; bestD = d; }
+      }
+    }
+    return best;
+  }
+  function clusterAt(px, py) {
+    const p = toWorld(px, py);
+    let best = null, bestD = Infinity;
+    for (const c of clusters) {
+      const d = Math.hypot(c.cx - p.x, c.cy - p.y);
+      if (d < c.r && d < bestD) { best = c; bestD = d; }
     }
     return best;
   }
@@ -1710,61 +1667,47 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
   canvas.addEventListener("mousedown", (e) => {
     userInteracted = true;
     const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left, py = e.clientY - rect.top;
-    lastMouse = { x: px, y: py };
-    const n = nodeAt(px, py);
-    if (n) {
-      dragNode = n;
-      const p = toWorld(px, py);
-      n.fx = p.x; n.fy = p.y;
-      alpha = Math.max(alpha, 0.35);
-    } else {
-      panning = true;
-    }
+    lastMouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    panning = true;
     canvas.classList.add("dragging");
   });
-
   window.addEventListener("mousemove", onMove);
   onCleanup(() => window.removeEventListener("mousemove", onMove));
   function onMove(e) {
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
-    if (dragNode) {
-      const p = toWorld(px, py);
-      dragNode.fx = p.x; dragNode.fy = p.y;
-      alpha = Math.max(alpha, 0.25);
-    } else if (panning) {
+    if (panning) {
       tx += px - lastMouse.x; ty += py - lastMouse.y;
-    } else {
-      const n = nodeAt(px, py);
-      if (n !== hovered) hovered = n;
-      canvas.style.cursor = n ? "pointer" : "grab";
+      lastMouse = { x: px, y: py };
+      requestDraw();
+      return;
     }
-    lastMouse = { x: px, y: py };
+    const h = hostAt(px, py);
+    const c = h ? null : clusterAt(px, py);
+    if (h !== hovered || c !== hoveredCluster) {
+      hovered = h; hoveredCluster = c;
+      canvas.style.cursor = (h || c) ? "pointer" : "grab";
+      requestDraw();
+    }
   }
-
   window.addEventListener("mouseup", onUp);
   onCleanup(() => window.removeEventListener("mouseup", onUp));
-  function onUp() {
-    if (dragNode) { delete dragNode.fx; delete dragNode.fy; dragNode = null; }
-    panning = false;
-    canvas.classList.remove("dragging");
-  }
+  function onUp() { panning = false; canvas.classList.remove("dragging"); }
 
   canvas.addEventListener("click", (e) => {
     const rect = canvas.getBoundingClientRect();
-    const n = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (!n) { sidePanel.style.display = "none"; return; }
-    showTopoPanel(n);
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    const h = hostAt(px, py);
+    if (h) { showPanel({ type: "host", node: h }); return; }
+    const c = clusterAt(px, py);
+    if (c) { showPanel({ type: "group", cluster: c }); return; }
+    sidePanel.style.display = "none";
   });
 
-  // double-click empty space re-fits the whole graph to the viewport
   canvas.addEventListener("dblclick", (e) => {
     const rect = canvas.getBoundingClientRect();
-    if (nodeAt(e.clientX - rect.left, e.clientY - rect.top)) return;
-    userInteracted = false;
-    fitView();
-    alpha = Math.max(alpha, 0.2);
+    if (hostAt(e.clientX - rect.left, e.clientY - rect.top)) return;
+    userInteracted = false; fitView(); requestDraw();
   });
 
   canvas.addEventListener("wheel", (e) => {
@@ -1773,39 +1716,49 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const ns = Math.min(Math.max(scale * factor, 0.18), 5);
-    // zoom about cursor
+    const ns = Math.min(Math.max(scale * factor, 0.05), 6);
     tx = px - ((px - tx) / scale) * ns;
     ty = py - ((py - ty) / scale) * ns;
     scale = ns;
+    requestDraw();
   }, { passive: false });
 
-  function showTopoPanel(n) {
+  function showPanel(sel) {
     sidePanel.style.display = "";
     sidePanel.innerHTML = "";
-    const isHost = n.type === "host";
-    sidePanel.appendChild(el("h3", null,
-      el("span", { class: "sw", style: { width: "10px", height: "10px", borderRadius: "50%", display: "inline-block", background: isHost ? "var(--secondary)" : "var(--accent)" } }),
-      n.label,
-      el("span", { style: { flex: 1 } }),
-      el("button", { class: "x", style: { background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }, onclick: () => (sidePanel.style.display = "none") }, "✕")));
-    sidePanel.appendChild(el("div", { class: "muted small", style: { marginBottom: "10px" } },
-      isHost ? `host${n.group ? " · in " + n.group : ""}` : `group · ${n.size ?? "?"} members`));
-    if (isHost) {
-      const h = hostVars.get(n.label);
-      if (h && (h.groups || []).length) {
+    const closeBtn = el("button", { class: "x", style: { background: "none", border: "none", color: "var(--muted)", cursor: "pointer" }, onclick: () => (sidePanel.style.display = "none") }, "✕");
+    if (sel.type === "host") {
+      const h = sel.node;
+      const hv = hostVars.get(h.label);
+      const groups = hv && hv.groups ? hv.groups : [];
+      sidePanel.appendChild(el("h3", null,
+        el("span", { class: "sw", style: { width: "10px", height: "10px", borderRadius: "50%", display: "inline-block", background: "var(--secondary)" } }),
+        h.label, el("span", { style: { flex: 1 } }), closeBtn));
+      sidePanel.appendChild(el("div", { class: "muted small", style: { marginBottom: "10px" } },
+        `host · member of ${groups.length} group${groups.length === 1 ? "" : "s"}`));
+      if (groups.length) {
         sidePanel.appendChild(el("div", { class: "row", style: { marginBottom: "10px", gap: "5px" } },
-          h.groups.map((g) => el("span", { class: "chip" }, g))));
+          groups.map((g) => el("span", { class: "chip" }, g))));
       }
-      const vars = h ? h.vars || {} : {};
+      const vars = hv ? hv.vars || {} : {};
       sidePanel.appendChild(el("div", { class: "section-title", style: { margin: "10px 0 8px" } }, "Vars"));
-      sidePanel.appendChild(Object.keys(vars).length ? varsTable(vars)
-        : el("div", { class: "muted small" }, "No host vars."));
+      sidePanel.appendChild(Object.keys(vars).length ? varsTable(vars) : el("div", { class: "muted small" }, "No host vars."));
     } else {
-      const conn = [...(neighbors.get(n.id) || [])].map((id) => byId.get(id)).filter(Boolean);
-      sidePanel.appendChild(el("div", { class: "section-title", style: { margin: "10px 0 8px" } }, "Connected"));
+      const c = sel.cluster;
+      sidePanel.appendChild(el("h3", null,
+        el("span", { class: "sw", style: { width: "10px", height: "10px", borderRadius: "3px", display: "inline-block", background: "var(--accent)" } }),
+        c.name, el("span", { style: { flex: 1 } }), closeBtn));
+      sidePanel.appendChild(el("div", { class: "muted small", style: { marginBottom: "10px" } },
+        `group · ${c.hosts.length} host${c.hosts.length === 1 ? "" : "s"} here`));
+      sidePanel.appendChild(el("div", { class: "section-title", style: { margin: "10px 0 8px" } }, "Hosts"));
       sidePanel.appendChild(el("div", { class: "row", style: { gap: "5px" } },
-        conn.slice(0, 30).map((c) => el("span", { class: "chip", style: c.type === "host" ? { color: "var(--secondary)" } : { color: "var(--accent)" } }, c.label))));
+        c.hosts.slice(0, 60).map((h) => el("span", {
+          class: "chip", style: { color: "var(--secondary)", cursor: "pointer" },
+          onclick: () => showPanel({ type: "host", node: h }),
+        }, h.label))));
+      if (c.hosts.length > 60) {
+        sidePanel.appendChild(el("div", { class: "muted small", style: { marginTop: "6px" } }, `+${c.hosts.length - 60} more`));
+      }
     }
   }
 }
