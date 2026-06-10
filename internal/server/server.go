@@ -39,6 +39,7 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("POST /api/repos/{id}/sync", s.syncRepo)
 	mux.HandleFunc("GET /api/repos/{id}/scan", s.scanRepo)
 	mux.HandleFunc("GET /api/repos/{id}/topology", s.topology)
+	mux.HandleFunc("GET /api/repos/{id}/file", s.repoFile)
 
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
@@ -241,6 +242,50 @@ func (s *Server) topology(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, scanner.BuildTopology(inv))
+}
+
+// maxFilePreview caps how much of a source file the raw-file endpoint serves.
+const maxFilePreview = 2 << 20 // 2 MiB
+
+// repoFile serves the raw bytes of a file inside a repository's working
+// directory, so the UI can preview the real YAML behind a parsed view. The
+// requested path is confined to the repo workdir to prevent traversal.
+func (s *Server) repoFile(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	rel := r.URL.Query().Get("path")
+	if rel == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("path is required"))
+		return
+	}
+	root := s.Mgr.Store.RepoWorkdir(&repo)
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	// confine to the repo workdir
+	rootAbs, err1 := filepath.Abs(root)
+	fullAbs, err2 := filepath.Abs(full)
+	if err1 != nil || err2 != nil || (fullAbs != rootAbs && !strings.HasPrefix(fullAbs, rootAbs+string(os.PathSeparator))) {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid path"))
+		return
+	}
+	info, err := os.Stat(fullAbs)
+	if err != nil || info.IsDir() {
+		writeErr(w, http.StatusNotFound, errors.New("file not found"))
+		return
+	}
+	data, err := os.ReadFile(fullAbs)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(data) > maxFilePreview {
+		data = data[:maxFilePreview]
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(data)
 }
 
 // --- jobs ---

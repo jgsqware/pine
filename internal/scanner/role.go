@@ -9,19 +9,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// scanRoles parses every role under roles/.
-func scanRoles(root string) []model.Role {
-	rolesDir := filepath.Join(root, "roles")
-	entries, err := os.ReadDir(rolesDir)
-	if err != nil {
-		return nil
+// scanRoles parses every role under roles/, plus any extra role parent dirs
+// contributed by a layout plugin (e.g. generic_roles/).
+func scanRoles(root string, plugin *Plugin) []model.Role {
+	dirs := []string{"roles"}
+	if plugin != nil {
+		dirs = append(dirs, plugin.RoleDirs...)
 	}
 	var out []model.Role
-	for _, e := range entries {
-		if !e.IsDir() {
+	seen := map[string]bool{}
+	for _, rd := range dirs {
+		rolesDir := filepath.Join(root, rd)
+		entries, err := os.ReadDir(rolesDir)
+		if err != nil {
 			continue
 		}
-		out = append(out, parseRole(root, filepath.Join(rolesDir, e.Name())))
+		for _, e := range entries {
+			if !e.IsDir() || seen[e.Name()] {
+				continue
+			}
+			seen[e.Name()] = true
+			out = append(out, parseRole(root, filepath.Join(rolesDir, e.Name())))
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

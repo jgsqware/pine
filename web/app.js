@@ -100,6 +100,7 @@ const ICONS = {
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
   role: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>',
   tree: '<svg viewBox="0 0 24 24"><path d="M12 1 L16.5 8.5 H7.5 Z" fill="#4ade80"/><path d="M12 5.5 L18 14.5 H6 Z" fill="#34c46a"/><path d="M12 10.5 L20 20.5 H4 Z" fill="#22a356"/><rect x="10.9" y="20" width="2.2" height="3.2" rx="0.6" fill="#8a5a3b"/></svg>',
+  code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6M13 4l-2 16"/></svg>',
 };
 
 function icon(name) {
@@ -183,6 +184,88 @@ function confirmModal(title, message, confirmLabel = "Delete") {
     const { overlay } = openModal({ title, body: el("p", { class: "muted", style: { margin: 0 } }, message), footer: [cancel, ok] });
     overlay.addEventListener("click", (e) => { if (e.target === overlay) resolve(false); });
   });
+}
+
+/* ---- raw file preview ---- */
+
+/** Build the raw-file API URL for a repo-relative path. */
+function rawFileURL(repoId, path) {
+  return `/api/repos/${repoId}/file?path=${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+async function fetchRawFile(repoId, path) {
+  const res = await fetch(rawFileURL(repoId, path));
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+}
+
+/**
+ * Candidate repo-relative locations for an include/import `file`, resolved
+ * against `basePath` (the dir of the playbook or role-tasks file). Ansible
+ * searches the file dir plus sibling vars/ and tasks/, so we try those in the
+ * dir and its parent; the preview modal opens the first that exists.
+ */
+function includeCandidates(basePath, file) {
+  // already-rooted reference (e.g. "roles/x/vars/y.yml") — use as-is first
+  if (file.includes("/") && !file.startsWith("./") && !file.startsWith("../")) {
+    // still fall through to base-relative candidates below
+  }
+  const clean = file.replace(/^\.\//, "");
+  const parts = (basePath || "").split("/").filter(Boolean);
+  const dir = parts.join("/");
+  const parent = parts.slice(0, -1).join("/");
+  const join = (...p) => p.filter((x) => x !== "" && x != null).join("/");
+  const set = new Set([
+    join(dir, clean),
+    join(dir, "vars", clean),
+    join(dir, "tasks", clean),
+    join(parent, clean),
+    join(parent, "vars", clean),
+    join(parent, "tasks", clean),
+    clean,
+  ]);
+  return [...set].filter(Boolean);
+}
+
+/**
+ * Preview the real source file behind a parsed view. `candidates` is a path or
+ * a list of paths tried in order — the first that exists is shown. This lets a
+ * caller pass alternates (main.yml/main.yaml, a hosts dir's likely files).
+ */
+async function openRawFileModal(repoId, candidates, title) {
+  const paths = Array.isArray(candidates) ? candidates : [candidates];
+  const { body: bodyEl } = openModal({
+    title: title || "Source",
+    body: el("div", { class: "muted small" }, "Loading…"),
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Close")],
+    width: "880px",
+  });
+
+  let text = null, usedPath = null, lastErr = null;
+  for (const p of paths) {
+    try { text = await fetchRawFile(repoId, p); usedPath = p; break; }
+    catch (e) { lastErr = e; }
+  }
+
+  bodyEl.innerHTML = "";
+  if (text === null) {
+    bodyEl.appendChild(el("div", { class: "empty" },
+      el("h3", null, "File not available"),
+      el("p", null, (lastErr && lastErr.message) || "Could not read the source file.")));
+    return;
+  }
+
+  const copyBtn = el("button", { class: "btn btn-sm" }, "Copy");
+  copyBtn.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); toast("Copied to clipboard"); }
+    catch { toast("Copy failed", "error"); }
+  };
+  bodyEl.appendChild(el("div", { class: "code-head" },
+    el("span", { class: "mono small muted" }, usedPath),
+    el("div", { class: "grow" }),
+    copyBtn,
+    el("a", { class: "btn btn-sm", href: rawFileURL(repoId, usedPath), target: "_blank", rel: "noopener" }, icon("download"), "Open")));
+  bodyEl.appendChild(el("pre", { class: "code-view" }, el("code", null, text)));
 }
 
 /* ---- skeletons ---- */
@@ -645,10 +728,15 @@ async function pagePlaybooks(page) {
         el("div", { style: { flex: 1, minWidth: 0 } },
           el("div", { class: "name" }, pb.name || pb.path),
           el("div", { class: "path" }, pb.path)),
-        el("button", {
-          class: "btn btn-sm btn-primary",
-          onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path }); },
-        }, icon("play"), "Run")),
+        el("div", { class: "row", style: { gap: "6px" } },
+          el("button", {
+            class: "btn btn-sm btn-ghost", title: "Preview raw YAML",
+            onclick: (e) => { e.stopPropagation(); openRawFileModal(repo.id, pb.path, pb.path); },
+          }, icon("code")),
+          el("button", {
+            class: "btn btn-sm btn-primary",
+            onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path }); },
+          }, icon("play"), "Run"))),
       el("div", { class: "meta-row" },
         el("span", { class: "chip" }, `${plays.length} play${plays.length === 1 ? "" : "s"}`),
         hostPatterns.slice(0, 4).map((h) => el("span", { class: "chip", style: { color: "var(--secondary)" } }, h)),
@@ -725,6 +813,21 @@ function renderTaskNode(task, opts = {}) {
 
   const main = el("div", { class: "t-main" });
   main.appendChild(el("div", { class: "t-name" + (task.name ? "" : " unnamed") }, task.name || "(unnamed task)"));
+  if (task.args) {
+    // A static include/import path is clickable: it opens the referenced file.
+    const linkable = task.include_path && !task.include_path.includes("{{") && opts.repoId;
+    if (linkable) {
+      main.appendChild(el("a", {
+        class: "t-args mono t-args-link", title: "Open " + task.include_path,
+        onclick: (e) => {
+          e.stopPropagation();
+          openRawFileModal(opts.repoId, includeCandidates(opts.basePath, task.include_path), task.include_path);
+        },
+      }, icon("code"), el("span", null, task.args)));
+    } else {
+      main.appendChild(el("div", { class: "t-args mono", title: task.args }, task.args));
+    }
+  }
   const chips = el("div", { class: "t-chips" });
   (task.tags || []).forEach((t) => chips.appendChild(el("span", { class: "chip tag" }, t)));
   if (task.when) chips.appendChild(whenChip(task.when));
@@ -777,12 +880,14 @@ async function pagePlaybookDetail(page, segs) {
       el("h1", null, pb.name || pb.path),
       el("div", { class: "muted mono small" }, `${repo.name} / ${pb.path}`)),
     el("div", { class: "grow" }),
+    el("button", { class: "btn", onclick: () => openRawFileModal(repoId, pb.path, pb.path) },
+      icon("code"), "View YAML"),
     el("button", { class: "btn btn-primary", onclick: () => openRunModal({ repoId, playbook: pb.path }) },
       icon("play"), "Run playbook")));
 
   const sections = [];
   (pb.plays || []).forEach((play, idx) => {
-    const section = renderPlaySection(play, idx, repoId);
+    const section = renderPlaySection(play, idx, repoId, pb.path);
     sections.push(section);
     page.appendChild(section);
   });
@@ -797,17 +902,26 @@ async function pagePlaybookDetail(page, segs) {
   onCleanup(() => window.removeEventListener("resize", redraw));
 }
 
-function renderPlaySection(play, idx, repoId) {
+function renderPlaySection(play, idx, repoId, basePath) {
+  // basePath = playbook dir, used to resolve clickable include/import files.
+  const dir = basePath && basePath.includes("/") ? basePath.slice(0, basePath.lastIndexOf("/")) : "";
+  const ctx = { repoId, basePath: dir };
+  const prompts = play.vars_prompt || [];
   const head = el("div", { class: "play-head" },
     el("span", { class: "play-name" }, play.name || `Play ${idx + 1}`),
-    el("span", { class: "hosts-pat", title: "Host pattern" }, play.hosts || "all"),
+    el("span", { class: "hosts-label" }, icon("host"), "hosts:"),
+    el("span", { class: "hosts-pat", title: "Host pattern this play targets" }, play.hosts || "all"),
     play.become ? el("span", { class: "chip warn", title: "Privilege escalation enabled" }, "become") : null,
     play.serial ? el("span", { class: "chip", title: "Rolling batch size" }, `serial: ${play.serial}`) : null,
     play.strategy ? el("span", { class: "chip" }, `strategy: ${play.strategy}`) : null,
     (play.tags || []).map((t) => el("span", { class: "chip tag" }, t)),
     (play.vars_files || []).length
       ? el("span", { class: "chip", title: "vars_files: " + play.vars_files.join(", ") }, `${play.vars_files.length} vars file${play.vars_files.length === 1 ? "" : "s"}`)
-      : null);
+      : null,
+    prompts.map((p) => el("span", {
+      class: "chip prompt-chip",
+      title: `${p.prompt || "prompt"}${p.default ? `\ndefault: ${p.default}` : ""}${p.private ? "\n(private)" : ""}`,
+    }, icon("question"), `prompts: ${p.name}`)));
 
   const body = el("div", { class: "play-body" });
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -820,14 +934,14 @@ function renderPlaySection(play, idx, repoId) {
       el("div", { class: `flow-phase-label ${cls || ""}` }, label), node));
   };
 
-  if ((play.pre_tasks || []).length) phase("pre_tasks", taskColumn(play.pre_tasks));
+  if ((play.pre_tasks || []).length) phase("pre_tasks", taskColumn(play.pre_tasks, ctx));
   if ((play.roles || []).length) {
     phase("roles", el("div", { class: "roles-strip" },
       play.roles.map((r) => el("a", { class: "role-chip-lg", href: `#/role/${repoId}/${encodeURIComponent(r)}` }, icon("role"), r))));
   }
-  if ((play.tasks || []).length) phase("tasks", taskColumn(play.tasks));
-  if ((play.post_tasks || []).length) phase("post_tasks", taskColumn(play.post_tasks));
-  if ((play.handlers || []).length) phase("handlers", taskColumn(play.handlers, { handler: true }), "handlers-lbl");
+  if ((play.tasks || []).length) phase("tasks", taskColumn(play.tasks, ctx));
+  if ((play.post_tasks || []).length) phase("post_tasks", taskColumn(play.post_tasks, ctx));
+  if ((play.handlers || []).length) phase("handlers", taskColumn(play.handlers, { ...ctx, handler: true }), "handlers-lbl");
 
   if (body.children.length === 1) {
     body.appendChild(el("div", { class: "muted small" }, "Nothing to show for this play."));
@@ -966,6 +1080,11 @@ async function pageRoleDetail(page, segs) {
       el("h1", null, role.name),
       el("div", { class: "muted small" }, role.description || el("span", { class: "mono" }, role.path))),
     el("div", { class: "grow" }),
+    el("button", {
+      class: "btn", onclick: () => openRawFileModal(repoId,
+        [`${role.path}/tasks/main.yml`, `${role.path}/tasks/main.yaml`],
+        `${role.name}/tasks/main.yml`),
+    }, icon("code"), "View YAML"),
     el("span", { class: "chip" }, `${role.tasks_count ?? (role.tasks || []).length} tasks`)));
 
   const tabsDef = [
@@ -982,9 +1101,10 @@ async function pageRoleDetail(page, segs) {
   const show = (key) => {
     $$(".tab", tabBar).forEach((t) => t.classList.toggle("active", t.dataset.k === key));
     content.innerHTML = "";
+    const roleCtx = { repoId, basePath: role.path };
     if (key === "tasks") {
       content.appendChild((role.tasks || []).length
-        ? el("div", { class: "panel", style: { padding: "18px 22px" } }, taskColumn(role.tasks))
+        ? el("div", { class: "panel", style: { padding: "18px 22px" } }, taskColumn(role.tasks, roleCtx))
         : el("div", { class: "empty" }, el("h3", null, "No tasks"), el("p", null, "tasks/main.yml is empty or missing.")));
     } else if (key === "defaults") {
       const hasDefaults = role.defaults && Object.keys(role.defaults).length;
@@ -1003,7 +1123,7 @@ async function pageRoleDetail(page, segs) {
       }
     } else if (key === "handlers") {
       content.appendChild((role.handlers || []).length
-        ? el("div", { class: "panel", style: { padding: "18px 22px" } }, taskColumn(role.handlers, { handler: true }))
+        ? el("div", { class: "panel", style: { padding: "18px 22px" } }, taskColumn(role.handlers, { ...roleCtx, handler: true }))
         : el("div", { class: "empty" }, el("h3", null, "No handlers"), el("p", null, "handlers/main.yml is empty or missing.")));
     } else if (key === "meta") {
       content.appendChild(roleMetaView(role, repoId));
@@ -1166,6 +1286,9 @@ async function pageInventory(page) {
     el("span", { class: "chip" }, inv.format || "?"),
     el("span", { class: "sub mono" }, inv.path || ""),
     el("div", { class: "grow" }),
+    inv.path ? el("button", {
+      class: "btn btn-sm", onclick: () => openRawFileModal(repo.id, invSourceCandidates(inv), inv.path),
+    }, icon("code"), "View source") : null,
     searchIn));
 
   const left = el("div", { class: "panel inv-tree" });
@@ -1305,6 +1428,13 @@ async function pageInventory(page) {
   if (roots.length) showGroup(roots[0]);
   else if (hosts.length) showHost(hosts[0]);
   else right.appendChild(el("div", { class: "empty" }, el("h3", null, "Empty inventory"), el("p", null, "No groups or hosts were parsed.")));
+}
+
+/** Candidate source files for an inventory whose path may be a dir or a file. */
+function invSourceCandidates(inv) {
+  const p = inv.path || "";
+  const names = ["hosts", "hosts.ini", "hosts.yml", "hosts.yaml", "inventory.ini", "inventory.yml", "00-hosts.ini"];
+  return [p, ...names.map((n) => (p ? `${p}/${n}` : n))];
 }
 
 function varsTable(vars) {

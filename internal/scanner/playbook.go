@@ -3,6 +3,7 @@ package scanner
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jgsqware/pine/internal/model"
@@ -37,13 +38,21 @@ func hasLoop(m map[string]any) bool {
 	return false
 }
 
-// scanPlaybooks finds playbook YAML files at the repo root and in playbooks/.
-func scanPlaybooks(root string) []model.Playbook {
+// scanPlaybooks finds playbook YAML files at the repo root and in playbooks/,
+// plus any recursive playbook dirs contributed by a layout plugin.
+func scanPlaybooks(root string, plugin *Plugin) []model.Playbook {
 	var candidates []string
 	candidates = append(candidates, yamlFiles(root)...)
 	for _, sub := range []string{"playbooks", "plays"} {
 		if isDir(filepath.Join(root, sub)) {
 			candidates = append(candidates, yamlFiles(filepath.Join(root, sub))...)
+		}
+	}
+	if plugin != nil {
+		for _, sub := range plugin.PlaybookDirs {
+			if isDir(filepath.Join(root, sub)) {
+				candidates = append(candidates, walkYAMLFiles(filepath.Join(root, sub))...)
+			}
 		}
 	}
 	var out []model.Playbook
@@ -130,6 +139,23 @@ func parsePlay(m map[string]any) model.Play {
 	if b, ok := m["become"].(bool); ok {
 		p.Become = b
 	}
+	if vp, ok := m["vars_prompt"].([]any); ok {
+		for _, e := range vp {
+			em, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			pv := model.PromptVar{
+				Name:    toStr(em["name"]),
+				Prompt:  toStr(em["prompt"]),
+				Default: toStr(em["default"]),
+			}
+			if b, ok := em["private"].(bool); ok {
+				pv.Private = b
+			}
+			p.VarsPrompt = append(p.VarsPrompt, pv)
+		}
+	}
 	if roles, ok := m["roles"].([]any); ok {
 		for _, r := range roles {
 			switch t := r.(type) {
@@ -188,6 +214,8 @@ func parseTask(m map[string]any) model.Task {
 			continue
 		}
 		t.Module = k
+		t.Args = summarizeArgs(m[k])
+		t.IncludePath = includePath(k, m[k])
 		break
 	}
 	if t.Module == "" {
@@ -197,6 +225,69 @@ func parseTask(m map[string]any) model.Task {
 		t.Name = t.Module
 	}
 	return t
+}
+
+// includePath returns the file referenced by an include_/import_ task module
+// (string short form or the `file:` key of the dict form), or "" for modules
+// that don't reference a file. Role-name includes (include_role/import_role)
+// are intentionally excluded — they point at a role, not a file.
+func includePath(module string, v any) string {
+	m := strings.TrimPrefix(module, "ansible.builtin.")
+	m = strings.TrimPrefix(m, "ansible.legacy.")
+	switch m {
+	case "include_vars", "include_tasks", "import_tasks", "include":
+		switch t := v.(type) {
+		case string:
+			return strings.TrimSpace(t)
+		case map[string]any:
+			if f, ok := t["file"].(string); ok {
+				return strings.TrimSpace(f)
+			}
+		}
+	}
+	return ""
+}
+
+// maxArgLen caps the rendered module-argument summary so a large debug msg or
+// set_fact block doesn't blow up a task node.
+const maxArgLen = 240
+
+// summarizeArgs renders a module's argument value into a single concise line,
+// e.g. include_vars: "foo.yml" -> foo.yml, debug: {msg: x} -> msg: x.
+func summarizeArgs(v any) string {
+	var s string
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		s = t
+	case bool, int, int64, float64:
+		s = toStr(t)
+	case []any:
+		s = toStr(t)
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			val := toStr(t[k])
+			if val == "" {
+				val = "…"
+			}
+			parts = append(parts, k+": "+val)
+		}
+		s = strings.Join(parts, ", ")
+	default:
+		return ""
+	}
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	if len(s) > maxArgLen {
+		s = s[:maxArgLen] + "…"
+	}
+	return s
 }
 
 // countTasks counts tasks recursively, including block contents.

@@ -27,9 +27,10 @@ func Scan(root string) (*model.ScanResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	plugin := detectPlugin(root)
 	res := &model.ScanResult{
-		Playbooks:   scanPlaybooks(root),
-		Roles:       scanRoles(root),
+		Playbooks:   scanPlaybooks(root, plugin),
+		Roles:       scanRoles(root, plugin),
 		Inventories: scanInventories(root),
 	}
 	return res, nil

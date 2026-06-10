@@ -4,32 +4,43 @@ package model
 
 // Task is a single Ansible task (or block) extracted from a playbook or role.
 type Task struct {
-	Name   string   `json:"name"`
-	Module string   `json:"module"`
-	Tags   []string `json:"tags,omitempty"`
-	When   string   `json:"when,omitempty"`
-	Loop   bool     `json:"loop,omitempty"`
-	Notify []string `json:"notify,omitempty"`
-	Block  []Task   `json:"block,omitempty"`
-	Rescue []Task   `json:"rescue,omitempty"`
-	Always []Task   `json:"always,omitempty"`
+	Name        string   `json:"name"`
+	Module      string   `json:"module"`
+	Args        string   `json:"args,omitempty"`         // concise rendering of the module's argument(s)
+	IncludePath string   `json:"include_path,omitempty"` // file referenced by an include_/import_ module
+	Tags        []string `json:"tags,omitempty"`
+	When        string   `json:"when,omitempty"`
+	Loop        bool     `json:"loop,omitempty"`
+	Notify      []string `json:"notify,omitempty"`
+	Block       []Task   `json:"block,omitempty"`
+	Rescue      []Task   `json:"rescue,omitempty"`
+	Always      []Task   `json:"always,omitempty"`
+}
+
+// PromptVar is one vars_prompt entry on a play.
+type PromptVar struct {
+	Name    string `json:"name"`
+	Prompt  string `json:"prompt,omitempty"`
+	Default string `json:"default,omitempty"`
+	Private bool   `json:"private,omitempty"`
 }
 
 // Play is one play inside a playbook.
 type Play struct {
-	Name      string   `json:"name"`
-	Hosts     string   `json:"hosts"`
-	Become    bool     `json:"become,omitempty"`
-	Serial    string   `json:"serial,omitempty"`
-	Strategy  string   `json:"strategy,omitempty"`
-	Tags      []string `json:"tags,omitempty"`
-	VarsFiles []string `json:"vars_files,omitempty"`
-	Roles     []string `json:"roles,omitempty"`
-	PreTasks  []Task   `json:"pre_tasks,omitempty"`
-	Tasks     []Task   `json:"tasks,omitempty"`
-	PostTasks []Task   `json:"post_tasks,omitempty"`
-	Handlers  []Task   `json:"handlers,omitempty"`
-	Import    string   `json:"import,omitempty"` // set when the entry is an import_playbook
+	Name       string      `json:"name"`
+	Hosts      string      `json:"hosts"`
+	Become     bool        `json:"become,omitempty"`
+	Serial     string      `json:"serial,omitempty"`
+	Strategy   string      `json:"strategy,omitempty"`
+	Tags       []string    `json:"tags,omitempty"`
+	VarsFiles  []string    `json:"vars_files,omitempty"`
+	VarsPrompt []PromptVar `json:"vars_prompt,omitempty"`
+	Roles      []string    `json:"roles,omitempty"`
+	PreTasks   []Task      `json:"pre_tasks,omitempty"`
+	Tasks      []Task      `json:"tasks,omitempty"`
+	PostTasks  []Task      `json:"post_tasks,omitempty"`
+	Handlers   []Task      `json:"handlers,omitempty"`
+	Import     string      `json:"import,omitempty"` // set when the entry is an import_playbook
 }
 
 // Playbook is a scanned playbook file.

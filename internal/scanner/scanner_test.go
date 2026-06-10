@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // demoPath resolves examples/demo-infra relative to this source file.
@@ -117,6 +119,80 @@ func TestScanDemoInfra(t *testing.T) {
 			if len(topo.Nodes) < 15 || len(topo.Links) < 15 {
 				t.Errorf("topology too small: %d nodes %d links", len(topo.Nodes), len(topo.Links))
 			}
+		}
+	}
+}
+
+func TestSummarizeArgs(t *testing.T) {
+	cases := []struct {
+		in   any
+		want string
+	}{
+		{"banktransfer_documents_env_vars.yml", "banktransfer_documents_env_vars.yml"},
+		{map[string]any{"msg": "{{ foo }}"}, "msg: {{ foo }}"},
+		{map[string]any{"file": "x.yml", "name": "v"}, "file: x.yml, name: v"},
+		{nil, ""},
+	}
+	for _, c := range cases {
+		if got := summarizeArgs(c.in); got != c.want {
+			t.Errorf("summarizeArgs(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseTaskCapturesArgsAndPrompt(t *testing.T) {
+	doc := `
+- name: Prompted play
+  hosts: private_runners
+  vars_prompt:
+    - name: config_var_name
+      prompt: Which config?
+      default: central
+      private: no
+  tasks:
+    - include_vars: "config_vars/{{ config_var_name }}.yml"
+    - name: Include documents vars
+      include_vars: banktransfer_documents_env_vars.yml
+`
+	var entries []map[string]any
+	if err := yaml.Unmarshal([]byte(doc), &entries); err != nil {
+		t.Fatal(err)
+	}
+	play := parsePlay(entries[0])
+
+	if len(play.VarsPrompt) != 1 || play.VarsPrompt[0].Name != "config_var_name" ||
+		play.VarsPrompt[0].Default != "central" {
+		t.Fatalf("vars_prompt not captured: %+v", play.VarsPrompt)
+	}
+	if play.Tasks[0].Args != "config_vars/{{ config_var_name }}.yml" {
+		t.Errorf("task0 args = %q", play.Tasks[0].Args)
+	}
+	if play.Tasks[1].Args != "banktransfer_documents_env_vars.yml" {
+		t.Errorf("task1 args = %q", play.Tasks[1].Args)
+	}
+	if play.Tasks[0].IncludePath != "config_vars/{{ config_var_name }}.yml" {
+		t.Errorf("task0 include_path = %q", play.Tasks[0].IncludePath)
+	}
+	if play.Tasks[1].IncludePath != "banktransfer_documents_env_vars.yml" {
+		t.Errorf("task1 include_path = %q", play.Tasks[1].IncludePath)
+	}
+}
+
+func TestIncludePath(t *testing.T) {
+	cases := []struct {
+		module string
+		value  any
+		want   string
+	}{
+		{"include_vars", "foo.yml", "foo.yml"},
+		{"ansible.builtin.include_tasks", "sub/tasks.yml", "sub/tasks.yml"},
+		{"include_vars", map[string]any{"file": "x.yml", "name": "v"}, "x.yml"},
+		{"include_role", "myrole", ""}, // role name, not a file
+		{"debug", map[string]any{"msg": "hi"}, ""},
+	}
+	for _, c := range cases {
+		if got := includePath(c.module, c.value); got != c.want {
+			t.Errorf("includePath(%q, %v) = %q, want %q", c.module, c.value, got, c.want)
 		}
 	}
 }
