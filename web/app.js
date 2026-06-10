@@ -1476,7 +1476,7 @@ async function pageTopology(page) {
   page.appendChild(el("div", { class: "page-head" },
     el("h1", null, "Topology"),
     invSel,
-    el("span", { class: "sub" }, "drag nodes · wheel to zoom · drag background to pan"),
+    el("span", { class: "sub" }, "drag nodes · wheel to zoom · drag background to pan · double-click to fit"),
     el("div", { class: "grow" })));
 
   const wrap = el("div", { class: "topo-wrap" });
@@ -1546,6 +1546,26 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
   let hovered = null, dragNode = null, panning = false;
   let lastMouse = { x: 0, y: 0 };
   let raf = 0, stopped = false;
+  let userInteracted = false; // once true, stop auto-fitting the view
+
+  // fitView frames the whole graph inside the canvas. Called every tick until
+  // the user pans/zooms, so a large layout that spreads out never escapes view.
+  function fitView() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of nodes) {
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+      if (n.x - n.r < minX) minX = n.x - n.r;
+      if (n.y - n.r < minY) minY = n.y - n.r;
+      if (n.x + n.r > maxX) maxX = n.x + n.r;
+      if (n.y + n.r > maxY) maxY = n.y + n.r;
+    }
+    if (!Number.isFinite(minX) || W === 0 || H === 0) return;
+    const gw = Math.max(maxX - minX, 1), gh = Math.max(maxY - minY, 1);
+    const pad = 80;
+    scale = Math.max(Math.min((W - pad) / gw, (H - pad) / gh, 1.4), 0.04);
+    tx = W / 2 - ((minX + maxX) / 2) * scale;
+    ty = H / 2 - ((minY + maxY) / 2) * scale;
+  }
 
   const resize = () => {
     W = canvasBox.clientWidth; H = canvasBox.clientHeight;
@@ -1586,12 +1606,19 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
       l.b.vx -= dx * f; l.b.vy -= dy * f;
     }
     // centering + integrate
+    const vmax = 90; // clamp velocity so dense graphs can't explode off-screen
     for (const n of nodes) {
       n.vx -= n.x * 0.004 * alpha;
       n.vy -= n.y * 0.004 * alpha;
       if (n.fx !== undefined) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
       n.vx *= 0.82; n.vy *= 0.82;
+      n.vx = Math.max(-vmax, Math.min(vmax, n.vx));
+      n.vy = Math.max(-vmax, Math.min(vmax, n.vy));
       n.x += n.vx; n.y += n.vy;
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+        n.x = (Math.random() - 0.5) * 100; n.y = (Math.random() - 0.5) * 100;
+        n.vx = 0; n.vy = 0;
+      }
     }
     if (alpha > 0.02) alpha *= 0.995;
   }
@@ -1661,6 +1688,7 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
   function frame() {
     if (stopped) return;
     tick();
+    if (!userInteracted) fitView();
     draw();
     raf = requestAnimationFrame(frame);
   }
@@ -1680,6 +1708,7 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
   }
 
   canvas.addEventListener("mousedown", (e) => {
+    userInteracted = true;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     lastMouse = { x: px, y: py };
@@ -1729,8 +1758,18 @@ function startForceGraph({ canvas, canvasBox, nodes, links, hostVars, sidePanel 
     showTopoPanel(n);
   });
 
+  // double-click empty space re-fits the whole graph to the viewport
+  canvas.addEventListener("dblclick", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    if (nodeAt(e.clientX - rect.left, e.clientY - rect.top)) return;
+    userInteracted = false;
+    fitView();
+    alpha = Math.max(alpha, 0.2);
+  });
+
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
+    userInteracted = true;
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
     const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
