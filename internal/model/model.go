@@ -114,12 +114,15 @@ const (
 )
 
 // Repo is a connected Ansible repository (git URL or local path).
+// ScanPaths optionally restricts playbook discovery to specific
+// directories, files or glob patterns relative to the repo root.
 type Repo struct {
 	ID         string      `json:"id"`
 	Name       string      `json:"name"`
 	URL        string      `json:"url,omitempty"`
 	Path       string      `json:"path,omitempty"`
 	Branch     string      `json:"branch,omitempty"`
+	ScanPaths  []string    `json:"scan_paths,omitempty"`
 	Status     string      `json:"status"`
 	Error      string      `json:"error,omitempty"`
 	LastSynced string      `json:"last_synced,omitempty"`

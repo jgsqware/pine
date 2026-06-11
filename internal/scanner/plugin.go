@@ -1,10 +1,7 @@
 package scanner
 
 import (
-	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 )
 
 // Plugin teaches the scanner where to find Ansible artifacts in a repository
@@ -52,29 +49,4 @@ func detectPlugin(root string) *Plugin {
 		}
 	}
 	return nil
-}
-
-// walkYAMLFiles returns every .yml/.yaml file beneath dir, skipping the
-// vars/templates/inventory subtrees that never hold playbooks. Unlike
-// yamlFiles it recurses, because plugin playbook dirs nest one or more levels
-// (e.g. projects/<service>/deploy-<service>.yaml).
-func walkYAMLFiles(dir string) []string {
-	var out []string
-	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			if p != dir && skipDirs[info.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(p, ".yml") || strings.HasSuffix(p, ".yaml") {
-			out = append(out, p)
-		}
-		return nil
-	})
-	sort.Strings(out)
-	return out
 }

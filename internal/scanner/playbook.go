@@ -38,25 +38,48 @@ func hasLoop(m map[string]any) bool {
 	return false
 }
 
-// scanPlaybooks finds playbook YAML files at the repo root and in playbooks/,
-// plus any recursive playbook dirs contributed by a layout plugin.
-func scanPlaybooks(root string, plugin *Plugin) []model.Playbook {
+// dirs whose YAML files are never playbooks (role internals, inventories,
+// vars, plugin code, CI noise). Checked against every path component during
+// the recursive walk.
+var nonPlaybookDirs = map[string]bool{
+	".git": true, ".github": true, ".gitlab": true, "roles": true,
+	"collections": true, "inventories": true, "inventory": true,
+	"environments": true, "group_vars": true, "host_vars": true,
+	"vars": true, "defaults": true, "tasks": true, "handlers": true,
+	"meta": true, "files": true, "templates": true, "filter_plugins": true,
+	"library": true, "module_utils": true, "molecule": true,
+	".venv": true, "venv": true, "node_modules": true,
+}
+
+const maxPlaybookDepth = 8
+
+// scanPlaybooks discovers playbook YAML files. Explicit scanPaths (user
+// configured: dirs, files or globs relative to root) take precedence and
+// restrict discovery. Otherwise the whole repository is walked recursively,
+// skipping role/inventory internals, keeping any YAML file shaped like a
+// playbook, plus any extra playbook dirs contributed by a layout plugin.
+func scanPlaybooks(root string, plugin *Plugin, scanPaths []string) []model.Playbook {
 	var candidates []string
-	candidates = append(candidates, yamlFiles(root)...)
-	for _, sub := range []string{"playbooks", "plays"} {
-		if isDir(filepath.Join(root, sub)) {
-			candidates = append(candidates, yamlFiles(filepath.Join(root, sub))...)
-		}
-	}
-	if plugin != nil {
-		for _, sub := range plugin.PlaybookDirs {
-			if isDir(filepath.Join(root, sub)) {
-				candidates = append(candidates, walkYAMLFiles(filepath.Join(root, sub))...)
+	if len(scanPaths) > 0 {
+		candidates = expandScanPaths(root, scanPaths)
+	} else {
+		candidates = walkForPlaybooks(root)
+		if plugin != nil {
+			for _, sub := range plugin.PlaybookDirs {
+				if isDir(filepath.Join(root, sub)) {
+					candidates = append(candidates, walkForPlaybooks(filepath.Join(root, sub))...)
+				}
 			}
 		}
 	}
+
+	seen := map[string]bool{}
 	var out []model.Playbook
 	for _, f := range candidates {
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
 		base := filepath.Base(f)
 		if base == "requirements.yml" || base == "requirements.yaml" ||
 			strings.HasPrefix(base, ".") || base == "galaxy.yml" {
@@ -67,6 +90,69 @@ func scanPlaybooks(root string, plugin *Plugin) []model.Playbook {
 			out = append(out, pb)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// walkForPlaybooks recursively collects candidate YAML files under root.
+func walkForPlaybooks(root string) []string {
+	var out []string
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if depth > maxPlaybookDepth {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() {
+				if nonPlaybookDirs[name] || strings.HasPrefix(name, ".") {
+					continue
+				}
+				walk(filepath.Join(dir, name), depth+1)
+				continue
+			}
+			if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+				out = append(out, filepath.Join(dir, name))
+			}
+		}
+	}
+	walk(root, 0)
+	sort.Strings(out)
+	return out
+}
+
+// expandScanPaths resolves user-provided scan paths: a directory (walked
+// recursively), a single file, or a glob pattern - all relative to root.
+func expandScanPaths(root string, paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		p = strings.TrimSpace(strings.Trim(p, "/"))
+		if p == "" {
+			continue
+		}
+		abs := filepath.Join(root, p)
+		switch {
+		case isDir(abs):
+			out = append(out, walkForPlaybooks(abs)...)
+		case isFile(abs):
+			out = append(out, abs)
+		default:
+			if matches, err := filepath.Glob(abs); err == nil {
+				for _, m := range matches {
+					if isDir(m) {
+						out = append(out, walkForPlaybooks(m)...)
+					} else if strings.HasSuffix(m, ".yml") || strings.HasSuffix(m, ".yaml") {
+						out = append(out, m)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

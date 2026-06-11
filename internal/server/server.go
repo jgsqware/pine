@@ -35,6 +35,7 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("GET /api/repos", s.listRepos)
 	mux.HandleFunc("POST /api/repos", s.addRepo)
 	mux.HandleFunc("GET /api/repos/{id}", s.getRepo)
+	mux.HandleFunc("PATCH /api/repos/{id}", s.updateRepo)
 	mux.HandleFunc("DELETE /api/repos/{id}", s.deleteRepo)
 	mux.HandleFunc("POST /api/repos/{id}/sync", s.syncRepo)
 	mux.HandleFunc("GET /api/repos/{id}/scan", s.scanRepo)
@@ -124,10 +125,11 @@ func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name   string `json:"name"`
-		URL    string `json:"url"`
-		Path   string `json:"path"`
-		Branch string `json:"branch"`
+		Name      string   `json:"name"`
+		URL       string   `json:"url"`
+		Path      string   `json:"path"`
+		Branch    string   `json:"branch"`
+		ScanPaths []string `json:"scan_paths"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -157,12 +159,13 @@ func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) {
 		req.Name = strings.TrimSuffix(filepath.Base(src), ".git")
 	}
 	repo := model.Repo{
-		ID:     store.NewID("r"),
-		Name:   req.Name,
-		URL:    req.URL,
-		Path:   req.Path,
-		Branch: req.Branch,
-		Status: model.RepoNew,
+		ID:        store.NewID("r"),
+		Name:      req.Name,
+		URL:       req.URL,
+		Path:      req.Path,
+		Branch:    req.Branch,
+		ScanPaths: cleanScanPaths(req.ScanPaths),
+		Status:    model.RepoNew,
 	}
 	if err := s.Mgr.Store.AddRepo(repo); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -174,6 +177,58 @@ func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, repo)
+}
+
+// cleanScanPaths drops empty entries and rejects path escapes.
+func cleanScanPaths(in []string) []string {
+	var out []string
+	for _, p := range in {
+		p = strings.TrimSpace(p)
+		if p == "" || strings.Contains(p, "..") || filepath.IsAbs(p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// updateRepo changes repo settings (name, branch, scan_paths) and triggers
+// a re-sync so the new settings take effect immediately.
+func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	var req struct {
+		Name      *string   `json:"name"`
+		Branch    *string   `json:"branch"`
+		ScanPaths *[]string `json:"scan_paths"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Name != nil && *req.Name != "" {
+		repo.Name = *req.Name
+	}
+	if req.Branch != nil {
+		repo.Branch = *req.Branch
+	}
+	if req.ScanPaths != nil {
+		repo.ScanPaths = cleanScanPaths(*req.ScanPaths)
+	}
+	if err := s.Mgr.Store.UpdateRepo(repo); err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	s.Mgr.Forget(repo.ID)
+	repo, err = s.Mgr.SyncRepo(repo.ID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, repo)
 }
 
 func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {

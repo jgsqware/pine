@@ -21,7 +21,12 @@ JSON storage, a polished web UI, a full terminal UI and a REST API.
 - **Multi-repo** — connect any number of Ansible repositories (git URL or
   local path), with one-click re-sync
 - **Auto-scan** — playbooks, plays, tasks, roles (defaults, handlers, meta,
-  dependencies), inventories in INI *and* YAML, `group_vars` / `host_vars`
+  dependencies), inventories in INI *and* YAML, `group_vars` / `host_vars`.
+  Playbooks are discovered **recursively anywhere in the repo** (`.yml` and
+  `.yaml`), so nested layouts like `playbooks/<env>/<app>/deploy.yml` just
+  work; role/inventory internals are skipped automatically. If discovery
+  finds nothing (or too much), set per-repo **scan paths** (dirs, files or
+  globs) — the UI prompts you when a synced repo has zero playbooks
 - **Topology graph** — interactive force-directed visualization of your
   inventories (groups, children, hosts)
 - **Task-flow visualization** — plays → roles → tasks with tags, conditions,
@@ -69,6 +74,7 @@ immediately in the UI, the TUI and the API.
 |---|---|
 | `GET /api/stats` | dashboard counters + recent jobs |
 | `GET/POST /api/repos` | list / connect repositories |
+| `PATCH /api/repos/{id}` | update name / branch / `scan_paths`, then re-scan |
 | `POST /api/repos/{id}/sync` | pull + re-scan |
 | `GET /api/repos/{id}/scan` | full scan result (playbooks, roles, inventories) |
 | `GET /api/repos/{id}/topology?inventory=…` | inventory graph (nodes + links) |

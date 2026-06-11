@@ -569,6 +569,14 @@ function drawRepoCards(listBox, refresh) {
         repoStatusBadge(repo)),
       el("div", { class: "src" }, src),
       repo.status === "error" && repo.error ? el("div", { class: "err" }, repo.error) : null,
+      (repo.scan_paths || []).length ? el("div", { class: "row small muted", style: { flexWrap: "wrap", gap: "4px" } },
+        el("span", null, "scan:"),
+        ...repo.scan_paths.map((p) => el("span", { class: "chip" }, p)),
+        el("a", { href: "#", onclick: (e) => { e.preventDefault(); openScanPathsModal(repo, refresh); } }, "edit")) : null,
+      repo.status === "ready" && !(sum.playbooks > 0) ? el("div", { class: "err", style: { borderColor: "#3d3420", background: "rgba(251,191,36,.07)", color: "var(--warn, #fbbf24)" } },
+        "No playbooks found in this repository. ",
+        el("a", { href: "#", style: { color: "inherit", textDecoration: "underline" }, onclick: (e) => { e.preventDefault(); openScanPathsModal(repo, refresh); } },
+          "Tell Pine where to look")) : null,
       el("div", { class: "counts" },
         [["playbooks", sum.playbooks], ["roles", sum.roles], ["inventories", sum.inventories], ["hosts", sum.hosts], ["groups", sum.groups]]
           .map(([k, v]) => el("div", { class: "c" }, el("b", null, String(v ?? 0)), el("span", null, k)))),
@@ -609,12 +617,57 @@ function drawRepoCards(listBox, refresh) {
   }
 }
 
+// parseScanPaths splits a comma/newline separated input into clean entries.
+function parseScanPaths(raw) {
+  return raw.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+}
+
+// openScanPathsModal lets the user tell Pine where playbooks live when the
+// default discovery finds nothing (or finds too much).
+function openScanPathsModal(repo, onDone) {
+  const pathsIn = el("textarea", {
+    rows: "3",
+    placeholder: "playbooks/\nplaybooks/*/apps\ndeploy/site.yml",
+  });
+  pathsIn.value = (repo.scan_paths || []).join("\n");
+
+  const saveBtn = el("button", { class: "btn btn-primary" }, icon("sync"), "Save & re-scan");
+  saveBtn.onclick = async () => {
+    saveBtn.disabled = true;
+    try {
+      await api(`/repos/${repo.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ scan_paths: parseScanPaths(pathsIn.value) }),
+      });
+      State.scanCache.delete(repo.id);
+      closeModal();
+      toast(`Re-scanning ${repo.name}…`, "success", "Scan paths updated");
+      if (onDone) onDone();
+    } catch (e) {
+      saveBtn.disabled = false;
+      toast(e.message, "error");
+    }
+  };
+
+  openModal({
+    title: `Playbook locations — ${repo.name}`,
+    body: el("div", null,
+      el("p", { class: "muted", style: { marginTop: 0 } },
+        "By default Pine scans the whole repository for playbook-shaped YAML files (skipping roles, inventories and vars). If that finds nothing — or too much — list the directories, files or glob patterns to scan, one per line, relative to the repo root."),
+      el("div", { class: "field" }, el("label", null, "Scan paths"), pathsIn,
+        el("span", { class: "hint" }, "Examples: playbooks/ · playbooks/*/billing · deploy/site.yml. Leave empty to restore automatic discovery."))),
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), saveBtn],
+  });
+  pathsIn.focus();
+}
+
 function openAddRepoModal() {
   let mode = "git";
   const nameIn = el("input", { type: "text", placeholder: "demo-infra", autocomplete: "off" });
   const urlIn = el("input", { type: "text", placeholder: "https://github.com/acme/infra.git", autocomplete: "off" });
   const branchIn = el("input", { type: "text", placeholder: "main", autocomplete: "off" });
   const pathIn = el("input", { type: "text", placeholder: "/srv/ansible/infra", autocomplete: "off" });
+  const scanIn = el("input", { type: "text", placeholder: "playbooks/, deploy/*.yml (optional)", autocomplete: "off" });
 
   const gitFields = el("div", null,
     el("div", { class: "field" }, el("label", null, "Git URL"), urlIn,
@@ -651,6 +704,8 @@ function openAddRepoModal() {
       if (!path) { toast("Local path is required", "error"); pathIn.focus(); return; }
       body = { name, path };
     }
+    const scanPaths = parseScanPaths(scanIn.value);
+    if (scanPaths.length) body.scan_paths = scanPaths;
     submitBtn.disabled = true;
     try {
       const repo = await api("/repos", { method: "POST", body: JSON.stringify(body) });
@@ -671,7 +726,9 @@ function openAddRepoModal() {
     el("div", { class: "seg-tabs", style: { marginBottom: "16px" } }, tabGit, tabPath),
     el("div", { class: "field" }, el("label", null, "Name"), nameIn,
       el("span", { class: "hint" }, "A short identifier shown across Pine.")),
-    gitFields, pathFields);
+    gitFields, pathFields,
+    el("div", { class: "field" }, el("label", null, "Playbook paths", el("span", { class: "muted" }, " — optional")), scanIn,
+      el("span", { class: "hint" }, "Comma-separated dirs, files or globs if your playbooks live in non-standard places. By default Pine scans the whole repo.")));
   body.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") submitBtn.click(); });
 
   openModal({
@@ -710,8 +767,12 @@ async function pagePlaybooks(page) {
     box.style.display = "block";
     box.appendChild(el("div", { class: "empty" },
       el("h3", null, "No playbooks found"),
-      el("p", null, "Pine looks for YAML playbooks at the repository root and in playbooks/. If the repo just synced, try re-syncing or check the repo status."),
-      el("button", { class: "btn", onclick: () => (location.hash = "#/repos") }, "Go to repositories")));
+      el("p", null, repo.scan_paths && repo.scan_paths.length
+        ? `Nothing matched the configured scan paths (${repo.scan_paths.join(", ")}). Adjust them or clear them to let Pine scan the whole repository.`
+        : "Pine scanned the whole repository for playbook-shaped YAML files but found none. If your playbooks live somewhere unusual, point Pine at them."),
+      el("div", { class: "row", style: { justifyContent: "center", gap: "8px" } },
+        el("button", { class: "btn btn-primary", onclick: () => openScanPathsModal(repo, () => route()) }, "Set playbook locations"),
+        el("button", { class: "btn", onclick: () => (location.hash = "#/repos") }, "Go to repositories"))));
     return;
   }
 

@@ -12,24 +12,17 @@ import (
 	"github.com/jgsqware/pine/internal/model"
 )
 
-// dirs that never contain top-level playbooks
-var skipDirs = map[string]bool{
-	".git": true, ".github": true, "roles": true, "collections": true,
-	"inventories": true, "inventory": true, "group_vars": true, "host_vars": true,
-	"vars": true, "files": true, "templates": true, "filter_plugins": true,
-	"library": true, "molecule": true, "tests": true, ".venv": true,
-	"node_modules": true,
-}
-
 // Scan inspects the repository rooted at path and returns everything found.
-func Scan(root string) (*model.ScanResult, error) {
+// Optional scanPaths restrict playbook discovery to specific directories,
+// files or globs (relative to root).
+func Scan(root string, scanPaths ...string) (*model.ScanResult, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
 	plugin := detectPlugin(root)
 	res := &model.ScanResult{
-		Playbooks:   scanPlaybooks(root, plugin),
+		Playbooks:   scanPlaybooks(root, plugin, scanPaths),
 		Roles:       scanRoles(root, plugin),
 		Inventories: scanInventories(root),
 	}

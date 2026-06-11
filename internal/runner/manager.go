@@ -109,7 +109,7 @@ func runGit(dir string, args ...string) error {
 
 // rescan refreshes the cached scan and the repo summary counters.
 func (m *Manager) rescan(repo *model.Repo) error {
-	res, err := scanner.Scan(m.Store.RepoWorkdir(repo))
+	res, err := scanner.Scan(m.Store.RepoWorkdir(repo), repo.ScanPaths...)
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func (m *Manager) Scan(id string) (*model.ScanResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := scanner.Scan(m.Store.RepoWorkdir(&repo))
+	res, err := scanner.Scan(m.Store.RepoWorkdir(&repo), repo.ScanPaths...)
 	if err != nil {
 		return nil, err
 	}
