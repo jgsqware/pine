@@ -34,21 +34,26 @@ const (
 
 var tabNames = []string{"Repos", "Playbooks", "Roles", "Inventory", "Jobs"}
 
+// Palette adapts to the terminal background: light terminals get an
+// Atom One Light variant (tuned for contrast on #fafafa), dark terminals
+// keep the original bright-on-dark scheme.
 var (
-	cAccent  = lipgloss.Color("#4ade80")
-	cCyan    = lipgloss.Color("#22d3ee")
-	cMuted   = lipgloss.Color("#8aa396")
-	cDanger  = lipgloss.Color("#f87171")
-	cWarn    = lipgloss.Color("#fbbf24")
+	cAccent  = lipgloss.AdaptiveColor{Light: "#3f8e3f", Dark: "#4ade80"} // green
+	cCyan    = lipgloss.AdaptiveColor{Light: "#0184bc", Dark: "#22d3ee"} // cyan / blue accent
+	cMuted   = lipgloss.AdaptiveColor{Light: "#696c77", Dark: "#8aa396"} // secondary text
+	cDanger  = lipgloss.AdaptiveColor{Light: "#d52a1f", Dark: "#f87171"} // red
+	cWarn    = lipgloss.AdaptiveColor{Light: "#986801", Dark: "#fbbf24"} // amber / orange
+	cTabFg   = lipgloss.AdaptiveColor{Light: "#fafafa", Dark: "#0b0f0e"} // text on the active tab
+	cBorder  = lipgloss.AdaptiveColor{Light: "#c2c4c9", Dark: "#1f2b25"} // box / divider
 	sTitle   = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
-	sTabOn   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0b0f0e")).Background(cAccent).Padding(0, 1)
+	sTabOn   = lipgloss.NewStyle().Bold(true).Foreground(cTabFg).Background(cAccent).Padding(0, 1)
 	sTabOff  = lipgloss.NewStyle().Foreground(cMuted).Padding(0, 1)
 	sSel     = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sDim     = lipgloss.NewStyle().Foreground(cMuted)
 	sCyan    = lipgloss.NewStyle().Foreground(cCyan)
 	sErr     = lipgloss.NewStyle().Foreground(cDanger)
 	sWarn    = lipgloss.NewStyle().Foreground(cWarn)
-	sBox     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#1f2b25")).Padding(0, 1)
+	sBox     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cBorder).Padding(0, 1)
 	sLogPlay = lipgloss.NewStyle().Bold(true).Foreground(cAccent)
 	sLogTask = lipgloss.NewStyle().Foreground(cCyan)
 )
@@ -73,6 +78,11 @@ type app struct {
 	runCheck  bool
 	runTarget string // playbook path pending confirmation
 
+	// inventory tab: expandable group tree with host leaves
+	collapsed    map[string]bool // node key -> collapsed (default expanded)
+	invFilter    string          // active substring filter
+	invFiltering bool            // true while editing the filter string
+
 	// live job log
 	logJob   string
 	logLines []string
@@ -80,11 +90,18 @@ type app struct {
 }
 
 func newApp(mgr *runner.Manager) *app {
-	return &app{mgr: mgr, cursor: map[int]int{}, mode: "list"}
+	return &app{mgr: mgr, cursor: map[int]int{}, mode: "list", collapsed: map[string]bool{}}
 }
 
 type tickMsg time.Time
-type logLineMsg struct{ line string; ok bool }
+type logLineMsg struct {
+	line string
+	ok   bool
+}
+type sshDoneMsg struct {
+	host string
+	err  error
+}
 
 func tick() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -129,13 +146,7 @@ func (a *app) listLen() int {
 			return len(a.scan.Roles)
 		}
 	case tabInventory:
-		if a.scan != nil {
-			n := 0
-			for _, inv := range a.scan.Inventories {
-				n += 1 + len(inv.Groups)
-			}
-			return n
-		}
+		return len(a.invTree())
 	case tabJobs:
 		return len(a.jobs)
 	}
@@ -164,6 +175,14 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.logLines = append(a.logLines, msg.line)
 		return a, waitLine(a.logCh)
 
+	case sshDoneMsg:
+		if msg.err != nil {
+			a.status = "ssh " + msg.host + " failed: " + msg.err.Error()
+		} else {
+			a.status = "ssh session to " + msg.host + " ended"
+		}
+		return a, nil
+
 	case tea.KeyMsg:
 		return a.key(msg)
 	}
@@ -172,7 +191,34 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *app) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
-	if k == "ctrl+c" || (k == "q" && a.mode == "list") {
+	if k == "ctrl+c" {
+		return a, tea.Quit
+	}
+
+	// While editing the inventory filter, capture printable keys instead of
+	// treating them as navigation/quit shortcuts.
+	if a.invFiltering && a.mode == "list" {
+		switch k {
+		case "esc":
+			a.invFiltering, a.invFilter = false, ""
+		case "enter":
+			a.invFiltering = false
+		case "backspace":
+			if n := len(a.invFilter); n > 0 {
+				a.invFilter = a.invFilter[:n-1]
+			}
+		case "space":
+			a.invFilter += " "
+		default:
+			if len(k) == 1 && k[0] >= 0x20 && k[0] < 0x7f {
+				a.invFilter += k
+			}
+		}
+		a.clampCursor()
+		return a, nil
+	}
+
+	if k == "q" && a.mode == "list" {
 		return a, tea.Quit
 	}
 
@@ -225,9 +271,18 @@ func (a *app) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 	case "s":
-		if a.tab == tabRepos && a.cursor[a.tab] < len(a.repos) {
-			_, _ = a.mgr.SyncRepo(a.repos[a.cursor[a.tab]].ID)
-			a.status = "sync started"
+		switch a.tab {
+		case tabRepos:
+			if a.cursor[a.tab] < len(a.repos) {
+				_, _ = a.mgr.SyncRepo(a.repos[a.cursor[a.tab]].ID)
+				a.status = "sync started"
+			}
+		case tabInventory:
+			return a.sshSelected()
+		}
+	case "/":
+		if a.tab == tabInventory {
+			a.invFiltering = true
 		}
 	case "r":
 		if a.tab == tabPlaybooks && a.scan != nil && a.cursor[a.tab] < len(a.scan.Playbooks) {
@@ -298,9 +353,17 @@ func (a *app) open() tea.Cmd {
 			a.mode, a.scroll = "detail", 0
 		}
 	case tabInventory:
-		if a.scan != nil {
-			a.detail = renderInventoryDetail(a.scan, a.cursor[a.tab])
-			a.mode, a.scroll = "detail", 0
+		tree := a.invTree()
+		if i := a.cursor[a.tab]; i >= 0 && i < len(tree) {
+			r := tree[i]
+			switch r.kind {
+			case rowInv, rowGroup:
+				a.collapsed[r.key] = !a.collapsed[r.key]
+				a.clampCursor()
+			case rowHost:
+				a.detail = renderHostDetail(r.inv, r.host)
+				a.mode, a.scroll = "detail", 0
+			}
 		}
 	case tabJobs:
 		if i := a.cursor[a.tab]; i < len(a.jobs) {
@@ -352,6 +415,11 @@ func (a *app) View() string {
 		help = "enter select repo · s sync · " + help
 	case tabPlaybooks:
 		help = "r run playbook · " + help
+	case tabInventory:
+		help = "enter expand/open · s ssh · / filter · " + help
+	}
+	if a.tab == tabInventory && a.invFiltering {
+		help = "type to filter · enter apply · esc clear"
 	}
 	if a.mode == "detail" || a.mode == "log" {
 		help = "j/k scroll · G end · esc back"
@@ -384,7 +452,19 @@ func (a *app) viewList(h int) string {
 		start = cur - h + 1
 	}
 	var b strings.Builder
+	if a.tab == tabInventory && (a.invFiltering || a.invFilter != "") {
+		caret := ""
+		if a.invFiltering {
+			caret = "_"
+		}
+		b.WriteString(sDim.Render("  filter: ") + sCyan.Render(a.invFilter+caret) + "\n")
+		h--
+	}
 	if len(rows) == 0 {
+		if a.tab == tabInventory && a.invFilter != "" {
+			b.WriteString(sDim.Render("  no hosts match"))
+			return b.String()
+		}
 		b.WriteString(sDim.Render("  nothing here yet"))
 		if a.tab == tabRepos {
 			b.WriteString(sDim.Render(" - start the server and add a repo, or run with --demo"))
@@ -464,18 +544,8 @@ func (a *app) rows() []string {
 			}
 		}
 	case tabInventory:
-		if a.scan != nil {
-			for _, inv := range a.scan.Inventories {
-				rows = append(rows, sTitle.Render(fmt.Sprintf("%s (%s, %d hosts)", inv.Name, inv.Format, len(inv.Hosts))))
-				for _, g := range inv.Groups {
-					extra := ""
-					if len(g.Children) > 0 {
-						extra = "children: " + strings.Join(g.Children, ", ")
-					}
-					rows = append(rows, fmt.Sprintf("  %-20s %s  %s", g.Name,
-						sDim.Render(fmt.Sprintf("%d hosts", len(g.Hosts))), sDim.Render(extra)))
-				}
-			}
+		for _, r := range a.invTree() {
+			rows = append(rows, a.invRowString(r))
 		}
 	case tabJobs:
 		for _, j := range a.jobs {
@@ -638,63 +708,6 @@ func renderRole(r model.Role) string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			b.WriteString(fmt.Sprintf("  %s: %v\n", sCyan.Render(k), r.Defaults[k]))
-		}
-	}
-	return b.String()
-}
-
-func renderInventoryDetail(scan *model.ScanResult, cursor int) string {
-	// map cursor back to inventory header or group row
-	i := 0
-	for _, inv := range scan.Inventories {
-		if i == cursor {
-			return renderInventory(inv)
-		}
-		i++
-		for _, g := range inv.Groups {
-			if i == cursor {
-				return renderGroup(inv, g)
-			}
-			i++
-		}
-	}
-	if len(scan.Inventories) > 0 {
-		return renderInventory(scan.Inventories[0])
-	}
-	return "no inventory"
-}
-
-func renderInventory(inv model.Inventory) string {
-	var b strings.Builder
-	b.WriteString(sTitle.Render("inventory "+inv.Name) + sDim.Render("  ("+inv.Format+") "+inv.Path) + "\n\n")
-	for _, h := range inv.Hosts {
-		addr := ""
-		if v, ok := h.Vars["ansible_host"]; ok {
-			addr = fmt.Sprintf("%v", v)
-		}
-		b.WriteString(fmt.Sprintf("  %-22s %-16s %s\n", h.Name, sCyan.Render(addr), sDim.Render(strings.Join(h.Groups, ", "))))
-	}
-	return b.String()
-}
-
-func renderGroup(inv model.Inventory, g model.Group) string {
-	var b strings.Builder
-	b.WriteString(sTitle.Render("group "+g.Name) + sDim.Render("  inventory: "+inv.Name) + "\n\n")
-	if len(g.Children) > 0 {
-		b.WriteString("children: " + sCyan.Render(strings.Join(g.Children, ", ")) + "\n")
-	}
-	if len(g.Hosts) > 0 {
-		b.WriteString("hosts: " + strings.Join(g.Hosts, ", ") + "\n")
-	}
-	if len(g.Vars) > 0 {
-		b.WriteString("\n" + sDim.Render("vars:") + "\n")
-		keys := make([]string, 0, len(g.Vars))
-		for k := range g.Vars {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			b.WriteString(fmt.Sprintf("  %s: %v\n", sCyan.Render(k), g.Vars[k]))
 		}
 	}
 	return b.String()
