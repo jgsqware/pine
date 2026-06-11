@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -137,6 +138,7 @@ func cmdServe(args []string) {
 	_ = fs.Parse(args)
 
 	mgr := openManager(*data, *demo)
+	go mgr.StartScheduler(context.Background())
 	h := server.New(mgr)
 	log.Printf("Pine %s listening on http://localhost%s (data: %s)", version, *addr, *data)
 	if err := http.ListenAndServe(*addr, h); err != nil {

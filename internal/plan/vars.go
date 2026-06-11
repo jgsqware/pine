@@ -21,9 +21,14 @@ type varResolver struct {
 	profile   map[string]any
 	userVars  map[string]any
 	hostVars  map[string]map[string]any // user-supplied per-host overrides
+	hostFacts map[string]map[string]any // harvested facts per host
 }
 
 func newVarResolver(inv *model.Inventory, profile, userVars map[string]any, hostVars map[string]map[string]any) *varResolver {
+	return newVarResolverWithFacts(inv, profile, userVars, hostVars, nil)
+}
+
+func newVarResolverWithFacts(inv *model.Inventory, profile, userVars map[string]any, hostVars, hostFacts map[string]map[string]any) *varResolver {
 	r := &varResolver{
 		inv:       inv,
 		groupVars: map[string]map[string]any{},
@@ -32,6 +37,7 @@ func newVarResolver(inv *model.Inventory, profile, userVars map[string]any, host
 		profile:   profile,
 		userVars:  userVars,
 		hostVars:  hostVars,
+		hostFacts: hostFacts,
 	}
 	if inv == nil {
 		return r
@@ -136,6 +142,23 @@ func (r *varResolver) effective(host *model.Host, play *model.Play, roleDefaults
 	}
 
 	merge(r.profile)
+
+	// harvested facts (real data beats the synthetic profile)
+	if host != nil && r.hostFacts != nil {
+		if facts := r.hostFacts[host.Name]; len(facts) > 0 {
+			af := map[string]any{}
+			if prev, ok := eff["ansible_facts"].(map[string]any); ok {
+				for k, v := range prev {
+					af[k] = v
+				}
+			}
+			for k, v := range facts {
+				af[k] = v
+				eff["ansible_"+k] = v
+			}
+			eff["ansible_facts"] = af
+		}
+	}
 
 	if play != nil {
 		for _, fv := range playFileVars {

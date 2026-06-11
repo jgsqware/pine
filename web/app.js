@@ -70,6 +70,22 @@ function relTime(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
+/** Forward-looking counterpart of relTime: "in 5m" for a future timestamp. */
+function untilTime(iso) {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  const diff = t - Date.now();
+  if (diff <= 0) return "due now";
+  const s = Math.ceil(diff / 1000);
+  if (s < 60) return `in ${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `in ${h}h`;
+  return `in ${Math.round(h / 24)}d`;
+}
+
 function fmtDuration(ms) {
   if (ms === null || ms === undefined || ms <= 0) return "—";
   if (ms < 1000) return `${ms}ms`;
@@ -106,6 +122,12 @@ const ICONS = {
   sparkle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>',
   radar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7M8.5 15.5a5 5 0 0 1 0-7"/><path d="M18.4 5.6a9 9 0 0 1 0 12.8M5.6 18.4a9 9 0 0 1 0-12.8"/></svg>',
   diff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3l4 4-4 4M20 7H7M8 13l-4 4 4 4M4 17h13"/></svg>',
+  drift: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 12 6 12 9 4.5 14.5 19.5 17.5 12 22 12"/></svg>',
+  schedule: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.3 14.6A9 9 0 1 1 20 7.7"/><path d="M21 3v5h-5"/><path d="M12 7.5V12l3 1.8"/></svg>',
+  pipeline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="6" height="6" rx="1.5"/><rect x="16" y="3" width="6" height="6" rx="1.5"/><rect x="16" y="15" width="6" height="6" rx="1.5"/><path d="M8 12h3M11 6v12M11 6h5M11 18h5"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-3.6 8-10V5.5L12 2 4 5.5V12c0 6.4 8 10 8 10z"/><path d="M9 11.5l2 2 4-4"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+  timelapse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/><path d="M12 8v4l2.5 1.5"/></svg>',
 };
 
 function icon(name) {
@@ -357,7 +379,7 @@ function setRepo(id) {
   renderRepoSelector();
   // repo-scoped pages re-render on selection change
   const seg = currentRoute()[0];
-  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "playbook", "role"].includes(seg)) {
+  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "drift", "playbook", "role"].includes(seg)) {
     if (seg === "playbook" || seg === "role") location.hash = "#/" + (seg === "playbook" ? "playbooks" : "roles");
     else route();
   }
@@ -397,6 +419,7 @@ const PAGE_TITLES = {
   dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
   playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
   topology: "Topology", hygiene: "Hygiene", impact: "Impact",
+  drift: "Drift", schedules: "Schedules", pipelines: "Pipelines",
   jobs: "Jobs", job: "Job", plan: "Plan",
 };
 
@@ -420,6 +443,9 @@ async function route() {
     topology: pageTopology,
     hygiene: pageHygiene,
     impact: pageImpact,
+    drift: pageDrift,
+    schedules: pageSchedules,
+    pipelines: pagePipelines,
     jobs: pageJobs,
     job: pageJobDetail,
     plan: pagePlan,
@@ -433,7 +459,7 @@ async function route() {
 
   const view = $("#view");
   view.innerHTML = "";
-  const page = el("div", { class: "page" + (name === "topology" ? " wide" : "") });
+  const page = el("div", { class: "page" + (name === "topology" || name === "drift" ? " wide" : "") });
   view.appendChild(page);
   try {
     await handlers[name](page, segs.slice(1));
@@ -1339,8 +1365,14 @@ async function pageInventory(page) {
   if (!repo) return;
 
   page.appendChild(skeletonRows(2, 120));
-  const scan = await getScan(repo.id);
+  const [scan, facts] = await Promise.all([
+    getScan(repo.id),
+    api(`/repos/${repo.id}/facts`).catch(() => null), // facts are optional decoration
+  ]);
   page.innerHTML = "";
+
+  const factHosts = (facts && facts.hosts) || {};
+  const factCount = facts ? (facts.count ?? Object.keys(factHosts).length) : 0;
 
   const inventories = scan.inventories || [];
   if (!inventories.length) {
@@ -1359,12 +1391,39 @@ async function pageInventory(page) {
 
   const searchIn = el("input", { type: "search", placeholder: "Filter hosts…", style: { width: "220px" } });
 
+  const refreshFactsBtn = el("button", {
+    class: "btn btn-sm",
+    title: "Launch a [gather facts] job against this inventory",
+  }, icon("sync"), "Refresh facts");
+  refreshFactsBtn.onclick = async () => {
+    refreshFactsBtn.disabled = true;
+    try {
+      const job = await api(`/repos/${repo.id}/facts/refresh`, {
+        method: "POST",
+        body: JSON.stringify({ inventory: invName }),
+      });
+      toast(el("span", null, "Gathering facts… ", el("a", { href: `#/job/${job.id}` }, "job started")),
+        "success", "Facts");
+    } catch (e) {
+      toast(e.message, "error", "Facts refresh failed");
+    } finally {
+      refreshFactsBtn.disabled = false;
+    }
+  };
+
   page.appendChild(el("div", { class: "page-head" },
     el("h1", null, "Inventory"),
     inventories.length > 1 ? invSel : el("span", { class: "chip green" }, invName),
     el("span", { class: "chip" }, inv.format || "?"),
     el("span", { class: "sub mono" }, inv.path || ""),
     el("div", { class: "grow" }),
+    el("span", {
+      class: "chip" + (factCount ? " green" : ""),
+      title: facts
+        ? "Hosts with gathered ansible facts stored by Pine"
+        : "Facts could not be loaded",
+    }, factCount ? `${factCount} host${factCount === 1 ? "" : "s"} with facts` : "no facts"),
+    refreshFactsBtn,
     inv.path ? el("button", {
       class: "btn btn-sm", onclick: () => openRawFileModal(repo.id, invSourceCandidates(inv), inv.path),
     }, icon("code"), "View source") : null,
@@ -1431,9 +1490,14 @@ async function pageInventory(page) {
         i ? el("span", { class: "sep" }, "/") : null,
         el("span", { class: "chip link", onclick: () => { const gg = groupByName.get(g); if (gg) showGroup(gg); } }, g),
       ])));
-    right.appendChild(el("h3", { style: { margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px" } },
+    const hf = factHosts[h.name];
+    right.appendChild(el("h3", { style: { margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } },
       icon("host"), h.name,
-      h.vars && h.vars.ansible_host ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, String(h.vars.ansible_host)) : null));
+      h.vars && h.vars.ansible_host ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, String(h.vars.ansible_host)) : null,
+      hf ? el("span", {
+        class: "chip green",
+        title: `${hf.keys ?? 0} fact key${(hf.keys ?? 0) === 1 ? "" : "s"} · gathered ${relTime(hf.gathered_at)}`,
+      }, `facts · ${relTime(hf.gathered_at)}`) : null));
 
     const vars = h.vars || {};
     const varFilter = el("input", { type: "search", placeholder: "Filter vars…", class: "vars-filter" });
@@ -1667,11 +1731,17 @@ async function pageTopology(page) {
   const invSel = el("select", { onchange: (e) => { State.invSelection.set(repo.id, e.target.value); route(); } },
     inventories.map((i) => el("option", { value: i.name, selected: i.name === invName || null }, i.name)));
 
+  const tlBtn = el("button", {
+    class: "btn btn-sm",
+    title: "Replay how this inventory's topology evolved through git history",
+  }, icon("timelapse"), "Time-lapse");
+
   page.appendChild(el("div", { class: "page-head" },
     el("h1", null, "Topology"),
     invSel,
     el("span", { class: "sub" }, "each bubble is a group · dots are hosts · wheel to zoom · drag to pan · double-click to fit"),
-    el("div", { class: "grow" })));
+    el("div", { class: "grow" }),
+    tlBtn));
 
   // --- what-if variables panel: preview the inventory with extra vars applied ---
   const varsEd = createVarsEditor();
@@ -1738,8 +1808,95 @@ async function pageTopology(page) {
   };
   renderGraph(topo, inv);
 
+  // --- time-lapse: replay the inventory topology commit by commit ---
+  let tl = null; // { frames, idx, playing, timer, bar }
+  const exitTimelapse = () => {
+    if (!tl) return;
+    clearTimeout(tl.timer);
+    tl.bar.remove();
+    tl = null;
+    tlBtn.disabled = false;
+    renderGraph(topo, inv); // restore the live topology
+  };
+  onCleanup(() => { if (tl) clearTimeout(tl.timer); });
+
+  const startTimelapse = (frames) => {
+    const caption = el("span", { class: "tl-caption mono" });
+    const counter = el("span", { class: "tl-count muted small mono" });
+    const slider = el("input", {
+      type: "range", min: "0", max: String(frames.length - 1), value: "0",
+      class: "tl-slider", title: "Scrub through commits",
+    });
+    const prevBtn = el("button", { class: "btn btn-sm", title: "Previous commit" }, "⏮");
+    const playBtn = el("button", { class: "btn btn-sm", title: "Play / pause (800ms per frame)" }, "⏯");
+    const nextBtn = el("button", { class: "btn btn-sm", title: "Next commit" }, "⏭");
+    const exitBtn = el("button", { class: "btn btn-sm", title: "Back to the live topology" }, "✕ Exit");
+    const bar = el("div", { class: "timelapse-bar" }, prevBtn, playBtn, nextBtn, slider, counter, caption, exitBtn);
+    canvasBox.appendChild(bar);
+    tl = { frames, idx: 0, playing: false, timer: 0, bar };
+
+    const show = (i) => {
+      if (!tl) return;
+      tl.idx = Math.max(0, Math.min(frames.length - 1, i));
+      const f = frames[tl.idx];
+      slider.value = String(tl.idx);
+      counter.textContent = `${tl.idx + 1}/${frames.length}`;
+      caption.textContent = `${f.commit} · ${f.message || "(no message)"} · ${relTime(f.date)} · ${f.hosts ?? 0} hosts / ${f.groups ?? 0} groups`;
+      caption.title = caption.textContent;
+      renderGraph(f.topology || {}, inv); // replaces only the canvas; the player bar stays
+    };
+    const stop = () => {
+      if (!tl) return;
+      tl.playing = false;
+      clearTimeout(tl.timer);
+      playBtn.classList.remove("active");
+    };
+    const tick = () => {
+      if (!tl || !tl.playing) return;
+      if (tl.idx >= frames.length - 1) { stop(); return; }
+      show(tl.idx + 1);
+      tl.timer = setTimeout(tick, 800);
+    };
+    const togglePlay = () => {
+      if (!tl) return;
+      if (tl.playing) { stop(); return; }
+      tl.playing = true;
+      playBtn.classList.add("active");
+      if (tl.idx >= frames.length - 1) show(0); // restart from the oldest frame
+      tl.timer = setTimeout(tick, 800);
+    };
+    playBtn.onclick = togglePlay;
+    prevBtn.onclick = () => { stop(); show(tl.idx - 1); };
+    nextBtn.onclick = () => { stop(); show(tl.idx + 1); };
+    slider.oninput = () => { stop(); show(Number(slider.value)); };
+    exitBtn.onclick = exitTimelapse;
+    show(0);
+    togglePlay();
+  };
+
+  tlBtn.onclick = async () => {
+    tlBtn.disabled = true;
+    let res;
+    try {
+      res = await api(`/repos/${repo.id}/timelapse?inventory=${encodeURIComponent(invName)}&limit=30`);
+    } catch (e) {
+      // typically 400 — not a git repository; keep the button disabled with the reason
+      tlBtn.title = e.message;
+      toast(e.message, "error", "Time-lapse unavailable");
+      return;
+    }
+    const frames = (res && res.frames) || [];
+    if (!frames.length) {
+      tlBtn.disabled = false;
+      toast("No history frames found for this inventory.", "error", "Time-lapse");
+      return;
+    }
+    startTimelapse(frames);
+  };
+
   previewBtn.onclick = async () => {
     previewBtn.disabled = true;
+    if (tl) exitTimelapse(); // what-if preview always applies to the live topology
     try {
       varsEd.persist();
       const res = await api(`/repos/${repo.id}/inventory-preview`, {
@@ -2457,6 +2614,867 @@ function renderImpact(box, repo, imp) {
 }
 
 /* ============================================================
+   4j-1. Drift — playbook × host heatmap from --check runs
+   ============================================================ */
+
+async function pageDrift(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Drift"),
+    el("span", { class: "sub" }, `where reality diverges from ${repo.name}`),
+    el("div", { class: "grow" }),
+    el("button", { class: "btn btn-primary", onclick: () => openDriftCheckModal(repo) },
+      icon("play"), "Run drift check")));
+
+  const box = el("div");
+  page.appendChild(box);
+  box.appendChild(skeletonRows(3, 80));
+
+  let drift;
+  try {
+    drift = await api(`/repos/${repo.id}/drift`);
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Could not load drift"),
+      el("p", null, e.message),
+      el("button", { class: "btn", onclick: route }, "Retry")));
+    toast(e.message, "error", "Drift failed");
+    return;
+  }
+  box.innerHTML = "";
+
+  const playbooks = (drift && drift.playbooks) || [];
+  const hosts = (drift && drift.hosts) || [];
+  const sum = (drift && drift.summary) || {};
+
+  if (!playbooks.length) {
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No drift data yet"),
+      el("p", null, "No drift data yet — run a drift check (--check jobs) to see how reality diverges from your repo."),
+      el("button", { class: "btn btn-primary", onclick: () => openDriftCheckModal(repo) },
+        icon("play"), "Run drift check")));
+    return;
+  }
+
+  // summary strip
+  const drifted = sum.hosts_with_drift ?? 0;
+  box.appendChild(el("div", { class: "panel drift-summary" },
+    el("span", { class: "sum-chip" },
+      el("b", null, String(sum.checked_playbooks ?? playbooks.length)), el("span", null, "playbooks checked")),
+    el("span", { class: "sum-chip " + (drifted > 0 ? "failed" : "ok") },
+      el("b", null, String(drifted)), el("span", null, drifted === 1 ? "host with drift" : "hosts with drift")),
+    el("span", { class: "sum-chip changed" },
+      el("b", null, String(sum.total_changed ?? 0)), el("span", null, "changed tasks")),
+    el("div", { class: "grow" }),
+    el("span", { class: "muted small", title: sum.last_checked || "" }, `last checked ${relTime(sum.last_checked)}`)));
+
+  // heatmap cell: colored by changed count, red border on failures
+  const cellFor = (pb, host) => {
+    const cell = (pb.hosts || {})[host];
+    if (!cell) {
+      return el("td", { class: "drift-cell" },
+        el("span", { class: "drift-na", title: `${host} was not part of the last --check run of ${pb.playbook}` }, "·"));
+    }
+    const changed = cell.changed || 0;
+    const failed = cell.failed || 0;
+    const sev = changed >= 3 ? "high" : changed > 0 ? "mid" : "none";
+    const tip = [
+      `${pb.playbook} × ${host} — ${changed} changed · ${failed} failed`,
+      ...(cell.tasks || []).map((t) => "· " + t),
+    ].join("\n");
+    return el("td", { class: "drift-cell" },
+      el("button", {
+        class: `drift-dot sev-${sev}` + (failed > 0 ? " has-failed" : ""),
+        title: tip,
+        onclick: () => openDriftCellModal(pb, host, cell),
+      }, changed > 0 ? String(changed) : ""));
+  };
+
+  box.appendChild(el("div", { class: "table-wrap drift-heatmap" },
+    el("table", { class: "data" },
+      el("thead", null, el("tr", null,
+        el("th", null, "Playbook"),
+        hosts.map((h) => el("th", { class: "drift-host-th mono" }, h)))),
+      el("tbody", null, playbooks.map((pb) => el("tr", null,
+        el("td", null,
+          el("div", { class: "mono", style: { color: "var(--text)" } }, pb.playbook),
+          pb.job_id
+            ? el("a", { class: "muted small", href: `#/job/${pb.job_id}`, title: pb.finished || "" }, `checked ${relTime(pb.finished)}`)
+            : el("div", { class: "muted small", title: pb.finished || "" }, `checked ${relTime(pb.finished)}`)),
+        hosts.map((h) => cellFor(pb, h))))))));
+
+  box.appendChild(el("div", { class: "drift-legend" },
+    el("span", { class: "li" }, el("span", { class: "drift-dot sev-none" }), "in sync"),
+    el("span", { class: "li" }, el("span", { class: "drift-dot sev-mid" }, "2"), "1–2 changed"),
+    el("span", { class: "li" }, el("span", { class: "drift-dot sev-high" }, "3"), "3+ changed"),
+    el("span", { class: "li" }, el("span", { class: "drift-dot sev-none has-failed" }), "failures"),
+    el("span", { class: "li" }, el("span", { class: "drift-na" }, "·"), "not checked")));
+}
+
+/** Cell click → modal with the drifted task names + link to the source job. */
+function openDriftCellModal(pb, host, cell) {
+  const tasks = cell.tasks || [];
+  openModal({
+    title: `${pb.playbook} × ${host}`,
+    body: el("div", null,
+      el("div", { class: "row", style: { marginBottom: "12px" } },
+        el("span", { class: "sum-chip changed" }, el("b", null, String(cell.changed || 0)), el("span", null, "would change")),
+        el("span", { class: "sum-chip failed" }, el("b", null, String(cell.failed || 0)), el("span", null, "failed")),
+        el("span", { class: "muted small", title: pb.finished || "" }, `checked ${relTime(pb.finished)}`)),
+      tasks.length
+        ? el("div", { class: "drift-task-list" },
+            tasks.map((t) => el("div", { class: "drift-task-item mono" }, t)))
+        : el("p", { class: "muted", style: { margin: 0 } },
+            (cell.failed || 0) > 0
+              ? "No drifted tasks, but the check run reported failures on this host."
+              : "No drifted tasks — this host matches the repo.")),
+    footer: [
+      el("button", { class: "btn", onclick: closeModal }, "Close"),
+      pb.job_id ? el("a", { class: "btn btn-secondary", href: `#/job/${pb.job_id}`, onclick: closeModal },
+        icon("code"), "View source job") : null,
+    ],
+    width: "540px",
+  });
+}
+
+/** Playbook multi-select → POST /drift/check (empty selection = all). */
+function openDriftCheckModal(repo) {
+  const startBtn = el("button", { class: "btn btn-primary", disabled: true }, icon("play"), "Start drift check");
+  const { body } = openModal({
+    title: "Run drift check",
+    body: skeletonRows(2, 44),
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), startBtn],
+    width: "540px",
+  });
+
+  const boxes = [];
+  getScan(repo.id).then((scan) => {
+    const pbs = scan.playbooks || [];
+    body.innerHTML = "";
+    if (!pbs.length) {
+      body.appendChild(el("div", { class: "empty" },
+        el("h3", null, "No playbooks"),
+        el("p", null, "This repository has no playbooks to check.")));
+      return;
+    }
+    body.appendChild(el("p", { class: "muted small", style: { marginTop: 0 } },
+      "Pine launches one --check job per selected playbook and computes drift from the results. Nothing is changed on the hosts."));
+    const list = el("div", { class: "drift-pb-list" });
+    for (const pb of pbs) {
+      const cb = el("input", { type: "checkbox", checked: true, value: pb.path });
+      boxes.push(cb);
+      list.appendChild(el("label", { class: "check-row drift-pb-row" }, cb, el("span", { class: "mono" }, pb.path)));
+    }
+    body.appendChild(list);
+    body.appendChild(el("div", { class: "row small", style: { marginTop: "8px", gap: "12px" } },
+      el("a", { href: "#", onclick: (e) => { e.preventDefault(); boxes.forEach((b) => (b.checked = true)); } }, "select all"),
+      el("a", { href: "#", onclick: (e) => { e.preventDefault(); boxes.forEach((b) => (b.checked = false)); } }, "select none")));
+    startBtn.disabled = false;
+  }).catch((e) => {
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Scan failed"), el("p", null, e.message)));
+    toast(e.message, "error");
+  });
+
+  startBtn.onclick = async () => {
+    const selected = boxes.filter((b) => b.checked).map((b) => b.value);
+    if (!selected.length) { toast("Select at least one playbook", "error"); return; }
+    startBtn.disabled = true;
+    try {
+      const all = selected.length === boxes.length;
+      const jobs = (await api(`/repos/${repo.id}/drift/check`, {
+        method: "POST",
+        body: JSON.stringify({ playbooks: all ? [] : selected }),
+      })) || [];
+      closeModal();
+      toast(el("span", null,
+        `${jobs.length} drift-check job${jobs.length === 1 ? "" : "s"} started — `,
+        el("a", { href: "#/jobs" }, "view jobs")), "success", "Drift check");
+    } catch (e) {
+      startBtn.disabled = false;
+      toast(e.message, "error");
+    }
+  };
+}
+
+/* ============================================================
+   4j-2. Schedules — recurring, optionally plan-gated runs
+   ============================================================ */
+
+async function pageSchedules(page) {
+  const box = el("div");
+  let schedules = null;
+
+  const sig = (list) => (list || []).map((s) =>
+    [s.id, s.status, s.enabled, s.interval, s.gate, s.next_run_at, s.last_run_id, s.approved_at, s.blocked_reason].join("")).join("\n");
+
+  const draw = () => {
+    box.innerHTML = "";
+    if (!schedules.length) {
+      box.appendChild(el("div", { class: "empty" },
+        el("h3", null, "No schedules yet"),
+        el("p", null, "Run a playbook every 15 minutes, hour or day. With plan-gating on, Pine refuses to run when the current plan no longer matches the one you approved."),
+        el("button", { class: "btn btn-primary", onclick: () => openScheduleModal(null, () => refresh()) },
+          icon("plus"), "New schedule")));
+      return;
+    }
+    const grid = el("div", { class: "grid cols-3" });
+    for (const s of schedules) grid.appendChild(scheduleCard(s, () => refresh()));
+    box.appendChild(grid);
+  };
+
+  const refresh = async (silent = false) => {
+    try {
+      const next = (await api("/schedules")) || [];
+      const changed = schedules === null || sig(next) !== sig(schedules);
+      schedules = next;
+      if (changed) draw();
+    } catch (e) {
+      if (!silent) {
+        box.innerHTML = "";
+        box.appendChild(el("div", { class: "empty" },
+          el("h3", null, "Could not load schedules"),
+          el("p", null, e.message),
+          el("button", { class: "btn", onclick: route }, "Retry")));
+        toast(e.message, "error", "Schedules failed");
+      }
+    }
+  };
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Schedules"),
+    el("span", { class: "sub" }, "recurring playbook runs, optionally gated on an approved plan"),
+    el("div", { class: "grow" }),
+    el("button", { class: "btn btn-primary", onclick: () => openScheduleModal(null, () => refresh()) },
+      icon("plus"), "New schedule")));
+  page.appendChild(box);
+  box.appendChild(skeletonRows(3, 110));
+
+  await refresh();
+  const timer = setInterval(() => refresh(true), 10000);
+  onCleanup(() => clearInterval(timer));
+}
+
+function scheduleCard(s, refresh) {
+  const blocked = s.status === "blocked";
+
+  const toggle = el("input", { type: "checkbox", checked: s.enabled || null });
+  toggle.onchange = async () => {
+    toggle.disabled = true;
+    try {
+      await api(`/schedules/${s.id}`, { method: "PATCH", body: JSON.stringify({ enabled: toggle.checked }) });
+      toast(toggle.checked ? `${s.playbook} enabled` : `${s.playbook} paused`, "success");
+      refresh();
+    } catch (e) {
+      toast(e.message, "error");
+      toggle.checked = !toggle.checked;
+      toggle.disabled = false;
+    }
+  };
+
+  const runNowBtn = el("button", { class: "btn btn-sm", title: "Launch this schedule's job immediately" },
+    icon("play"), "Run now");
+  runNowBtn.onclick = async () => {
+    runNowBtn.disabled = true;
+    try {
+      const job = await api(`/schedules/${s.id}/run-now`, { method: "POST" });
+      toast(el("span", null, `${s.playbook} queued — `, el("a", { href: `#/job/${job.id}` }, "view job")),
+        "success", "Run started");
+      refresh();
+    } catch (e) { toast(e.message, "error"); }
+    runNowBtn.disabled = false;
+  };
+
+  return el("div", { class: "card sched-card" },
+    el("div", { class: "row", style: { gap: "8px" } },
+      el("span", { class: "name mono" }, s.playbook),
+      el("div", { class: "grow" }),
+      el("span", { class: `pill st-${s.status}`, title: blocked ? (s.blocked_reason || "") : null },
+        blocked ? "BLOCKED" : s.status)),
+    el("div", { class: "muted small" },
+      s.repo_name || s.repo_id,
+      s.inventory ? el("span", null, " · ", el("span", { class: "mono" }, s.inventory)) : null),
+    el("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } },
+      el("span", { class: "chip" }, icon("schedule"), `every ${s.interval}`),
+      s.gate ? el("span", {
+        class: "chip green",
+        title: "Plan-gated: refuses to run when the current plan differs from the approved one",
+      }, icon("shield"), "plan-gated") : null,
+      s.check ? el("span", { class: "flag-badge check" }, "check") : null,
+      s.limit ? el("span", { class: "chip mono" }, `limit ${s.limit}`) : null,
+      s.tags ? el("span", { class: "chip mono" }, `tags ${s.tags}`) : null),
+    blocked && s.blocked_reason
+      ? el("div", { class: "sched-blocked-reason" }, icon("shield"), s.blocked_reason)
+      : null,
+    el("div", { class: "row small muted", style: { gap: "14px" } },
+      el("span", { title: s.next_run_at || "" },
+        !s.enabled ? "paused" : blocked ? "waiting for approval" : `next run ${untilTime(s.next_run_at)}`),
+      s.last_run_id
+        ? el("a", { href: `#/job/${s.last_run_id}`, title: s.last_run_at || "" }, `last run ${relTime(s.last_run_at)}`)
+        : el("span", null, "never ran")),
+    el("div", { class: "actions" },
+      el("label", { class: "switch", title: s.enabled ? "Disable this schedule" : "Enable this schedule" },
+        toggle, el("span", { class: "slider" })),
+      runNowBtn,
+      blocked ? el("button", {
+        class: "btn btn-sm btn-warn",
+        onclick: () => openApproveScheduleModal(s, refresh),
+      }, icon("shield"), "Approve plan") : null,
+      el("div", { class: "grow" }),
+      el("button", { class: "btn btn-sm", onclick: () => openScheduleModal(s, refresh) }, "Edit"),
+      el("button", {
+        class: "btn btn-sm btn-danger", title: "Delete schedule",
+        onclick: async () => {
+          const ok = await confirmModal("Delete schedule",
+            `Stop running “${s.playbook}” every ${s.interval}? Job history is kept.`);
+          if (!ok) return;
+          try {
+            await api(`/schedules/${s.id}`, { method: "DELETE" });
+            toast("Schedule deleted", "success");
+            refresh();
+          } catch (e) { toast(e.message, "error"); }
+        },
+      }, icon("trash"))));
+}
+
+/** Blocked schedule → review/approve the current plan fingerprint. */
+function openApproveScheduleModal(s, refresh) {
+  const approveBtn = el("button", { class: "btn btn-primary" }, icon("check"), "Approve & resume");
+  approveBtn.onclick = async () => {
+    approveBtn.disabled = true;
+    try {
+      await api(`/schedules/${s.id}/approve`, { method: "POST" });
+      closeModal();
+      toast(`${s.playbook} — current plan approved, scheduled runs resume`, "success", "Plan approved");
+      refresh();
+    } catch (e) {
+      approveBtn.disabled = false;
+      toast(e.message, "error");
+    }
+  };
+  const viewPlanBtn = el("button", {
+    class: "btn btn-secondary",
+    title: "Open the current plan for this schedule's exact parameters",
+  }, icon("clipboard"), "View plan");
+  viewPlanBtn.onclick = () => runPlan({
+    repo_id: s.repo_id, playbook: s.playbook, inventory: s.inventory || "",
+    limit: s.limit || "", tags: s.tags || "", check: !!s.check,
+    vars: {}, host_vars: {}, fact_profile: "",
+  }, viewPlanBtn);
+
+  openModal({
+    title: "Approve changed plan",
+    body: el("div", null,
+      el("p", { class: "muted", style: { marginTop: 0 } },
+        "The plan changed since the last approval. Review and approve to let scheduled runs resume."),
+      s.blocked_reason ? el("div", { class: "sched-blocked-reason" }, icon("shield"), s.blocked_reason) : null,
+      el("div", { class: "row small muted", style: { marginTop: "12px", gap: "12px" } },
+        el("span", { class: "mono" }, s.playbook),
+        s.inventory ? el("span", { class: "mono" }, s.inventory) : null,
+        el("span", null, s.approved_at ? `last approved ${relTime(s.approved_at)}` : "never approved"))),
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), viewPlanBtn, approveBtn],
+  });
+}
+
+const SCHEDULE_INTERVALS = ["15m", "1h", "6h", "24h"];
+
+/** Create (existing = null) or edit a schedule. */
+async function openScheduleModal(existing, onDone) {
+  try { await loadRepos(); } catch (e) { toast(e.message, "error"); return; }
+  if (!State.repos.length) {
+    toast("Connect a repository first", "error", "No repositories");
+    location.hash = "#/repos";
+    return;
+  }
+
+  const repoSel = el("select");
+  const pbSel = el("select");
+  const invSel = el("select");
+  const limitIn = el("input", { type: "text", placeholder: "e.g. web01,db* (optional)" });
+  const tagsIn = el("input", { type: "text", placeholder: "e.g. config,deploy (optional)" });
+  const checkBox = el("input", { type: "checkbox" });
+  const gateBox = el("input", { type: "checkbox" });
+  const intervalSel = el("select", null,
+    SCHEDULE_INTERVALS.map((v) => el("option", { value: v }, `every ${v}`)),
+    el("option", { value: "custom" }, "custom…"));
+  const customIn = el("input", { type: "text", placeholder: "e.g. 45m, 2h, 7d", style: { display: "none", marginTop: "6px" } });
+  intervalSel.addEventListener("change", () => {
+    customIn.style.display = intervalSel.value === "custom" ? "" : "none";
+    if (intervalSel.value === "custom") customIn.focus();
+  });
+
+  for (const r of State.repos) repoSel.appendChild(el("option", { value: r.id }, r.name));
+  repoSel.value = (existing && existing.repo_id) || State.repoId || State.repos[0].id;
+  if (!repoSel.value) repoSel.value = State.repos[0].id;
+  limitIn.value = (existing && existing.limit) || "";
+  tagsIn.value = (existing && existing.tags) || "";
+  checkBox.checked = !!(existing && existing.check);
+  gateBox.checked = existing ? !!existing.gate : true; // gate defaults ON
+  if (existing && existing.interval) {
+    if (SCHEDULE_INTERVALS.includes(existing.interval)) intervalSel.value = existing.interval;
+    else { intervalSel.value = "custom"; customIn.value = existing.interval; customIn.style.display = ""; }
+  }
+
+  const saveBtn = el("button", { class: "btn btn-primary" }, existing ? "Save changes" : "Create schedule");
+
+  const fillScanOptions = async () => {
+    pbSel.innerHTML = ""; invSel.innerHTML = "";
+    pbSel.appendChild(el("option", { value: "" }, "Loading…"));
+    invSel.appendChild(el("option", { value: "" }, "Loading…"));
+    pbSel.disabled = invSel.disabled = saveBtn.disabled = true;
+    try {
+      const scan = await getScan(repoSel.value);
+      pbSel.innerHTML = ""; invSel.innerHTML = "";
+      const pbs = scan.playbooks || [];
+      const invs = scan.inventories || [];
+      if (!pbs.length) pbSel.appendChild(el("option", { value: "" }, "No playbooks found"));
+      for (const p of pbs) pbSel.appendChild(el("option", { value: p.path }, `${p.name || p.path}  (${p.path})`));
+      if (!invs.length) invSel.appendChild(el("option", { value: "" }, "No inventories found"));
+      for (const i of invs) invSel.appendChild(el("option", { value: i.path || i.name }, i.name));
+      if (existing && existing.playbook && pbs.some((p) => p.path === existing.playbook)) pbSel.value = existing.playbook;
+      if (existing && existing.inventory) {
+        const opt = [...invSel.options].find((o) => o.value === existing.inventory);
+        if (opt) invSel.value = existing.inventory;
+      }
+      pbSel.disabled = !pbs.length;
+      invSel.disabled = !invs.length;
+      saveBtn.disabled = !pbs.length;
+    } catch (e) {
+      pbSel.innerHTML = ""; invSel.innerHTML = "";
+      pbSel.appendChild(el("option", { value: "" }, "Scan failed"));
+      invSel.appendChild(el("option", { value: "" }, "Scan failed"));
+      toast(e.message, "error");
+    }
+  };
+  repoSel.addEventListener("change", fillScanOptions);
+
+  saveBtn.onclick = async () => {
+    if (!pbSel.value) { toast("Pick a playbook", "error"); return; }
+    const interval = intervalSel.value === "custom" ? customIn.value.trim() : intervalSel.value;
+    if (!interval) { toast("Interval is required", "error"); customIn.focus(); return; }
+    const body = {
+      repo_id: repoSel.value,
+      playbook: pbSel.value,
+      inventory: invSel.value || "",
+      limit: limitIn.value.trim(),
+      tags: tagsIn.value.trim(),
+      check: checkBox.checked,
+      interval,
+      gate: gateBox.checked,
+      enabled: existing ? !!existing.enabled : true,
+    };
+    saveBtn.disabled = true;
+    try {
+      if (existing) await api(`/schedules/${existing.id}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api("/schedules", { method: "POST", body: JSON.stringify(body) });
+      closeModal();
+      toast(existing ? "Schedule updated" : `${body.playbook} runs every ${interval}`,
+        "success", existing ? "Saved" : "Schedule created");
+      if (onDone) onDone();
+    } catch (e) {
+      saveBtn.disabled = false;
+      toast(e.message, "error");
+    }
+  };
+
+  openModal({
+    title: existing ? `Edit schedule — ${existing.playbook}` : "New schedule",
+    body: el("div", null,
+      el("div", { class: "field" }, el("label", null, "Repository"), repoSel),
+      el("div", { class: "field" }, el("label", null, "Playbook"), pbSel),
+      el("div", { class: "field" }, el("label", null, "Inventory"), invSel),
+      el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" } },
+        el("div", { class: "field" }, el("label", null, "Limit"), limitIn),
+        el("div", { class: "field" }, el("label", null, "Tags"), tagsIn)),
+      el("div", { class: "field" }, el("label", null, "Interval"), intervalSel, customIn,
+        el("span", { class: "hint" }, "How often the playbook runs.")),
+      el("label", { class: "check-row", style: { marginBottom: "10px" } }, checkBox,
+        el("span", null, "Check mode ", el("span", { class: "muted" }, "(dry run, no changes applied)"))),
+      el("label", { class: "check-row" }, gateBox,
+        el("span", null, "Plan-gate ", el("span", { class: "muted" },
+          "— refuse to run when the current plan differs from the approved one")))),
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), saveBtn],
+  });
+  fillScanOptions();
+}
+
+/* ============================================================
+   4j-3. Pipelines — multi-step runs with approval gates
+   ============================================================ */
+
+const PIPELINE_TERMINAL = new Set(["success", "failed", "canceled"]);
+
+async function pagePipelines(page) {
+  const pipeBox = el("div", { class: "grid cols-3" });
+  const runsBox = el("div");
+  let pipelines = null;
+  let runs = null;
+  let pollTimer = 0;
+  onCleanup(() => clearTimeout(pollTimer));
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Pipelines"),
+    el("span", { class: "sub" }, "chain playbooks into multi-step runs with approval gates"),
+    el("div", { class: "grow" }),
+    el("button", { class: "btn btn-primary", onclick: () => openPipelineModal(null, () => refreshPipelines()) },
+      icon("plus"), "New pipeline")));
+  page.appendChild(el("div", { class: "section-title" }, "Pipelines"));
+  page.appendChild(pipeBox);
+  page.appendChild(el("div", { class: "section-title" }, "Recent runs"));
+  page.appendChild(runsBox);
+  pipeBox.appendChild(skeletonRows(2, 150));
+  runsBox.appendChild(skeletonRows(2, 64));
+
+  const pipelineCard = (pl) => {
+    const steps = pl.steps || [];
+    const runBtn = el("button", { class: "btn btn-sm btn-primary" }, icon("play"), "Run");
+    runBtn.onclick = async () => {
+      runBtn.disabled = true;
+      try {
+        await api(`/pipelines/${pl.id}/run`, { method: "POST" });
+        toast(`${pl.name} started`, "success", "Pipeline run");
+        refreshRuns(true);
+      } catch (e) { toast(e.message, "error"); }
+      runBtn.disabled = false;
+    };
+    return el("div", { class: "card pipe-card" },
+      el("div", { class: "row", style: { gap: "8px" } },
+        el("span", { style: { fontWeight: 650, fontSize: "15px" } }, pl.name),
+        el("div", { class: "grow" }),
+        el("span", { class: "chip" }, `${steps.length} step${steps.length === 1 ? "" : "s"}`)),
+      el("div", { class: "muted small" }, pl.repo_name || pl.repo_id),
+      el("div", { class: "pipe-steps" }, steps.flatMap((st, i) => [
+        i ? el("span", { class: "pipe-arrow" }, "→") : null,
+        el("span", {
+          class: "step-chip",
+          title: `${st.playbook}${st.inventory ? " @ " + st.inventory : ""}`
+            + `${st.limit ? " · limit " + st.limit : ""}${st.tags ? " · tags " + st.tags : ""}${st.check ? " · check" : ""}`
+            + `${st.require_approval ? "\npauses for human approval before this step" : ""}`
+            + `${st.continue_on_failure ? "\ncontinues even if this step fails" : ""}`,
+        },
+          st.require_approval ? el("span", { class: "step-gate" }, icon("shield")) : null,
+          st.name || st.playbook),
+      ])),
+      el("div", { class: "actions" },
+        runBtn,
+        el("button", {
+          class: "btn btn-sm", title: "Edit and rebuild this pipeline",
+          onclick: () => openPipelineModal(pl, () => refreshPipelines()),
+        }, "Edit"),
+        el("div", { class: "grow" }),
+        el("button", {
+          class: "btn btn-sm btn-danger",
+          onclick: async () => {
+            const ok = await confirmModal("Delete pipeline", `Remove “${pl.name}”? Past pipeline runs are kept.`);
+            if (!ok) return;
+            try {
+              await api(`/pipelines/${pl.id}`, { method: "DELETE" });
+              toast(`Removed ${pl.name}`, "success");
+              refreshPipelines();
+            } catch (e) { toast(e.message, "error"); }
+          },
+        }, icon("trash"), "Delete")));
+  };
+
+  const drawPipelines = () => {
+    pipeBox.innerHTML = "";
+    if (!pipelines.length) {
+      pipeBox.style.display = "block";
+      pipeBox.appendChild(el("div", { class: "empty" },
+        el("h3", null, "No pipelines yet"),
+        el("p", null, "A pipeline chains playbook steps — canary on one host, pause for approval, then roll out everywhere."),
+        el("button", { class: "btn btn-primary", onclick: () => openPipelineModal(null, () => refreshPipelines()) },
+          icon("plus"), "New pipeline")));
+      return;
+    }
+    pipeBox.style.display = "grid";
+    for (const pl of pipelines) pipeBox.appendChild(pipelineCard(pl));
+  };
+
+  const stepChip = (st) => {
+    const inner = [el("span", { class: "step-dot" }), st.name || "step"];
+    const cls = `step-chip run-st-${st.status || "pending"}`;
+    return st.job_id
+      ? el("a", { class: cls, href: `#/job/${st.job_id}`, title: `${st.status} — view job` }, inner)
+      : el("span", { class: cls, title: st.status || "pending" }, inner);
+  };
+
+  const runRow = (r) => {
+    const waiting = r.status === "waiting_approval";
+    const active = !PIPELINE_TERMINAL.has(r.status);
+    const approveBtn = el("button", { class: "btn btn-sm btn-warn" }, icon("shield"), "Approve & continue");
+    approveBtn.onclick = async () => {
+      approveBtn.disabled = true;
+      try {
+        await api(`/pipeline-runs/${r.id}/approve`, { method: "POST" });
+        toast(`${r.pipeline_name} — continuing`, "success", "Approved");
+      } catch (e) { toast(e.message, "error"); }
+      refreshRuns(true);
+    };
+    const cancelBtn = el("button", { class: "btn btn-sm btn-danger" }, icon("stop"), "Cancel");
+    cancelBtn.onclick = async () => {
+      cancelBtn.disabled = true;
+      try {
+        await api(`/pipeline-runs/${r.id}/cancel`, { method: "POST" });
+        toast(`${r.pipeline_name} canceled`, "success");
+      } catch (e) { toast(e.message, "error"); }
+      refreshRuns(true);
+    };
+    return el("div", { class: "panel pipe-run" + (waiting ? " waiting" : "") },
+      el("div", { class: "row", style: { gap: "10px" } },
+        el("span", { class: `pill st-${r.status}` }, (r.status || "?").replace(/_/g, " ")),
+        el("span", { style: { fontWeight: 600 } }, r.pipeline_name),
+        el("span", { class: "muted small", title: r.created || "" },
+          PIPELINE_TERMINAL.has(r.status) && r.finished
+            ? `finished ${relTime(r.finished)}`
+            : `started ${relTime(r.created)}`),
+        el("div", { class: "grow" }),
+        waiting ? approveBtn : null,
+        active ? cancelBtn : null),
+      el("div", { class: "pipe-steps" }, (r.steps || []).flatMap((st, i) => [
+        i ? el("span", { class: "pipe-arrow" }, "→") : null,
+        stepChip(st),
+      ])));
+  };
+
+  const drawRuns = () => {
+    runsBox.innerHTML = "";
+    if (!runs.length) {
+      runsBox.appendChild(el("div", { class: "empty" },
+        el("h3", null, "No pipeline runs yet"),
+        el("p", null, "Press Run on a pipeline — each run shows up here with live per-step status and links to its jobs.")));
+      return;
+    }
+    for (const r of runs) runsBox.appendChild(runRow(r));
+  };
+
+  const refreshPipelines = async () => {
+    try {
+      pipelines = (await api("/pipelines")) || [];
+      drawPipelines();
+    } catch (e) {
+      pipeBox.innerHTML = "";
+      pipeBox.style.display = "block";
+      pipeBox.appendChild(el("div", { class: "empty" },
+        el("h3", null, "Could not load pipelines"), el("p", null, e.message)));
+      toast(e.message, "error", "Pipelines failed");
+    }
+  };
+
+  const runsSig = (list) => (list || []).map((r) =>
+    r.id + r.status + (r.steps || []).map((st) => st.status + (st.job_id || "")).join(",")).join("|");
+
+  // poll every 5s while any run is still moving
+  const refreshRuns = async (silent = false) => {
+    try {
+      const next = (await api("/pipeline-runs")) || [];
+      const changed = runs === null || runsSig(next) !== runsSig(runs);
+      runs = next;
+      if (changed) drawRuns();
+    } catch (e) {
+      if (!silent) {
+        runsBox.innerHTML = "";
+        runsBox.appendChild(el("div", { class: "empty" },
+          el("h3", null, "Could not load runs"), el("p", null, e.message)));
+      }
+    }
+    clearTimeout(pollTimer);
+    if ((runs || []).some((r) => !PIPELINE_TERMINAL.has(r.status))) {
+      pollTimer = setTimeout(() => refreshRuns(true), 5000);
+    }
+  };
+
+  await Promise.all([refreshPipelines(), refreshRuns()]);
+}
+
+/** Pipeline builder: name + repo + dynamic, reorderable step list.
+ *  Editing rebuilds (POST new, DELETE old) — the API has no pipeline PATCH. */
+async function openPipelineModal(existing, onDone) {
+  try { await loadRepos(); } catch (e) { toast(e.message, "error"); return; }
+  if (!State.repos.length) {
+    toast("Connect a repository first", "error", "No repositories");
+    location.hash = "#/repos";
+    return;
+  }
+
+  const nameIn = el("input", { type: "text", placeholder: "Deploy shop", autocomplete: "off" });
+  nameIn.value = (existing && existing.name) || "";
+  const repoSel = el("select");
+  for (const r of State.repos) repoSel.appendChild(el("option", { value: r.id }, r.name));
+  repoSel.value = (existing && existing.repo_id) || State.repoId || State.repos[0].id;
+  if (!repoSel.value) repoSel.value = State.repos[0].id;
+
+  let scanPbs = [];
+  let scanInvs = [];
+  const newStep = (data) => ({
+    name: (data && data.name) || "",
+    playbook: (data && data.playbook) || "",
+    inventory: (data && data.inventory) || "",
+    limit: (data && data.limit) || "",
+    tags: (data && data.tags) || "",
+    check: !!(data && data.check),
+    require_approval: !!(data && data.require_approval),
+    continue_on_failure: !!(data && data.continue_on_failure),
+  });
+  const steps = (existing && (existing.steps || []).length)
+    ? existing.steps.map(newStep)
+    : [newStep()];
+
+  const stepsBox = el("div");
+  const saveBtn = el("button", { class: "btn btn-primary" }, existing ? "Rebuild pipeline" : "Create pipeline");
+
+  const stepEditor = (st, idx) => {
+    const nameI = el("input", { type: "text", placeholder: "e.g. Canary on web01", style: { width: "100%" } });
+    nameI.value = st.name;
+    nameI.addEventListener("input", () => (st.name = nameI.value));
+
+    const pbS = el("select");
+    if (!scanPbs.length) pbS.appendChild(el("option", { value: "" }, "No playbooks found"));
+    for (const p of scanPbs) pbS.appendChild(el("option", { value: p.path }, p.name ? `${p.name}  (${p.path})` : p.path));
+    if (st.playbook && scanPbs.some((p) => p.path === st.playbook)) pbS.value = st.playbook;
+    st.playbook = pbS.value;
+    pbS.addEventListener("change", () => (st.playbook = pbS.value));
+
+    const invS = el("select");
+    if (!scanInvs.length) invS.appendChild(el("option", { value: "" }, "No inventories found"));
+    for (const i of scanInvs) invS.appendChild(el("option", { value: i.path || i.name }, i.name));
+    if (st.inventory) {
+      const opt = [...invS.options].find((o) => o.value === st.inventory);
+      if (opt) invS.value = st.inventory;
+    }
+    st.inventory = invS.value;
+    invS.addEventListener("change", () => (st.inventory = invS.value));
+
+    const limitI = el("input", { type: "text", placeholder: "limit (optional)", style: { width: "100%" } });
+    limitI.value = st.limit;
+    limitI.addEventListener("input", () => (st.limit = limitI.value));
+    const tagsI = el("input", { type: "text", placeholder: "tags (optional)", style: { width: "100%" } });
+    tagsI.value = st.tags;
+    tagsI.addEventListener("input", () => (st.tags = tagsI.value));
+
+    const mkToggle = (key, label, title) => {
+      const cb = el("input", { type: "checkbox", checked: st[key] || null });
+      cb.addEventListener("change", () => (st[key] = cb.checked));
+      return el("label", { class: "check-row small", title }, cb, label);
+    };
+
+    return el("div", { class: "pipe-step-editor" },
+      el("div", { class: "row", style: { gap: "8px", marginBottom: "8px", flexWrap: "nowrap" } },
+        el("span", { class: "step-num" }, String(idx + 1)),
+        el("div", { style: { flex: 1, minWidth: 0 } }, nameI),
+        el("button", {
+          class: "btn btn-sm btn-ghost", title: "Move up", disabled: idx === 0 || null,
+          onclick: () => { steps.splice(idx, 1); steps.splice(idx - 1, 0, st); renderSteps(); },
+        }, "↑"),
+        el("button", {
+          class: "btn btn-sm btn-ghost", title: "Move down", disabled: idx === steps.length - 1 || null,
+          onclick: () => { steps.splice(idx, 1); steps.splice(idx + 1, 0, st); renderSteps(); },
+        }, "↓"),
+        el("button", {
+          class: "btn btn-sm btn-danger", title: "Remove step",
+          onclick: () => { steps.splice(idx, 1); renderSteps(); },
+        }, icon("trash"))),
+      el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "8px" } },
+        el("div", { class: "field", style: { marginBottom: 0 } }, el("label", null, "Playbook"), pbS),
+        el("div", { class: "field", style: { marginBottom: 0 } }, el("label", null, "Inventory"), invS)),
+      el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "6px" } },
+        limitI, tagsI),
+      el("div", { class: "pipe-toggles" },
+        mkToggle("check", "check mode", "Run this step with --check (dry run)"),
+        mkToggle("require_approval", "require approval", "Pause for human approval before this step"),
+        mkToggle("continue_on_failure", "continue on failure", "Keep going to the next step even if this one fails")));
+  };
+
+  const renderSteps = () => {
+    stepsBox.innerHTML = "";
+    if (!steps.length) {
+      stepsBox.appendChild(el("div", { class: "muted small", style: { padding: "8px 2px" } },
+        "No steps — add at least one."));
+    }
+    steps.forEach((st, idx) => stepsBox.appendChild(stepEditor(st, idx)));
+  };
+
+  const loadScan = async () => {
+    stepsBox.innerHTML = "";
+    stepsBox.appendChild(skeletonRows(Math.max(steps.length, 1), 130));
+    try {
+      const scan = await getScan(repoSel.value);
+      scanPbs = scan.playbooks || [];
+      scanInvs = scan.inventories || [];
+    } catch (e) {
+      scanPbs = [];
+      scanInvs = [];
+      toast(e.message, "error");
+    }
+    renderSteps();
+  };
+  repoSel.addEventListener("change", loadScan);
+
+  saveBtn.onclick = async () => {
+    const name = nameIn.value.trim();
+    if (!name) { toast("Pipeline name is required", "error"); nameIn.focus(); return; }
+    if (!steps.length) { toast("Add at least one step", "error"); return; }
+    for (let i = 0; i < steps.length; i++) {
+      if (!steps[i].playbook) { toast(`Step ${i + 1} needs a playbook`, "error"); return; }
+    }
+    const body = {
+      name,
+      repo_id: repoSel.value,
+      steps: steps.map((st, i) => ({
+        name: st.name.trim() || st.playbook || `Step ${i + 1}`,
+        playbook: st.playbook,
+        inventory: st.inventory || "",
+        limit: st.limit.trim(),
+        tags: st.tags.trim(),
+        check: st.check,
+        require_approval: st.require_approval,
+        continue_on_failure: st.continue_on_failure,
+      })),
+    };
+    saveBtn.disabled = true;
+    try {
+      await api("/pipelines", { method: "POST", body: JSON.stringify(body) });
+      if (existing) {
+        try { await api(`/pipelines/${existing.id}`, { method: "DELETE" }); }
+        catch { /* rebuilt copy exists; the old one just lingers */ }
+      }
+      closeModal();
+      toast(existing ? `${name} rebuilt` : `${name} created`, "success", "Pipeline saved");
+      if (onDone) onDone();
+    } catch (e) {
+      saveBtn.disabled = false;
+      toast(e.message, "error");
+    }
+  };
+
+  openModal({
+    title: existing ? `Edit pipeline — ${existing.name}` : "New pipeline",
+    body: el("div", null,
+      el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" } },
+        el("div", { class: "field" }, el("label", null, "Name"), nameIn),
+        el("div", { class: "field" }, el("label", null, "Repository"), repoSel)),
+      el("div", { class: "field", style: { marginBottom: "8px" } }, el("label", null, "Steps")),
+      stepsBox,
+      el("button", {
+        class: "btn btn-sm", style: { marginTop: "4px" },
+        onclick: () => {
+          steps.push(newStep({ inventory: steps.length ? steps[steps.length - 1].inventory : "" }));
+          renderSteps();
+        },
+      }, icon("plus"), "Add step"),
+      existing ? el("div", { class: "hint muted", style: { marginTop: "12px", fontSize: "11.5px" } },
+        "Saving rebuilds the pipeline under a new id; past runs keep pointing at the old version.") : null),
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), saveBtn],
+    width: "720px",
+  });
+  loadScan();
+}
+
+/* ============================================================
    4j. Jobs (list)
    ============================================================ */
 
@@ -2944,8 +3962,10 @@ async function pagePlan(page) {
         " · inventory ", el("span", { class: "mono" }, result.inventory || "—"),
         result.fact_profile ? el("span", null, " · facts ", el("span", { class: "mono" }, result.fact_profile)) : null)),
     el("span", {
-      class: "flag-badge estimated",
-      title: "computed statically by Pine, without running ansible",
+      class: "flag-badge " + ((result.mode || "estimated") === "exact" ? "exact" : "estimated"),
+      title: (result.mode || "estimated") === "exact"
+        ? "computed by ansible --check against the real hosts"
+        : "computed statically by Pine, without running ansible",
     }, result.mode || "estimated"),
     result.check ? el("span", { class: "flag-badge check" }, "check") : null,
     el("div", { class: "grow" }),
@@ -3166,6 +4186,17 @@ async function openRunModal(prefill = {}) {
   const limitIn = el("input", { type: "text", placeholder: "e.g. web01,db* (optional)" });
   const tagsIn = el("input", { type: "text", placeholder: "e.g. config,deploy (optional)" });
   const checkBox = el("input", { type: "checkbox" });
+  // plan mode: estimated (static, instant) vs exact (ansible --check)
+  let planMode = "estimated";
+  const modeEstTab = el("span", { class: "tab active", title: "Computed statically by Pine — instant, nothing is executed" }, "Estimated (static)");
+  const modeExactTab = el("span", { class: "tab", title: "Runs ansible-playbook --check against the real hosts" }, "Exact (--check via ansible)");
+  const setPlanMode = (m) => {
+    planMode = m;
+    modeEstTab.classList.toggle("active", m === "estimated");
+    modeExactTab.classList.toggle("active", m === "exact");
+  };
+  modeEstTab.onclick = () => setPlanMode("estimated");
+  modeExactTab.onclick = () => setPlanMode("exact");
   const runBtn = el("button", { class: "btn btn-primary" }, icon("play"), "Launch");
   const planBtn = el("button", {
     class: "btn btn-secondary",
@@ -3248,6 +4279,7 @@ async function openRunModal(prefill = {}) {
       vars: varsEd.getVars(),
       host_vars: {},
       fact_profile: varsEd.getProfile(),
+      ...(planMode === "exact" ? { mode: "exact" } : {}),
     }, planBtn);
   };
 
@@ -3277,6 +4309,10 @@ async function openRunModal(prefill = {}) {
       el("div", { class: "field" }, el("label", null, "Tags"), tagsIn)),
     el("label", { class: "check-row" }, checkBox,
       el("span", null, "Check mode ", el("span", { class: "muted" }, "(dry run, no changes applied)"))),
+    el("div", { class: "field", style: { margin: "14px 0 0" } },
+      el("label", null, "Plan mode"),
+      el("div", { class: "seg-tabs" }, modeEstTab, modeExactTab),
+      el("span", { class: "hint" }, "How Plan computes verdicts — estimated is static and instant; exact runs ansible-playbook --check against the real hosts. Launch is unaffected.")),
     varsHead, varsBody);
 
   openModal({
@@ -3311,7 +4347,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (gPressed) {
-    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", j: "jobs" };
+    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", s: "schedules", l: "pipelines", j: "jobs" };
     if (map[e.key]) { location.hash = "#/" + map[e.key]; e.preventDefault(); }
     gPressed = false;
   } else if (e.key === "n") {

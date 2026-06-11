@@ -203,9 +203,12 @@ func (m *Manager) execute(ctx context.Context, job model.Job, r *run) {
 	_ = m.Store.SaveJob(job)
 
 	var failed bool
-	if job.Simulated {
+	switch {
+	case job.Playbook == FactsJobName:
+		failed = m.runGather(ctx, &job, r)
+	case job.Simulated:
 		failed = m.simulate(ctx, &job, r)
-	} else {
+	default:
 		failed = m.runAnsible(ctx, &job, r)
 	}
 

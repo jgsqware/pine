@@ -267,3 +267,42 @@ func writeT(t *testing.T, root, rel, content string) {
 func scanForT(root string) (*model.ScanResult, error) {
 	return scanner.Scan(root)
 }
+
+func TestTimelapse(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	commit := func(msg string) {
+		mustGit(t, root, "add", "-A")
+		mustGit(t, root, "-c", "user.email=t@t", "-c", "user.name=t",
+			"-c", "commit.gpgsign=false", "commit", "-q", "-m", msg)
+	}
+	mustGit(t, root, "init", "-q")
+	writeT(t, root, "inventories/prod/hosts.yml", "web:\n  hosts:\n    web01:\n")
+	commit("one host")
+	writeT(t, root, "inventories/prod/hosts.yml", "web:\n  hosts:\n    web01:\n    web02:\n")
+	commit("two hosts")
+	writeT(t, root, "README.md", "noise\n")
+	commit("docs only")
+	writeT(t, root, "inventories/prod/hosts.yml", "web:\n  hosts:\n    web01:\n    web02:\ndb:\n  hosts:\n    db01:\n")
+	commit("add db tier")
+
+	out, err := Timelapse(root, "prod", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// docs-only commit must be deduplicated -> 3 frames
+	if len(out.Frames) != 3 {
+		for _, f := range out.Frames {
+			t.Logf("frame %s %s hosts=%d", f.Commit, f.Message, f.Hosts)
+		}
+		t.Fatalf("frames = %d, want 3", len(out.Frames))
+	}
+	if out.Frames[0].Hosts != 1 || out.Frames[1].Hosts != 2 || out.Frames[2].Hosts != 3 {
+		t.Errorf("host growth = %d,%d,%d", out.Frames[0].Hosts, out.Frames[1].Hosts, out.Frames[2].Hosts)
+	}
+	if out.Frames[2].Message != "add db tier" || out.Frames[2].Topology == nil {
+		t.Errorf("last frame = %+v", out.Frames[2])
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,27 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("GET /api/repos/{id}/hygiene", s.hygiene)
 	mux.HandleFunc("GET /api/repos/{id}/impact", s.impact)
 	mux.HandleFunc("GET /api/jobs/{id}/diff", s.jobDiff)
+	mux.HandleFunc("GET /api/repos/{id}/facts", s.listFacts)
+	mux.HandleFunc("POST /api/repos/{id}/facts/refresh", s.refreshFacts)
+	mux.HandleFunc("GET /api/repos/{id}/drift", s.drift)
+	mux.HandleFunc("POST /api/repos/{id}/drift/check", s.driftCheck)
+	mux.HandleFunc("GET /api/repos/{id}/timelapse", s.timelapse)
+
+	mux.HandleFunc("GET /api/schedules", s.listSchedules)
+	mux.HandleFunc("POST /api/schedules", s.createSchedule)
+	mux.HandleFunc("PATCH /api/schedules/{id}", s.updateSchedule)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.deleteSchedule)
+	mux.HandleFunc("POST /api/schedules/{id}/approve", s.approveSchedule)
+	mux.HandleFunc("POST /api/schedules/{id}/run-now", s.runScheduleNow)
+
+	mux.HandleFunc("GET /api/pipelines", s.listPipelines)
+	mux.HandleFunc("POST /api/pipelines", s.createPipeline)
+	mux.HandleFunc("DELETE /api/pipelines/{id}", s.deletePipeline)
+	mux.HandleFunc("POST /api/pipelines/{id}/run", s.runPipeline)
+	mux.HandleFunc("GET /api/pipeline-runs", s.listPipelineRuns)
+	mux.HandleFunc("GET /api/pipeline-runs/{id}", s.getPipelineRun)
+	mux.HandleFunc("POST /api/pipeline-runs/{id}/approve", s.approvePipelineRun)
+	mux.HandleFunc("POST /api/pipeline-runs/{id}/cancel", s.cancelPipelineRun)
 
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
@@ -382,7 +404,17 @@ func (s *Server) computePlan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errCode(err), err)
 		return
 	}
+	if req.Mode == "exact" {
+		out, err := plan.ComputeExact(s.Mgr.Store.RepoWorkdir(&repo), repo, req)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
 	req.TaskDurations = s.taskDurationHistory(repo.ID, req.Playbook)
+	req.HostFacts = s.Mgr.HostFactsFor(repo.ID)
 	out, err := plan.Compute(res, s.Mgr.Store.RepoWorkdir(&repo), repo, req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -668,4 +700,247 @@ func (s *Server) taskDurationHistory(repoID, playbook string) map[string]int64 {
 		out[k] = sum[k] / count[k]
 	}
 	return out
+}
+
+// --- facts, drift, timelapse ---
+
+func (s *Server) listFacts(w http.ResponseWriter, r *http.Request) {
+	metas := s.Mgr.Store.ListFacts(r.PathValue("id"))
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(metas), "hosts": metas})
+}
+
+func (s *Server) refreshFacts(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Inventory string `json:"inventory"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	job, err := s.Mgr.GatherFacts(r.PathValue("id"), req.Inventory)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (s *Server) drift(w http.ResponseWriter, r *http.Request) {
+	out, err := s.Mgr.Drift(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) driftCheck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Playbooks []string `json:"playbooks"`
+		Inventory string   `json:"inventory"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	jobs, err := s.Mgr.DriftCheck(r.PathValue("id"), req.Playbooks, req.Inventory)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, jobs)
+}
+
+func (s *Server) timelapse(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	limit := 30
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil {
+		limit = n
+	}
+	out, err := plan.Timelapse(s.Mgr.Store.RepoWorkdir(&repo), r.URL.Query().Get("inventory"), limit)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// --- schedules ---
+
+func (s *Server) listSchedules(w http.ResponseWriter, r *http.Request) {
+	items := s.Mgr.Store.ListSchedules()
+	if items == nil {
+		items = []model.Schedule{}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request) {
+	var sc model.Schedule
+	if err := json.NewDecoder(r.Body).Decode(&sc); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := s.Mgr.CreateSchedule(sc)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) updateSchedule(w http.ResponseWriter, r *http.Request) {
+	cur := model.Schedule{}
+	found := false
+	for _, sc := range s.Mgr.Store.ListSchedules() {
+		if sc.ID == r.PathValue("id") {
+			cur, found = sc, true
+		}
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, store.ErrNotFound)
+		return
+	}
+	var req map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	apply := func(key string, dst *string) {
+		if v, ok := req[key].(string); ok {
+			*dst = v
+		}
+	}
+	apply("playbook", &cur.Playbook)
+	apply("inventory", &cur.Inventory)
+	apply("limit", &cur.Limit)
+	apply("tags", &cur.Tags)
+	apply("interval", &cur.Interval)
+	if v, ok := req["check"].(bool); ok {
+		cur.Check = v
+	}
+	if v, ok := req["gate"].(bool); ok {
+		cur.Gate = v
+	}
+	if v, ok := req["enabled"].(bool); ok {
+		cur.Enabled = v
+		if v {
+			cur.BlockedReason = ""
+		}
+	}
+	if _, err := time.ParseDuration(cur.Interval); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid interval %q", cur.Interval))
+		return
+	}
+	cur.Status = "ok"
+	if !cur.Enabled {
+		cur.Status = "disabled"
+	} else if cur.BlockedReason != "" {
+		cur.Status = "blocked"
+	}
+	if err := s.Mgr.Store.SaveSchedule(cur); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cur)
+}
+
+func (s *Server) deleteSchedule(w http.ResponseWriter, r *http.Request) {
+	if err := s.Mgr.Store.DeleteSchedule(r.PathValue("id")); err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) approveSchedule(w http.ResponseWriter, r *http.Request) {
+	out, err := s.Mgr.ApproveSchedule(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) runScheduleNow(w http.ResponseWriter, r *http.Request) {
+	job, err := s.Mgr.RunScheduleNow(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+// --- pipelines ---
+
+func (s *Server) listPipelines(w http.ResponseWriter, r *http.Request) {
+	items := s.Mgr.Store.ListPipelines()
+	if items == nil {
+		items = []model.Pipeline{}
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) createPipeline(w http.ResponseWriter, r *http.Request) {
+	var p model.Pipeline
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	out, err := s.Mgr.CreatePipeline(p)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) deletePipeline(w http.ResponseWriter, r *http.Request) {
+	if err := s.Mgr.Store.DeletePipeline(r.PathValue("id")); err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) runPipeline(w http.ResponseWriter, r *http.Request) {
+	run, err := s.Mgr.RunPipeline(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, run)
+}
+
+func (s *Server) listPipelineRuns(w http.ResponseWriter, r *http.Request) {
+	runs := s.Mgr.Store.ListPipelineRuns(r.URL.Query().Get("pipeline"))
+	if runs == nil {
+		runs = []model.PipelineRun{}
+	}
+	writeJSON(w, http.StatusOK, runs)
+}
+
+func (s *Server) getPipelineRun(w http.ResponseWriter, r *http.Request) {
+	run, err := s.Mgr.Store.GetPipelineRun(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) approvePipelineRun(w http.ResponseWriter, r *http.Request) {
+	run, err := s.Mgr.ApprovePipelineRun(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) cancelPipelineRun(w http.ResponseWriter, r *http.Request) {
+	run, err := s.Mgr.CancelPipelineRun(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }

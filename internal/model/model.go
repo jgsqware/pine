@@ -198,3 +198,75 @@ type Job struct {
 func (j *Job) Terminal() bool {
 	return j.Status == JobSuccess || j.Status == JobFailed || j.Status == JobCanceled
 }
+
+// Schedule is a recurring playbook run, optionally plan-gated: when Gate is
+// set, the run is blocked whenever the current plan fingerprint differs
+// from the approved one.
+type Schedule struct {
+	ID                  string `json:"id"`
+	RepoID              string `json:"repo_id"`
+	RepoName            string `json:"repo_name"`
+	Playbook            string `json:"playbook"`
+	Inventory           string `json:"inventory,omitempty"`
+	Limit               string `json:"limit,omitempty"`
+	Tags                string `json:"tags,omitempty"`
+	Check               bool   `json:"check"`
+	Interval            string `json:"interval"`
+	Gate                bool   `json:"gate"`
+	Enabled             bool   `json:"enabled"`
+	Status              string `json:"status"` // ok | blocked | disabled
+	BlockedReason       string `json:"blocked_reason,omitempty"`
+	ApprovedFingerprint string `json:"approved_fingerprint,omitempty"`
+	ApprovedAt          string `json:"approved_at,omitempty"`
+	LastRunID           string `json:"last_run_id,omitempty"`
+	LastRunAt           string `json:"last_run_at,omitempty"`
+	NextRunAt           string `json:"next_run_at,omitempty"`
+}
+
+// PipelineStep is one stage of a light pipeline.
+type PipelineStep struct {
+	Name              string `json:"name"`
+	Playbook          string `json:"playbook"`
+	Inventory         string `json:"inventory,omitempty"`
+	Limit             string `json:"limit,omitempty"`
+	Tags              string `json:"tags,omitempty"`
+	Check             bool   `json:"check"`
+	RequireApproval   bool   `json:"require_approval"`
+	ContinueOnFailure bool   `json:"continue_on_failure"`
+}
+
+// Pipeline chains playbooks with failure stops and approval gates.
+type Pipeline struct {
+	ID       string         `json:"id"`
+	Name     string         `json:"name"`
+	RepoID   string         `json:"repo_id"`
+	RepoName string         `json:"repo_name"`
+	Steps    []PipelineStep `json:"steps"`
+}
+
+// Pipeline run statuses (steps reuse job-like statuses plus these).
+const (
+	PipeRunning  = "running"
+	PipeWaiting  = "waiting_approval"
+	PipeSuccess  = "success"
+	PipeFailed   = "failed"
+	PipeCanceled = "canceled"
+)
+
+// PipelineRunStep is the live state of one step in a run.
+type PipelineRunStep struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // pending|running|waiting_approval|success|failed|skipped|canceled
+	JobID  string `json:"job_id,omitempty"`
+}
+
+// PipelineRun is one execution of a pipeline.
+type PipelineRun struct {
+	ID           string            `json:"id"`
+	PipelineID   string            `json:"pipeline_id"`
+	PipelineName string            `json:"pipeline_name"`
+	Status       string            `json:"status"`
+	Created      string            `json:"created"`
+	Finished     string            `json:"finished,omitempty"`
+	Steps        []PipelineRunStep `json:"steps"`
+}

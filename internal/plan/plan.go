@@ -4,6 +4,8 @@
 package plan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -25,9 +27,17 @@ type Request struct {
 	HostVars    map[string]map[string]any `json:"host_vars"`
 	FactProfile string                    `json:"fact_profile"`
 
+	// Mode selects the engine: "" / "estimated" (static) or "exact"
+	// (ansible-playbook --check with a JSON callback).
+	Mode string `json:"mode"`
+
 	// TaskDurations maps task labels ("role : name") to historical average
 	// milliseconds; filled server-side from past jobs, not by clients.
 	TaskDurations map[string]int64 `json:"-"`
+
+	// HostFacts carries harvested per-host facts (store-backed), merged
+	// into effective vars under "ansible_facts" + legacy aliases.
+	HostFacts map[string]map[string]any `json:"-"`
 }
 
 // Verdict statuses.
@@ -145,7 +155,7 @@ func Compute(res *model.ScanResult, root string, repo model.Repo, req Request) (
 		root:     root,
 		req:      req,
 		inv:      inv,
-		resolver: newVarResolver(inv, profile, req.Vars, req.HostVars),
+		resolver: newVarResolverWithFacts(inv, profile, req.Vars, req.HostVars, req.HostFacts),
 		missing:  map[string]int{},
 		roles:    map[string]*model.Role{},
 	}
@@ -540,4 +550,26 @@ func atoiSafe(s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+// Fingerprint hashes the structural outcome of a plan (plays, tasks,
+// per-host verdict statuses) so plan-gated schedules can detect when a
+// change to the repo or inventory would alter what a run does.
+func Fingerprint(out *Result) string {
+	h := sha256.New()
+	for _, pp := range out.Plays {
+		fmt.Fprintf(h, "play|%s|%s|%d\n", pp.Name, pp.Hosts, len(pp.Batches))
+		for _, tp := range pp.Tasks {
+			fmt.Fprintf(h, "task|%s|%s|%s\n", tp.Role, tp.RawName, tp.Module)
+			var hosts []string
+			for hn := range tp.Hosts {
+				hosts = append(hosts, hn)
+			}
+			sort.Strings(hosts)
+			for _, hn := range hosts {
+				fmt.Fprintf(h, "v|%s|%s\n", hn, tp.Hosts[hn].Status)
+			}
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

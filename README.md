@@ -56,6 +56,13 @@ JSON storage, a polished web UI, a full terminal UI and a REST API.
   (per task × host status transitions between two runs) and *blast
   radius* (`pine impact`: git diff → roles → playbooks → hosts →
   handlers, with a ripple visualization and a CI-friendly exit code)
+- **Ops** — *drift detection* (heatmap playbooks × hosts from `--check`
+  runs), *plan-gated schedules* (recurring runs that refuse to fire when
+  the plan fingerprint changed since approval), *light pipelines*
+  (chained playbooks, canary steps, manual approval gates) and *fact
+  harvesting* (`ansible -m setup --tree`, simulated fallback) feeding
+  plans with real per-host facts; plus a topology *time-lapse* replaying
+  your inventory's git history
 - **Job engine** — run playbooks with `--check`, `--limit`, `--tags`; live
   output streaming over SSE; per-host recap summaries; full history.
   When `ansible-playbook` isn't installed, Pine switches to a realistic
@@ -110,6 +117,11 @@ immediately in the UI, the TUI and the API.
 | `GET /api/repos/{id}/hygiene` | dead-code + secrets report |
 | `GET /api/repos/{id}/impact?base=…&head=…` | blast radius of a git diff |
 | `GET /api/jobs/{id}/diff?with=…` | compare two runs |
+| `GET/POST /api/repos/{id}/facts[/refresh]` | harvested facts |
+| `GET/POST /api/repos/{id}/drift[/check]` | drift heatmap / launch checks |
+| `GET /api/repos/{id}/timelapse?inventory=…` | topology history frames |
+| `/api/schedules…` | plan-gated recurring runs (CRUD, approve, run-now) |
+| `/api/pipelines…`, `/api/pipeline-runs…` | chained playbooks with approval gates |
 | `GET/POST /api/jobs` | job history / launch a playbook |
 | `GET /api/jobs/{id}/events` | live SSE stream (`line` + `status` events) |
 | `GET /api/jobs/{id}/log` | raw log |

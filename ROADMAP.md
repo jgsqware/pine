@@ -21,22 +21,29 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ **4. Blast radius on git diff** — changed files → impacted roles →
       playbooks → hosts → handlers. `GET /api/repos/{id}/impact?base=…&head=…`,
       "Impact" page + `pine impact` CLI for CI.
-- [ ] ⏳🔗 **5. Continuous drift detection** — scheduled check-mode /
-      harvested-facts diff, drift heatmap per host × role.
-      *Blocked by plan-mode phase 3 (fact harvesting).*
-- [ ] ⏳ **6. Plan-gated schedules** — scheduled runs that refuse to execute
-      when the current plan differs from the last approved plan.
-- [ ] ⏳ **7. Light pipelines** — chained playbooks with recap conditions,
-      canary batch + health gate, manual approval gates.
+- [x] ✅ **5. Continuous drift detection** — drift heatmap playbooks × hosts
+      computed from the latest `--check` job per playbook ("changed" under
+      check = reality diverges). `GET /api/repos/{id}/drift`,
+      `POST …/drift/check`, "Drift" page.
+- [x] ✅ **6. Plan-gated schedules** — recurring runs (interval-based) that
+      refuse to execute when the current plan fingerprint differs from the
+      approved one; approve to resume. `/api/schedules` CRUD + approve +
+      run-now, "Schedules" page.
+- [x] ✅ **7. Light pipelines** — chained playbooks with stop-on-failure
+      (or continue), canary steps via --limit, and manual approval gates
+      (waiting_approval → approve & continue). `/api/pipelines` +
+      `/api/pipeline-runs`, "Pipelines" page.
 - [x] ✅ **8. Estimated duration in plans** — record real per-task durations
       from job logs, surface `≈ Xmin` on plans and slowest-task insights.
 
 ## Fun / demo
 
-- [ ] ⏳ **9. Topology time-lapse** — replay the repo's git history and
-      animate the inventory topology commit by commit.
+- [x] ✅ **9. Topology time-lapse** — replay the repo's git history and
+      animate the inventory topology commit by commit (deduplicated frames).
+      `GET /api/repos/{id}/timelapse`, player on the Topology page.
 - [ ] ⏳ **10. Web SSH console** — per-host terminal in the browser
       (the TUI already has `s`); xterm.js + websocket, vendored.
+      *Deliberately last: needs real SSH targets to validate.*
 - [x] ✅ **11. Secrets hygiene** — plaintext password-like values in vars,
       vault usage inventory. Part of the hygiene report.
 
@@ -47,5 +54,8 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ Constructed-inventory emulation with badges
 - [x] ✅ Plan mode phases 1–2 (tri-state eval, missing vars, fact profiles,
       what-if topology, web/TUI/CLI surfaces)
-- [ ] ⏳ Plan mode phase 3 — fact harvesting from real runs
-- [ ] ⏳ Plan mode phase 4 — exact mode via `ansible-playbook --check`
+- [x] ✅ Plan mode phase 3 — fact harvesting ("[gather facts]" jobs via
+      `ansible -m setup --tree` or simulated; facts feed plans, lineage
+      and schedule fingerprints)
+- [x] ✅ Plan mode phase 4 — exact mode via `ansible-playbook --check`
+      with the JSON callback, rendered in the plan UI as mode "exact"
