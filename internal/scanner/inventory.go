@@ -115,6 +115,7 @@ func scanInventories(root string) []model.Inventory {
 			name := mergedInventoryName(root, dir, usedNames)
 			if inv, ok := parseInventorySources(root, fresh, name, dir); ok {
 				for _, cfg := range cfgs {
+					inv.ConstructedRules = append(inv.ConstructedRules, *cfg)
 					applyConstructed(&inv, cfg)
 				}
 				usedNames[name] = true
@@ -224,7 +225,7 @@ func inventoryFilesIn(dir string) []string {
 // pluginConfigsIn finds inventory plugin config files in dir. Every plugin
 // file is returned in files (so it is never parsed as a hosts source);
 // constructed-plugin configs are also parsed for emulation.
-func pluginConfigsIn(dir string) (cfgs []*constructedConfig, files []string) {
+func pluginConfigsIn(dir string) (cfgs []*model.ConstructedRule, files []string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, nil

@@ -128,3 +128,7 @@ func parseRoleMeta(file string, r *model.Role) {
 		}
 	}
 }
+
+// LoadVarsFile reads a YAML mapping file (vars_files, group_vars...);
+// nil when missing or invalid.
+func LoadVarsFile(path string) map[string]any { return parseVarsFile(path) }

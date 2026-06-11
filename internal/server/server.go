@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jgsqware/pine/internal/model"
+	"github.com/jgsqware/pine/internal/plan"
 	"github.com/jgsqware/pine/internal/runner"
 	"github.com/jgsqware/pine/internal/scanner"
 	"github.com/jgsqware/pine/internal/store"
@@ -41,6 +42,10 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("GET /api/repos/{id}/scan", s.scanRepo)
 	mux.HandleFunc("GET /api/repos/{id}/topology", s.topology)
 	mux.HandleFunc("GET /api/repos/{id}/file", s.repoFile)
+
+	mux.HandleFunc("POST /api/plans", s.computePlan)
+	mux.HandleFunc("GET /api/fact-profiles", s.factProfiles)
+	mux.HandleFunc("POST /api/repos/{id}/inventory-preview", s.inventoryPreview)
 
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
@@ -341,6 +346,63 @@ func (s *Server) repoFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(data)
+}
+
+// --- plans ---
+
+func (s *Server) factProfiles(w http.ResponseWriter, r *http.Request) {
+	out := make([]map[string]string, 0, len(plan.Profiles))
+	for _, p := range plan.Profiles {
+		out = append(out, map[string]string{"id": p.ID, "label": p.Label})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) computePlan(w http.ResponseWriter, r *http.Request) {
+	var req plan.Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.RepoID == "" || req.Playbook == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("repo_id and playbook are required"))
+		return
+	}
+	repo, err := s.Mgr.Store.GetRepo(req.RepoID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	res, err := s.Mgr.Scan(req.RepoID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	out, err := plan.Compute(res, s.Mgr.Store.RepoWorkdir(&repo), repo, req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) inventoryPreview(w http.ResponseWriter, r *http.Request) {
+	var req plan.PreviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := s.Mgr.Scan(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	out, err := plan.PreviewInventory(res, req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // --- jobs ---

@@ -225,6 +225,9 @@ func parsePlay(m map[string]any) model.Play {
 	if b, ok := m["become"].(bool); ok {
 		p.Become = b
 	}
+	if vars, ok := m["vars"].(map[string]any); ok {
+		p.Vars = vars
+	}
 	if vp, ok := m["vars_prompt"].([]any); ok {
 		for _, e := range vp {
 			em, ok := e.(map[string]any)
@@ -287,6 +290,23 @@ func parseTask(m map[string]any) model.Task {
 		When:   toStr(m["when"]),
 		Loop:   hasLoop(m),
 		Notify: toStrSlice(m["notify"]),
+	}
+	if t.Loop {
+		loopVal, ok := m["loop"]
+		if !ok {
+			for k, v := range m {
+				if strings.HasPrefix(k, "with_") {
+					loopVal = v
+					break
+				}
+			}
+		}
+		switch lv := loopVal.(type) {
+		case string:
+			t.LoopExpr = lv
+		case []any:
+			t.LoopItems = len(lv)
+		}
 	}
 	if blk, ok := m["block"]; ok {
 		t.Module = "block"

@@ -101,6 +101,7 @@ const ICONS = {
   role: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>',
   tree: '<svg viewBox="0 0 24 24"><path d="M12 1 L16.5 8.5 H7.5 Z" fill="#4ade80"/><path d="M12 5.5 L18 14.5 H6 Z" fill="#34c46a"/><path d="M12 10.5 L20 20.5 H4 Z" fill="#22a356"/><rect x="10.9" y="20" width="2.2" height="3.2" rx="0.6" fill="#8a5a3b"/></svg>',
   code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6M13 4l-2 16"/></svg>',
+  clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 13l2 2 4-4"/></svg>',
 };
 
 function icon(name) {
@@ -390,7 +391,7 @@ async function requireRepo(view) {
 const PAGE_TITLES = {
   dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
   playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
-  topology: "Topology", jobs: "Jobs", job: "Job",
+  topology: "Topology", jobs: "Jobs", job: "Job", plan: "Plan",
 };
 
 function currentRoute() {
@@ -413,11 +414,12 @@ async function route() {
     topology: pageTopology,
     jobs: pageJobs,
     job: pageJobDetail,
+    plan: pagePlan,
   };
   if (!handlers[name]) { location.hash = "#/dashboard"; return; }
 
   // nav highlight
-  const navKey = { playbook: "playbooks", role: "roles", job: "jobs" }[name] || name;
+  const navKey = { playbook: "playbooks", role: "roles", job: "jobs", plan: "playbooks" }[name] || name;
   $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.nav === navKey));
   $("#topbar-title").textContent = PAGE_TITLES[name] || "Pine";
 
@@ -795,6 +797,10 @@ async function pagePlaybooks(page) {
             onclick: (e) => { e.stopPropagation(); openRawFileModal(repo.id, pb.path, pb.path); },
           }, icon("code")),
           el("button", {
+            class: "btn btn-sm btn-secondary", title: "Plan — estimate what this playbook would do, without running it",
+            onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path, plan: true }); },
+          }, icon("clipboard"), "Plan"),
+          el("button", {
             class: "btn btn-sm btn-primary",
             onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path }); },
           }, icon("play"), "Run"))),
@@ -943,6 +949,10 @@ async function pagePlaybookDetail(page, segs) {
     el("div", { class: "grow" }),
     el("button", { class: "btn", onclick: () => openRawFileModal(repoId, pb.path, pb.path) },
       icon("code"), "View YAML"),
+    el("button", {
+      class: "btn btn-secondary", title: "Plan — estimate what this playbook would do, without running it",
+      onclick: () => openRunModal({ repoId, playbook: pb.path, plan: true }),
+    }, icon("clipboard"), "Plan"),
     el("button", { class: "btn btn-primary", onclick: () => openRunModal({ repoId, playbook: pb.path }) },
       icon("play"), "Run playbook")));
 
@@ -1532,7 +1542,6 @@ async function pageTopology(page) {
   let invName = State.invSelection.get(repo.id);
   if (!inventories.some((i) => i.name === invName)) invName = inventories[0].name;
   const inv = inventories.find((i) => i.name === invName);
-  const hostVars = new Map((inv.hosts || []).map((h) => [h.name, h]));
 
   const invSel = el("select", { onchange: (e) => { State.invSelection.set(repo.id, e.target.value); route(); } },
     inventories.map((i) => el("option", { value: i.name, selected: i.name === invName || null }, i.name)));
@@ -1543,12 +1552,34 @@ async function pageTopology(page) {
     el("span", { class: "sub" }, "each bubble is a group · dots are hosts · wheel to zoom · drag to pan · double-click to fit"),
     el("div", { class: "grow" })));
 
+  // --- what-if variables panel: preview the inventory with extra vars applied ---
+  const varsEd = createVarsEditor();
+  varsEd.setRepo(repo.id);
+  const previewBtn = el("button", { class: "btn btn-primary btn-sm" }, "Preview");
+  const resetBtn = el("button", { class: "btn btn-sm", disabled: true }, "Reset");
+  const unknownNote = el("span", { class: "chip warn", style: { display: "none", cursor: "help" } });
+  let whatifOpen = false;
+  const whatifCaret = el("span", { class: "collapse-caret" }, "▸");
+  const whatifBody = el("div", { class: "whatif-body", style: { display: "none" } },
+    varsEd.root,
+    el("div", { class: "row" }, previewBtn, resetBtn, unknownNote));
+  page.appendChild(el("div", { class: "panel whatif-panel" },
+    el("div", {
+      class: "whatif-head",
+      onclick: () => {
+        whatifOpen = !whatifOpen;
+        whatifCaret.classList.toggle("open", whatifOpen);
+        whatifBody.style.display = whatifOpen ? "" : "none";
+      },
+    }, whatifCaret, el("span", null, "What-if variables"),
+      el("span", { class: "muted small" }, "preview how variables would reshape constructed groups")),
+    whatifBody));
+
   const wrap = el("div", { class: "topo-wrap" });
   const canvasBox = el("div", { class: "topo-canvas-box" });
-  const canvas = el("canvas");
-  canvasBox.appendChild(canvas);
   const legend = el("div", { class: "topo-legend" },
     el("span", { class: "li" }, el("span", { class: "sw", style: { background: "rgba(74,222,128,0.18)", border: "1.5px solid var(--accent)" } }), "group"),
+    el("span", { class: "li" }, el("span", { class: "sw", style: { background: "rgba(34,211,238,0.1)", border: "1.5px dashed var(--secondary)" } }), "constructed group"),
     el("span", { class: "li" }, el("span", { class: "sw", style: { width: "8px", height: "8px", borderRadius: "50%", background: "var(--secondary)" } }), "host"),
     el("span", { class: "li" }, "bubble size = host count"));
   canvasBox.appendChild(legend);
@@ -1565,21 +1596,71 @@ async function pageTopology(page) {
     wrap.appendChild(el("div", { class: "empty" }, el("h3", null, "Could not load topology"), el("p", null, e.message)));
     return;
   }
-  const nodes = (topo.nodes || []).map((n) => ({ ...n }));
-  const links = (topo.links || []).map((l) => ({ ...l }));
-  if (!nodes.length) {
+  if (!((topo && topo.nodes) || []).length) {
     wrap.innerHTML = "";
     wrap.appendChild(el("div", { class: "empty" }, el("h3", null, "Empty topology"), el("p", null, "This inventory has no groups or hosts.")));
     return;
   }
 
-  startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel });
+  // (re-)render the cluster view; a fresh canvas per render keeps listeners clean
+  let disposeView = null;
+  const renderGraph = (topoData, invData) => {
+    if (disposeView) { disposeView(); disposeView = null; }
+    const old = canvasBox.querySelector("canvas");
+    if (old) old.remove();
+    const canvas = el("canvas");
+    canvasBox.insertBefore(canvas, canvasBox.firstChild);
+    sidePanel.style.display = "none";
+    const nodes = (((topoData || {}).nodes) || []).map((n) => ({ ...n }));
+    const hostVars = new Map((((invData || {}).hosts) || []).map((h) => [h.name, h]));
+    disposeView = startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel });
+  };
+  renderGraph(topo, inv);
+
+  previewBtn.onclick = async () => {
+    previewBtn.disabled = true;
+    try {
+      varsEd.persist();
+      const res = await api(`/repos/${repo.id}/inventory-preview`, {
+        method: "POST",
+        body: JSON.stringify({
+          inventory: invName,
+          vars: varsEd.getVars(),
+          host_vars: {},
+          fact_profile: varsEd.getProfile(),
+        }),
+      });
+      renderGraph(res.topology || {}, res.inventory || inv);
+      resetBtn.disabled = false;
+      let count = 0;
+      const lines = [];
+      for (const [g, hostsMap] of Object.entries(res.unknown_groups || {})) {
+        for (const [h, miss] of Object.entries(hostsMap || {})) {
+          count++;
+          lines.push(`${h} ∈ ${g}? — missing ${(miss || []).join(", ") || "vars"}`);
+        }
+      }
+      unknownNote.style.display = count ? "" : "none";
+      unknownNote.textContent = `${count} membership${count === 1 ? "" : "s"} unknown`;
+      unknownNote.title = lines.join("\n");
+    } catch (e) {
+      toast(e.message, "error", "Preview failed");
+    } finally {
+      previewBtn.disabled = false;
+    }
+  };
+  resetBtn.onclick = () => {
+    renderGraph(topo, inv);
+    resetBtn.disabled = true;
+    unknownNote.style.display = "none";
+  };
 }
 
 function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
   const ctx = canvas.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   let W = 0, H = 0;
+  const disposers = []; // window-level listeners; removed on dispose/navigation
 
   // --- build clusters: bucket each host into its primary (most-specific) group ---
   const groupByLabel = new Map(nodes.filter((n) => n.type === "group").map((g) => [g.label, g]));
@@ -1663,13 +1744,20 @@ function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
 
     for (const c of clusters) {
       const hot = c === hoveredCluster || (hovered && hovered.group === c.name);
+      const constructed = !!(c.group && c.group.constructed);
       ctx.beginPath();
       ctx.arc(c.cx, c.cy, c.r, 0, Math.PI * 2);
-      ctx.fillStyle = hot ? "rgba(74,222,128,0.14)" : "rgba(74,222,128,0.06)";
+      ctx.fillStyle = constructed
+        ? (hot ? "rgba(34,211,238,0.13)" : "rgba(34,211,238,0.05)")
+        : (hot ? "rgba(74,222,128,0.14)" : "rgba(74,222,128,0.06)");
       ctx.fill();
-      ctx.strokeStyle = hot ? "#4ade80" : "rgba(74,222,128,0.38)";
+      ctx.strokeStyle = constructed
+        ? (hot ? "#22d3ee" : "rgba(34,211,238,0.55)")
+        : (hot ? "#4ade80" : "rgba(74,222,128,0.38)");
       ctx.lineWidth = (hot ? 2 : 1.3) / scale;
+      if (constructed) ctx.setLineDash([6 / scale, 4 / scale]);
       ctx.stroke();
+      ctx.setLineDash([]);
       for (const h of c.hosts) {
         ctx.beginPath();
         ctx.arc(h.x, h.y, h === hovered ? DOT + 1.5 : DOT, 0, Math.PI * 2);
@@ -1677,7 +1765,9 @@ function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
         ctx.fill();
       }
       ctx.textAlign = "center";
-      ctx.fillStyle = hot ? "#bdf3cf" : "#8fcfa6";
+      ctx.fillStyle = constructed
+        ? (hot ? "#9be8f4" : "#6cb8c6")
+        : (hot ? "#bdf3cf" : "#8fcfa6");
       ctx.font = `600 ${12.5 / scale}px ui-monospace, Menlo, monospace`;
       ctx.fillText(`${c.name}  ${c.hosts.length}`, c.cx, c.cy - c.r - 7 / scale);
     }
@@ -1700,10 +1790,15 @@ function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
     raf = requestAnimationFrame(() => { raf = 0; draw(); });
   }
 
+  const dispose = () => {
+    stopped = true;
+    if (raf) cancelAnimationFrame(raf);
+    for (const fn of disposers.splice(0)) { try { fn(); } catch { /* noop */ } }
+  };
   resize();
   window.addEventListener("resize", resize);
-  onCleanup(() => window.removeEventListener("resize", resize));
-  onCleanup(() => { stopped = true; if (raf) cancelAnimationFrame(raf); });
+  disposers.push(() => window.removeEventListener("resize", resize));
+  onCleanup(dispose);
   canvas.style.cursor = "grab";
 
   function hostAt(px, py) {
@@ -1736,7 +1831,7 @@ function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
     canvas.classList.add("dragging");
   });
   window.addEventListener("mousemove", onMove);
-  onCleanup(() => window.removeEventListener("mousemove", onMove));
+  disposers.push(() => window.removeEventListener("mousemove", onMove));
   function onMove(e) {
     const rect = canvas.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
@@ -1755,7 +1850,7 @@ function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
     }
   }
   window.addEventListener("mouseup", onUp);
-  onCleanup(() => window.removeEventListener("mouseup", onUp));
+  disposers.push(() => window.removeEventListener("mouseup", onUp));
   function onUp() { panning = false; canvas.classList.remove("dragging"); }
 
   canvas.addEventListener("click", (e) => {
@@ -1825,6 +1920,8 @@ function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
       }
     }
   }
+
+  return dispose;
 }
 
 /* ============================================================
@@ -2004,6 +2101,377 @@ async function pageJobDetail(page, segs) {
 }
 
 /* ============================================================
+   4j. Plan mode — static "terraform plan" for playbooks
+   ============================================================ */
+
+/** Last plan request+result. Plans are not persisted server-side, so the
+ *  #/plan route renders from this and redirects away when it's empty. */
+let PlanState = null;
+
+let factProfilesPromise = null;
+/** Cached GET /api/fact-profiles. */
+function getFactProfiles() {
+  if (!factProfilesPromise) {
+    factProfilesPromise = api("/fact-profiles").catch((e) => {
+      factProfilesPromise = null;
+      throw e;
+    });
+  }
+  return factProfilesPromise;
+}
+
+/** Parse a single value: JSON when possible, bare [a, b] arrays, else string. */
+function parseVarValue(s) {
+  const v = String(s).trim();
+  if (v === "") return "";
+  try { return JSON.parse(v); } catch { /* not strict JSON */ }
+  if (v.startsWith("[") && v.endsWith("]")) {
+    const inner = v.slice(1, -1).trim();
+    return inner === "" ? [] : inner.split(",").map((x) => parseVarValue(x));
+  }
+  return v;
+}
+
+/** Vars textarea syntax: a JSON object, or `key = value` / `key: value` lines. */
+function parseVarsText(text) {
+  const raw = (text || "").trim();
+  if (!raw) return {};
+  try {
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+  } catch { /* fall back to line-based */ }
+  const vars = {};
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#") || t.startsWith("//")) continue;
+    const m = t.match(/^([^\s:=]+)\s*[:=]\s*(.*)$/);
+    if (m) vars[m[1]] = parseVarValue(m[2]);
+  }
+  return vars;
+}
+
+/**
+ * Vars editor used by the plan modal and the topology what-if panel:
+ * free-form vars textarea + fact-profile select. The last-used text and
+ * profile persist per repo under "pine.planvars."+repoId.
+ */
+function createVarsEditor() {
+  const ta = el("textarea", {
+    rows: "5", spellcheck: "false",
+    placeholder: 'app_version = 2.4.1\nservices: ["docker", "nginx"]\n…or paste a JSON object',
+  });
+  const profileSel = el("select");
+  profileSel.appendChild(el("option", { value: "" }, "No fact profile"));
+
+  let repoId = "";
+  let desiredProfile = "";
+  let profilesReady = false;
+
+  getFactProfiles().then((profiles) => {
+    for (const p of profiles || []) profileSel.appendChild(el("option", { value: p.id }, p.label));
+    profilesReady = true;
+    profileSel.value = desiredProfile;
+    if (profileSel.value !== desiredProfile) profileSel.value = "";
+  }).catch(() => {
+    profileSel.appendChild(el("option", { value: "", disabled: true }, "(profiles unavailable)"));
+  });
+
+  const persist = () => {
+    if (!repoId) return;
+    try {
+      localStorage.setItem("pine.planvars." + repoId,
+        JSON.stringify({ text: ta.value, profile: profileSel.value }));
+    } catch { /* storage blocked/full */ }
+  };
+  ta.addEventListener("change", persist);
+  profileSel.addEventListener("change", () => { desiredProfile = profileSel.value; persist(); });
+
+  const setRepo = (id) => {
+    if ((id || "") === repoId) return;
+    repoId = id || "";
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem("pine.planvars." + repoId) || "null"); } catch { /* corrupt */ }
+    ta.value = saved && typeof saved.text === "string" ? saved.text : "";
+    desiredProfile = (saved && saved.profile) || "";
+    if (profilesReady) {
+      profileSel.value = desiredProfile;
+      if (profileSel.value !== desiredProfile) profileSel.value = "";
+    }
+  };
+
+  const root = el("div", { class: "vars-editor" },
+    el("div", { class: "field" },
+      el("label", null, "Extra variables"),
+      ta,
+      el("span", { class: "hint" }, "JSON object, or one key = value (or key: value) per line — values are parsed as JSON when possible.")),
+    el("div", { class: "field", style: { marginBottom: "6px" } },
+      el("label", null, "Fact profile"),
+      profileSel,
+      el("span", { class: "hint" }, "Simulated ansible_facts (OS family, distribution…) used to evaluate conditionals.")));
+
+  return {
+    root, setRepo, persist,
+    getVars: () => parseVarsText(ta.value),
+    getProfile: () => profileSel.value,
+  };
+}
+
+/** POST /api/plans, remember the result and show it on #/plan. */
+async function runPlan(request, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const result = await api("/plans", { method: "POST", body: JSON.stringify(request) });
+    PlanState = { request, result };
+    closeModal();
+    if (currentRoute()[0] === "plan") route();
+    else location.hash = "#/plan";
+    return true;
+  } catch (e) {
+    toast(e.message, "error", "Plan failed");
+    return false;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** Horizontal stacked run/skip/unknown bar (proportional segments). */
+function verdictBar(counts, mini = false) {
+  const run = (counts && counts.run) || 0;
+  const skip = (counts && counts.skip) || 0;
+  const unknown = (counts && counts.unknown) || 0;
+  const bar = el("div", {
+    class: "verdict-bar" + (mini ? " mini" : ""),
+    title: `run ${run} · skip ${skip} · unknown ${unknown}`,
+  });
+  if (run + skip + unknown === 0) return bar;
+  const seg = (n, cls) => (n > 0 ? el("span", { class: "vb-seg " + cls, style: { flexGrow: String(n) } }) : null);
+  appendChildren(bar, [seg(run, "vb-run"), seg(skip, "vb-skip"), seg(unknown, "vb-unknown")]);
+  return bar;
+}
+
+function planVerdictPill(status) {
+  const s = status || "unknown";
+  return el("span", { class: `pill verdict-${s}` }, s);
+}
+
+async function pagePlan(page) {
+  if (!PlanState) { location.hash = "#/playbooks"; return; }
+  const { request, result } = PlanState;
+  const s = result.summary || {};
+
+  $("#topbar-title").textContent = `Plan · ${result.playbook}`;
+
+  const replanBtn = el("button", { class: "btn", onclick: () => runPlan(request, replanBtn) },
+    icon("sync"), "Re-plan");
+  const applyBtn = el("button", {
+    class: "btn btn-primary",
+    onclick: () => openRunModal({
+      repoId: result.repo_id, playbook: result.playbook, inventory: result.inventory,
+      limit: request.limit || "", tags: request.tags || "", check: !!result.check,
+    }),
+  }, icon("play"), "Apply (run)");
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("a", { href: `#/playbook/${result.repo_id}/${encodePath(result.playbook)}`, class: "btn btn-ghost btn-sm" }, "← Playbook"),
+    el("div", null,
+      el("h1", null, result.playbook),
+      el("div", { class: "muted small" },
+        result.repo_name || result.repo_id,
+        " · inventory ", el("span", { class: "mono" }, result.inventory || "—"),
+        result.fact_profile ? el("span", null, " · facts ", el("span", { class: "mono" }, result.fact_profile)) : null)),
+    el("span", {
+      class: "flag-badge estimated",
+      title: "computed statically by Pine, without running ansible",
+    }, result.mode || "estimated"),
+    result.check ? el("span", { class: "flag-badge check" }, "check") : null,
+    el("div", { class: "grow" }),
+    replanBtn, applyBtn));
+
+  // summary strip: totals + stacked verdict bar
+  page.appendChild(el("div", { class: "panel plan-summary" },
+    el("span", { class: "sum-chip" }, el("b", null, String(s.hosts ?? 0)), el("span", null, "hosts")),
+    el("span", { class: "sum-chip" }, el("b", null, String(s.tasks ?? 0)), el("span", null, "tasks")),
+    verdictBar(s),
+    el("span", { class: "sum-chip ok" }, el("b", null, String(s.run ?? 0)), el("span", null, "run")),
+    el("span", { class: "sum-chip skipped" }, el("b", null, String(s.skip ?? 0)), el("span", null, "skip")),
+    el("span", { class: "sum-chip unknown" }, el("b", null, String(s.unknown ?? 0)), el("span", null, "unknown"))));
+
+  // missing-variables panel: fill values inline → merge into vars → re-plan
+  const missingInputs = new Map(); // var name -> input element
+  const missing = s.missing_vars || [];
+  if (missing.length) {
+    const replanVarsBtn = el("button", { class: "btn btn-primary" }, icon("sync"), "Re-plan with these values");
+    replanVarsBtn.onclick = () => {
+      const vars = { ...(request.vars || {}) };
+      let any = false;
+      for (const [name, input] of missingInputs) {
+        const v = input.value.trim();
+        if (v === "") continue;
+        vars[name] = parseVarValue(v);
+        any = true;
+      }
+      if (!any) { toast("Provide at least one value first", "error"); return; }
+      runPlan({ ...request, vars }, replanVarsBtn);
+    };
+    page.appendChild(el("div", { class: "panel missing-vars" },
+      el("div", { class: "mv-head" },
+        icon("question"),
+        el("span", { class: "mv-title" }, `${missing.length} missing variable${missing.length === 1 ? "" : "s"}`),
+        el("span", { class: "muted small" }, "Unresolved variables leave verdicts uncertain — fill in values and re-plan.")),
+      missing.map((mv) => {
+        const input = el("input", { type: "text", placeholder: "value — JSON or plain string" });
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") replanVarsBtn.click(); });
+        missingInputs.set(mv.name, input);
+        return el("div", { class: "mv-row" },
+          el("span", { class: "mono mv-name" }, mv.name),
+          el("span", { class: "chip warn", title: "verdicts affected by this variable" }, `×${mv.count ?? 0}`),
+          input);
+      }),
+      el("div", { class: "row", style: { justifyContent: "flex-end", marginTop: "10px" } }, replanVarsBtn)));
+  }
+
+  const focusMissingVar = (name) => {
+    const input = missingInputs.get(name);
+    if (!input) { toast(`“${name}” is not in the missing-variables panel`, "error"); return; }
+    input.scrollIntoView({ behavior: "smooth", block: "center" });
+    input.focus({ preventScroll: true });
+    input.classList.add("flash");
+    setTimeout(() => input.classList.remove("flash"), 1000);
+  };
+
+  const plays = result.plays || [];
+  if (!plays.length) {
+    page.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Nothing planned"),
+      el("p", null, "The plan contains no plays. Check the playbook, inventory and limit, then re-plan.")));
+    return;
+  }
+  plays.forEach((play, idx) => page.appendChild(renderPlanPlay(play, idx, focusMissingVar)));
+}
+
+function renderPlanPlay(play, idx, focusMissingVar) {
+  // pure import plays carry no tasks — render a thin pass-through row
+  if (play.import) {
+    return el("div", { class: "plan-import-row" },
+      icon("code"),
+      el("span", null, play.name || `Play ${idx + 1}`),
+      el("span", null, "imports →"),
+      el("span", { class: "mono", style: { color: "var(--secondary)" } }, play.import));
+  }
+
+  const matched = play.matched_hosts || [];
+  const batches = play.batches || [];
+  const head = el("div", { class: "play-head" },
+    el("span", { class: "play-name" }, play.name || `Play ${idx + 1}`),
+    el("span", { class: "hosts-label" }, icon("host"), "hosts:"),
+    el("span", { class: "hosts-pat", title: "Host pattern this play targets" }, play.hosts || "all"),
+    el("span", { class: "chip", title: matched.length ? matched.join(", ") : "No hosts matched" },
+      `${matched.length} matched`),
+    batches.length > 1 ? el("span", {
+      class: "chip warn",
+      title: "serial — rolling batches:\n" + batches.map((b, i) => `batch ${i + 1}: ${b.join(", ")}`).join("\n"),
+    }, `serial · ${batches.length} batches`) : null);
+
+  const body = el("div", { class: "plan-body" });
+  const tasks = play.tasks || [];
+  if (!tasks.length) {
+    body.appendChild(el("div", { class: "muted small", style: { padding: "6px" } }, "No tasks in this play."));
+  }
+  for (const t of tasks) body.appendChild(renderPlanTaskRow(t, focusMissingVar));
+
+  const handlers = play.handlers || [];
+  if (handlers.length) {
+    body.appendChild(el("div", { class: "flow-phase-label handlers-lbl", style: { margin: "16px 6px 8px" } }, "handlers"));
+    for (const h of handlers) {
+      const hosts = h.hosts || [];
+      body.appendChild(el("div", { class: "plan-handler" },
+        el("span", { class: `module mod-${moduleCategory(h.module)}`, title: h.module || "" }, shortModule(h.module)),
+        el("span", { class: "pt-name" }, h.name),
+        h.uncertain ? el("span", {
+          class: "chip warn", style: { cursor: "help" },
+          title: "Triggered only by tasks whose changed-state can't be known statically",
+        }, "uncertain") : null,
+        (h.triggered_by || []).length
+          ? el("span", { class: "muted small" }, "← ", h.triggered_by.join(", "))
+          : null,
+        el("div", { class: "grow" }),
+        el("span", { class: "chip", title: hosts.join(", ") }, `${hosts.length} host${hosts.length === 1 ? "" : "s"}`)));
+    }
+  }
+  return el("div", { class: "play-section" }, head, body);
+}
+
+function renderPlanTaskRow(task, focusMissingVar) {
+  const counts = task.counts || {};
+  const templated = task.raw_name && task.raw_name !== task.name;
+  const row = el("div", { class: "plan-task" });
+  let detail = null;
+  const toggle = () => {
+    if (detail) { detail.remove(); detail = null; row.classList.remove("open"); return; }
+    row.classList.add("open");
+    detail = el("div", { class: "plan-host-detail" }, planHostTable(task, focusMissingVar));
+    row.appendChild(detail);
+  };
+
+  const chips = el("div", { class: "pt-chips" });
+  (task.tags || []).forEach((t) => chips.appendChild(el("span", { class: "chip tag" }, t)));
+  if (task.when) chips.appendChild(whenChip(task.when));
+  (task.notify || []).forEach((n) => chips.appendChild(
+    el("span", { class: "chip notify-chip", title: `notifies handler “${n}”` }, `→ ${n}`)));
+
+  row.appendChild(el("div", { class: "plan-task-row", onclick: toggle },
+    el("span", { class: "plan-section-lbl" }, task.section || "tasks"),
+    el("div", { class: "pt-main" },
+      el("div", { class: "pt-title" },
+        task.role ? el("span", { class: "chip green", title: `from role “${task.role}”` }, icon("role"), task.role) : null,
+        el("span", { class: `module mod-${moduleCategory(task.module)}`, title: task.module || "" }, shortModule(task.module)),
+        el("span", {
+          class: "pt-name" + (templated ? " templated" : ""),
+          title: templated ? `raw: ${task.raw_name}` : null,
+        }, task.name || "(unnamed task)"),
+        task.loop_items ? el("span", {
+          class: "chip loop-chip",
+          title: task.loop_items === -1 ? "Loop of unknown size" : `Loop over ${task.loop_items} item${task.loop_items === 1 ? "" : "s"}`,
+        }, task.loop_items === -1 ? "loop ?" : `×${task.loop_items}`) : null),
+      chips.childNodes.length ? chips : null,
+      task.check_note ? el("div", { class: "pt-checknote" }, task.check_note) : null),
+    el("div", { class: "pt-verdict" },
+      verdictBar(counts, true),
+      el("span", { class: "pt-counts mono" },
+        el("b", { class: "c-run" }, String(counts.run || 0)), " · ",
+        el("b", { class: "c-skip" }, String(counts.skip || 0)), " · ",
+        el("b", { class: "c-unknown" }, String(counts.unknown || 0))))));
+  return row;
+}
+
+/** Expanded per-host verdict table for a planned task. */
+function planHostTable(task, focusMissingVar) {
+  const entries = Object.entries(task.hosts || {});
+  if (!entries.length) {
+    return el("div", { class: "muted small", style: { padding: "2px 0 8px" } }, "No per-host verdicts for this task.");
+  }
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+  return el("div", { class: "table-wrap" },
+    el("table", { class: "data plan-hosts" },
+      el("thead", null, el("tr", null, ["Host", "Verdict", "Why"].map((h) => el("th", null, h)))),
+      el("tbody", null, entries.map(([host, v]) => {
+        const missing = (v && v.missing) || [];
+        return el("tr", null,
+          el("td", { class: "mono" }, host),
+          el("td", null, planVerdictPill(v && v.status)),
+          el("td", null,
+            v && v.reason ? el("span", { class: "muted mono small" }, v.reason) : null,
+            missing.length ? el("span", { class: "row", style: { gap: "5px", display: "inline-flex", marginLeft: v && v.reason ? "8px" : "0" } },
+              el("span", { class: "muted small" }, "missing:"),
+              missing.map((m) => el("span", {
+                class: "chip warn link", title: "Jump to this variable in the missing-variables panel",
+                onclick: (e) => { e.stopPropagation(); focusMissingVar(m); },
+              }, m))) : null,
+            !(v && v.reason) && !missing.length ? el("span", { class: "muted small" }, "—") : null));
+      }))));
+}
+
+/* ============================================================
    5. Run-playbook modal
    ============================================================ */
 
@@ -2023,15 +2491,24 @@ async function openRunModal(prefill = {}) {
   const tagsIn = el("input", { type: "text", placeholder: "e.g. config,deploy (optional)" });
   const checkBox = el("input", { type: "checkbox" });
   const runBtn = el("button", { class: "btn btn-primary" }, icon("play"), "Launch");
+  const planBtn = el("button", {
+    class: "btn btn-secondary",
+    title: "Estimate what this run would do — computed statically, nothing is executed",
+  }, icon("clipboard"), "Plan");
+  const varsEd = createVarsEditor();
 
   for (const r of State.repos) repoSel.appendChild(el("option", { value: r.id }, r.name));
   repoSel.value = prefill.repoId || State.repoId || State.repos[0].id;
+  varsEd.setRepo(repoSel.value);
+  limitIn.value = prefill.limit || "";
+  tagsIn.value = prefill.tags || "";
+  checkBox.checked = !!prefill.check;
 
   const fillScanOptions = async () => {
     pbSel.innerHTML = ""; invSel.innerHTML = "";
     pbSel.appendChild(el("option", { value: "" }, "Loading…"));
     invSel.appendChild(el("option", { value: "" }, "Loading…"));
-    pbSel.disabled = invSel.disabled = runBtn.disabled = true;
+    pbSel.disabled = invSel.disabled = runBtn.disabled = planBtn.disabled = true;
     try {
       const scan = await getScan(repoSel.value);
       pbSel.innerHTML = ""; invSel.innerHTML = "";
@@ -2048,7 +2525,7 @@ async function openRunModal(prefill = {}) {
       }
       pbSel.disabled = !pbs.length;
       invSel.disabled = !invs.length;
-      runBtn.disabled = !pbs.length;
+      runBtn.disabled = planBtn.disabled = !pbs.length;
     } catch (e) {
       pbSel.innerHTML = ""; invSel.innerHTML = "";
       pbSel.appendChild(el("option", { value: "" }, "Scan failed"));
@@ -2056,7 +2533,7 @@ async function openRunModal(prefill = {}) {
       toast(e.message, "error");
     }
   };
-  repoSel.addEventListener("change", fillScanOptions);
+  repoSel.addEventListener("change", () => { varsEd.setRepo(repoSel.value); fillScanOptions(); });
 
   runBtn.onclick = async () => {
     if (!pbSel.value) { toast("Pick a playbook to run", "error"); return; }
@@ -2082,6 +2559,38 @@ async function openRunModal(prefill = {}) {
     }
   };
 
+  planBtn.onclick = async () => {
+    if (!pbSel.value) { toast("Pick a playbook to plan", "error"); return; }
+    varsEd.persist();
+    await runPlan({
+      repo_id: repoSel.value,
+      playbook: pbSel.value,
+      inventory: invSel.value || "",
+      limit: limitIn.value.trim(),
+      tags: tagsIn.value.trim(),
+      check: checkBox.checked,
+      vars: varsEd.getVars(),
+      host_vars: {},
+      fact_profile: varsEd.getProfile(),
+    }, planBtn);
+  };
+
+  // collapsible vars + fact-profile section (used by Plan; runs ignore it)
+  let varsOpen = !!prefill.plan;
+  const varsCaret = el("span", { class: "collapse-caret" + (varsOpen ? " open" : "") }, "▸");
+  const varsBody = el("div", { style: { display: varsOpen ? "" : "none" } },
+    varsEd.root,
+    el("span", { class: "hint", style: { display: "block" } },
+      "Used by Plan to resolve templates and conditionals. Runs don't take extra vars yet."));
+  const varsHead = el("div", {
+    class: "collapse-head",
+    onclick: () => {
+      varsOpen = !varsOpen;
+      varsCaret.classList.toggle("open", varsOpen);
+      varsBody.style.display = varsOpen ? "" : "none";
+    },
+  }, varsCaret, "Variables & facts");
+
   const body = el("div", null,
     el("div", { class: "field" }, el("label", null, "Repository"), repoSel),
     el("div", { class: "field" }, el("label", null, "Playbook"), pbSel),
@@ -2091,12 +2600,13 @@ async function openRunModal(prefill = {}) {
       el("div", { class: "field" }, el("label", null, "Limit"), limitIn),
       el("div", { class: "field" }, el("label", null, "Tags"), tagsIn)),
     el("label", { class: "check-row" }, checkBox,
-      el("span", null, "Check mode ", el("span", { class: "muted" }, "(dry run, no changes applied)"))));
+      el("span", null, "Check mode ", el("span", { class: "muted" }, "(dry run, no changes applied)"))),
+    varsHead, varsBody);
 
   openModal({
     title: "Run playbook",
     body,
-    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), runBtn],
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), planBtn, runBtn],
   });
   fillScanOptions();
 }
@@ -2108,7 +2618,14 @@ async function openRunModal(prefill = {}) {
 let gPressed = false, gTimer = 0;
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeModal(); return; }
+  if (e.key === "Escape") {
+    if (activeModal) { closeModal(); return; }
+    // on the plan view, Escape goes back to the playbook detail
+    if (currentRoute()[0] === "plan" && PlanState) {
+      location.hash = `#/playbook/${PlanState.result.repo_id}/${encodePath(PlanState.result.playbook)}`;
+    }
+    return;
+  }
   const tag = (e.target.tagName || "").toLowerCase();
   if (tag === "input" || tag === "select" || tag === "textarea" || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "g") {

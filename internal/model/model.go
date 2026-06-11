@@ -11,6 +11,8 @@ type Task struct {
 	Tags        []string `json:"tags,omitempty"`
 	When        string   `json:"when,omitempty"`
 	Loop        bool     `json:"loop,omitempty"`
+	LoopExpr    string   `json:"loop_expr,omitempty"`  // raw loop expression, for plan-time resolution
+	LoopItems   int      `json:"loop_items,omitempty"` // literal list size known at scan time
 	Notify      []string `json:"notify,omitempty"`
 	Block       []Task   `json:"block,omitempty"`
 	Rescue      []Task   `json:"rescue,omitempty"`
@@ -27,20 +29,21 @@ type PromptVar struct {
 
 // Play is one play inside a playbook.
 type Play struct {
-	Name       string      `json:"name"`
-	Hosts      string      `json:"hosts"`
-	Become     bool        `json:"become,omitempty"`
-	Serial     string      `json:"serial,omitempty"`
-	Strategy   string      `json:"strategy,omitempty"`
-	Tags       []string    `json:"tags,omitempty"`
-	VarsFiles  []string    `json:"vars_files,omitempty"`
-	VarsPrompt []PromptVar `json:"vars_prompt,omitempty"`
-	Roles      []string    `json:"roles,omitempty"`
-	PreTasks   []Task      `json:"pre_tasks,omitempty"`
-	Tasks      []Task      `json:"tasks,omitempty"`
-	PostTasks  []Task      `json:"post_tasks,omitempty"`
-	Handlers   []Task      `json:"handlers,omitempty"`
-	Import     string      `json:"import,omitempty"` // set when the entry is an import_playbook
+	Name       string         `json:"name"`
+	Hosts      string         `json:"hosts"`
+	Become     bool           `json:"become,omitempty"`
+	Serial     string         `json:"serial,omitempty"`
+	Strategy   string         `json:"strategy,omitempty"`
+	Tags       []string       `json:"tags,omitempty"`
+	Vars       map[string]any `json:"vars,omitempty"`
+	VarsFiles  []string       `json:"vars_files,omitempty"`
+	VarsPrompt []PromptVar    `json:"vars_prompt,omitempty"`
+	Roles      []string       `json:"roles,omitempty"`
+	PreTasks   []Task         `json:"pre_tasks,omitempty"`
+	Tasks      []Task         `json:"tasks,omitempty"`
+	PostTasks  []Task         `json:"post_tasks,omitempty"`
+	Handlers   []Task         `json:"handlers,omitempty"`
+	Import     string         `json:"import,omitempty"` // set when the entry is an import_playbook
 }
 
 // Playbook is a scanned playbook file.
@@ -82,13 +85,28 @@ type Host struct {
 	Vars   map[string]any `json:"vars,omitempty"`
 }
 
+// ConstructedRule mirrors an ansible.builtin.constructed plugin config so
+// generated groups can be re-evaluated with what-if variables (plan mode).
+type ConstructedRule struct {
+	Groups      map[string]string `json:"groups,omitempty"`
+	KeyedGroups []KeyedGroup      `json:"keyed_groups,omitempty"`
+}
+
+// KeyedGroup is one keyed_groups entry of a constructed config.
+type KeyedGroup struct {
+	Key       string `json:"key"`
+	Prefix    string `json:"prefix,omitempty"`
+	Separator string `json:"separator,omitempty"`
+}
+
 // Inventory is a scanned inventory source (directory or single file).
 type Inventory struct {
-	Name   string  `json:"name"`
-	Path   string  `json:"path"`
-	Format string  `json:"format"` // ini | yaml
-	Groups []Group `json:"groups"`
-	Hosts  []Host  `json:"hosts"`
+	Name             string            `json:"name"`
+	Path             string            `json:"path"`
+	Format           string            `json:"format"` // ini | yaml
+	Groups           []Group           `json:"groups"`
+	Hosts            []Host            `json:"hosts"`
+	ConstructedRules []ConstructedRule `json:"constructed_rules,omitempty"`
 }
 
 // ScanResult is everything Pine discovered in one repository.

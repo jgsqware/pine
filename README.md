@@ -38,6 +38,17 @@ JSON storage, a polished web UI, a full terminal UI and a REST API.
   inventories (groups, children, hosts)
 - **Task-flow visualization** — plays → roles → tasks with tags, conditions,
   loops, blocks/rescue and notify → handler links
+- **Plan mode** — a `terraform plan` for Ansible: predict per task × host
+  what would run, skip or stay **unknown** before applying anything.
+  Three-valued evaluation over the scanned repo: when a verdict depends on
+  variables Pine doesn't have, it tells you *which ones* and lets you supply
+  values (or pick a built-in **fact profile**: ubuntu-24.04, debian-12,
+  rhel-9, …) and re-plan live. Loop sizes, serial batches, notified
+  handlers, `--check`/`--limit`/`--tags` all accounted for. Available in
+  the web UI ("Plan" next to every "Run"), the TUI (`p`) and the CLI
+  (`pine plan PATH PLAYBOOK -e key=value --profile ubuntu-24.04`).
+  Topology gets a **what-if** panel: preview how variables reshape
+  constructed groups. See [docs/design/plan-mode.md](docs/design/plan-mode.md)
 - **Job engine** — run playbooks with `--check`, `--limit`, `--tags`; live
   output streaming over SSE; per-host recap summaries; full history.
   When `ansible-playbook` isn't installed, Pine switches to a realistic
@@ -85,6 +96,9 @@ immediately in the UI, the TUI and the API.
 | `POST /api/repos/{id}/sync` | pull + re-scan |
 | `GET /api/repos/{id}/scan` | full scan result (playbooks, roles, inventories) |
 | `GET /api/repos/{id}/topology?inventory=…` | inventory graph (nodes + links) |
+| `POST /api/plans` | compute an estimated plan (vars, host_vars, fact_profile) |
+| `GET /api/fact-profiles` | built-in fact presets |
+| `POST /api/repos/{id}/inventory-preview` | what-if constructed groups |
 | `GET/POST /api/jobs` | job history / launch a playbook |
 | `GET /api/jobs/{id}/events` | live SSE stream (`line` + `status` events) |
 | `GET /api/jobs/{id}/log` | raw log |
@@ -127,10 +141,11 @@ make website   # serves it on :8080
 ## Project layout
 
 ```
-cmd/pine/          CLI entrypoint (serve | tui | scan)
+cmd/pine/          CLI entrypoint (serve | tui | scan | plan)
 internal/scanner/  Ansible repo parser (playbooks, roles, INI/YAML inventories)
 internal/store/    JSON persistence (repos, jobs, logs)
 internal/runner/   git sync, scan cache, job execution + simulation
+internal/plan/     estimated plan engine (tri-state eval, fact profiles)
 internal/server/   REST API, SSE streams, embedded web UI
 internal/tui/      bubbletea terminal UI
 web/               embedded single-page web UI

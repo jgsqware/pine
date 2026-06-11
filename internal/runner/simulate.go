@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jgsqware/pine/internal/model"
+	"github.com/jgsqware/pine/internal/scanner"
 )
 
 // simulate produces a realistic ansible-playbook transcript from scanned
@@ -170,12 +171,12 @@ func (s *simState) play(play model.Play, inv *model.Inventory) {
 
 	hosts := []string{"localhost"}
 	if inv != nil {
-		if got := matchHosts(play.Hosts, inv); len(got) > 0 {
+		if got := scanner.MatchHosts(play.Hosts, inv); len(got) > 0 {
 			hosts = got
 		}
 	}
 	if s.job.Limit != "" && inv != nil {
-		if got := matchHosts(s.job.Limit, inv); len(got) > 0 {
+		if got := scanner.MatchHosts(s.job.Limit, inv); len(got) > 0 {
 			limited := hosts[:0:0]
 			for _, h := range hosts {
 				for _, l := range got {

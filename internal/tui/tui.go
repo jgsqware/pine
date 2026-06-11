@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/jgsqware/pine/internal/model"
+	"github.com/jgsqware/pine/internal/plan"
 	"github.com/jgsqware/pine/internal/runner"
 )
 
@@ -289,6 +290,10 @@ func (a *app) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.runTarget = a.scan.Playbooks[a.cursor[a.tab]].Path
 			a.mode = "confirm-run"
 		}
+	case "p":
+		if a.tab == tabPlaybooks && a.scan != nil && a.cursor[a.tab] < len(a.scan.Playbooks) {
+			a.showPlan(a.scan.Playbooks[a.cursor[a.tab]].Path)
+		}
 	}
 	if a.cursor[a.tab] < 0 {
 		a.cursor[a.tab] = 0
@@ -414,7 +419,7 @@ func (a *app) View() string {
 	case tabRepos:
 		help = "enter select repo · s sync · " + help
 	case tabPlaybooks:
-		help = "r run playbook · " + help
+		help = "r run playbook · p plan · " + help
 	case tabInventory:
 		help = "enter expand/open · s ssh · / filter · " + help
 	}
@@ -728,4 +733,92 @@ func uniq(in []string) []string {
 func readFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	return string(data), err
+}
+
+// showPlan computes an estimated plan for the selected playbook and shows
+// it in the detail pane.
+func (a *app) showPlan(playbook string) {
+	if len(a.repos) == 0 {
+		return
+	}
+	repo := a.repos[a.repoIX]
+	res, err := a.mgr.Scan(repo.ID)
+	if err != nil {
+		a.status = "plan failed: " + err.Error()
+		return
+	}
+	out, err := plan.Compute(res, a.mgr.Store.RepoWorkdir(&repo), repo, plan.Request{
+		RepoID: repo.ID, Playbook: playbook,
+	})
+	if err != nil {
+		a.status = "plan failed: " + err.Error()
+		return
+	}
+	a.detail = renderPlan(out)
+	a.mode, a.scroll = "detail", 0
+}
+
+func renderPlan(out *plan.Result) string {
+	var b strings.Builder
+	b.WriteString(sTitle.Render("PLAN "+out.Playbook) + sDim.Render("  inventory: "+out.Inventory+"  mode: "+out.Mode) + "\n")
+	for _, pp := range out.Plays {
+		if pp.Import != "" {
+			b.WriteString("\n" + sDim.Render("→ imports "+pp.Import) + "\n")
+			continue
+		}
+		b.WriteString("\n" + sTitle.Render("PLAY "+pp.Name) +
+			sDim.Render(fmt.Sprintf("  hosts: %s  matched: %d", pp.Hosts, len(pp.MatchedHosts))))
+		if len(pp.Batches) > 1 {
+			b.WriteString(sWarn.Render(fmt.Sprintf("  serial: %d batches", len(pp.Batches))))
+		}
+		b.WriteString("\n")
+		for _, tp := range pp.Tasks {
+			marker := sLogPlay.Render("✓")
+			if tp.Counts.Unknown > 0 {
+				marker = sWarn.Render("?")
+			} else if tp.Counts.Run == 0 {
+				marker = sDim.Render("-")
+			}
+			label := tp.Name
+			if tp.Role != "" {
+				label = tp.Role + " : " + label
+			}
+			loop := ""
+			if tp.LoopItems > 0 {
+				loop = sDim.Render(fmt.Sprintf(" ×%d", tp.LoopItems))
+			} else if tp.LoopItems == -1 {
+				loop = sDim.Render(" loop ?")
+			}
+			b.WriteString(fmt.Sprintf("  %s %s  %s%s\n", marker, label,
+				sDim.Render(fmt.Sprintf("run=%d skip=%d unknown=%d", tp.Counts.Run, tp.Counts.Skip, tp.Counts.Unknown)), loop))
+			if tp.Counts.Unknown > 0 {
+				seen := map[string]bool{}
+				for _, hv := range tp.Hosts {
+					for _, m := range hv.Missing {
+						if !seen[m] {
+							seen[m] = true
+							b.WriteString("      " + sWarn.Render("? missing: "+m) + "\n")
+						}
+					}
+				}
+			}
+		}
+		for _, h := range pp.Handlers {
+			u := ""
+			if h.Uncertain {
+				u = sWarn.Render(" (uncertain)")
+			}
+			b.WriteString(sDim.Render(fmt.Sprintf("  ⚑ handler %s on %d host(s)", h.Name, len(h.Hosts))) + u + "\n")
+		}
+	}
+	s := out.Summary
+	b.WriteString("\n" + sTitle.Render("Summary: ") +
+		fmt.Sprintf("hosts=%d tasks=%d  ", s.Hosts, s.Tasks) +
+		sLogPlay.Render(fmt.Sprintf("run=%d ", s.Run)) +
+		sDim.Render(fmt.Sprintf("skip=%d ", s.Skip)) +
+		sWarn.Render(fmt.Sprintf("unknown=%d", s.Unknown)) + "\n")
+	for _, mv := range s.MissingVars {
+		b.WriteString(sWarn.Render(fmt.Sprintf("  missing var: %s (%d verdicts)", mv.Name, mv.Count)) + "\n")
+	}
+	return b.String()
 }

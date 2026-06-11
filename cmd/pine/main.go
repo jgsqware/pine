@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jgsqware/pine/internal/model"
+	"github.com/jgsqware/pine/internal/plan"
 	"github.com/jgsqware/pine/internal/runner"
 	"github.com/jgsqware/pine/internal/scanner"
 	"github.com/jgsqware/pine/internal/server"
@@ -27,7 +29,15 @@ Usage:
   pine serve [--addr :8743] [--data DIR] [--demo]   Start the web UI + API server
   pine tui   [--data DIR] [--demo]                  Start the terminal UI
   pine scan  PATH                                   Scan an Ansible repo and print JSON
+  pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
   pine version                                      Print version
+
+Plan flags:
+  -i INVENTORY   inventory name or path
+  --limit/--tags/--check    like ansible-playbook
+  --profile ID   fact profile (ubuntu-24.04, debian-12, rhel-9, ...)
+  -e key=value   extra var (repeatable; value parsed as JSON when possible)
+  --json         print the raw plan JSON
 
 Environment:
   PINE_DATA   data directory (default ~/.pine)
@@ -58,6 +68,8 @@ func main() {
 		cmdTUI(os.Args[2:])
 	case "scan":
 		cmdScan(os.Args[2:])
+	case "plan":
+		cmdPlan(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("pine", version)
 	default:
@@ -153,4 +165,145 @@ func cmdScan(args []string) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(res)
+}
+
+// extraVars collects repeatable -e key=value flags.
+type extraVars map[string]any
+
+func (e extraVars) String() string { return "" }
+func (e extraVars) Set(s string) error {
+	k, v, ok := strings.Cut(s, "=")
+	if !ok {
+		return fmt.Errorf("expected key=value, got %q", s)
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+		e[k] = parsed
+	} else {
+		e[k] = v
+	}
+	return nil
+}
+
+func cmdPlan(args []string) {
+	fs := flag.NewFlagSet("plan", flag.ExitOnError)
+	inv := fs.String("i", "", "inventory name or path")
+	limit := fs.String("limit", "", "host limit pattern")
+	tags := fs.String("tags", "", "only tasks with these tags")
+	check := fs.Bool("check", false, "plan a --check run")
+	profile := fs.String("profile", "", "fact profile id")
+	asJSON := fs.Bool("json", false, "print raw plan JSON")
+	vars := extraVars{}
+	fs.Var(vars, "e", "extra var key=value (repeatable)")
+	_ = fs.Parse(args)
+	if fs.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "usage: pine plan PATH PLAYBOOK [flags]")
+		os.Exit(2)
+	}
+	rest := fs.Args()
+	root, playbook := rest[0], rest[1]
+	// Go's flag package stops at the first positional: re-parse what
+	// follows PATH PLAYBOOK so flags can be given in any order.
+	_ = fs.Parse(rest[2:])
+
+	res, err := scanner.Scan(root)
+	if err != nil {
+		log.Fatal(err)
+	}
+	abs, _ := filepath.Abs(root)
+	out, err := plan.Compute(res, abs, model.Repo{ID: "local", Name: filepath.Base(abs)}, plan.Request{
+		Playbook: playbook, Inventory: *inv, Limit: *limit, Tags: *tags,
+		Check: *check, Vars: vars, FactProfile: *profile,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return
+	}
+	printPlan(out)
+	if out.Summary.Unknown > 0 {
+		os.Exit(3) // distinct exit code: plan incomplete
+	}
+}
+
+const (
+	cGreen = "\033[32m"
+	cGray  = "\033[90m"
+	cAmber = "\033[33m"
+	cBold  = "\033[1m"
+	cOff   = "\033[0m"
+)
+
+func printPlan(out *plan.Result) {
+	fmt.Printf("%sPLAN%s %s  inventory=%s  mode=%s", cBold, cOff, out.Playbook, out.Inventory, out.Mode)
+	if out.FactProfile != "" {
+		fmt.Printf("  facts=%s", out.FactProfile)
+	}
+	if out.Check {
+		fmt.Print("  --check")
+	}
+	fmt.Println()
+	for _, pp := range out.Plays {
+		if pp.Import != "" {
+			fmt.Printf("\n%s→ imports %s%s\n", cGray, pp.Import, cOff)
+			continue
+		}
+		fmt.Printf("\n%sPLAY [%s]%s  hosts=%s matched=%d", cBold, pp.Name, cOff, pp.Hosts, len(pp.MatchedHosts))
+		if len(pp.Batches) > 1 {
+			fmt.Printf("  serial: %d batches", len(pp.Batches))
+		}
+		fmt.Println()
+		for _, tp := range pp.Tasks {
+			marker, color := "✓", cGreen
+			switch {
+			case tp.Counts.Unknown > 0:
+				marker, color = "?", cAmber
+			case tp.Counts.Run == 0:
+				marker, color = "-", cGray
+			}
+			label := tp.Name
+			if tp.Role != "" {
+				label = tp.Role + " : " + label
+			}
+			fmt.Printf("  %s%s%s %-58s %srun=%d skip=%d unknown=%d%s",
+				color, marker, cOff, label, cGray, tp.Counts.Run, tp.Counts.Skip, tp.Counts.Unknown, cOff)
+			if tp.LoopItems > 0 {
+				fmt.Printf(" %s×%d%s", cGray, tp.LoopItems, cOff)
+			} else if tp.LoopItems == -1 {
+				fmt.Printf(" %sloop ?%s", cGray, cOff)
+			}
+			fmt.Println()
+			if tp.Counts.Unknown > 0 {
+				seen := map[string]bool{}
+				for _, hv := range tp.Hosts {
+					for _, m := range hv.Missing {
+						if !seen[m] {
+							seen[m] = true
+							fmt.Printf("      %s? missing: %s%s\n", cAmber, m, cOff)
+						}
+					}
+				}
+			}
+		}
+		for _, h := range pp.Handlers {
+			u := ""
+			if h.Uncertain {
+				u = cAmber + " (uncertain)" + cOff
+			}
+			fmt.Printf("  %s⚑ handler %s%s on %d host(s)%s\n", cGray, h.Name, cOff, len(h.Hosts), u)
+		}
+	}
+	s := out.Summary
+	fmt.Printf("\n%sSummary:%s %shosts=%d tasks=%d%s  %srun=%d%s %sskip=%d%s %sunknown=%d%s\n",
+		cBold, cOff, cGray, s.Hosts, s.Tasks, cOff, cGreen, s.Run, cOff, cGray, s.Skip, cOff, cAmber, s.Unknown, cOff)
+	if len(s.MissingVars) > 0 {
+		fmt.Printf("%sProvide these vars (-e) or a fact profile (--profile) to resolve unknowns:%s\n", cAmber, cOff)
+		for _, mv := range s.MissingVars {
+			fmt.Printf("  %s (%d verdicts)\n", mv.Name, mv.Count)
+		}
+	}
 }
