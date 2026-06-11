@@ -27,6 +27,13 @@ JSON storage, a polished web UI, a full terminal UI and a REST API.
   work; role/inventory internals are skipped automatically. If discovery
   finds nothing (or too much), set per-repo **scan paths** (dirs, files or
   globs) — the UI prompts you when a synced repo has zero playbooks
+- **Constructed inventories** — directories holding split sources
+  (`inventory/00-hosts.yml` + `99-constructed.yml`) are merged like
+  `-i inventory/`, and the `ansible.builtin.constructed` plugin is emulated:
+  `groups:` Jinja conditions over host vars (`'docker' in (services |
+  default([]))`, `and`/`or`/`not`, `==`, `is defined`, …) and `keyed_groups`
+  are evaluated, so generated groups show up in the UI, topology and TUI
+  with a *constructed* badge — no need to maintain the service axis by hand
 - **Topology graph** — interactive force-directed visualization of your
   inventories (groups, children, hosts)
 - **Task-flow visualization** — plays → roles → tasks with tags, conditions,

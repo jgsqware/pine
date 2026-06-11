@@ -1,0 +1,14 @@
+---
+# Generated service axis: declare services once per host in 00-hosts.yml,
+# these groups build themselves. Verify with:
+#   ansible-inventory -i inventories/homelab/ --graph
+plugin: ansible.builtin.constructed
+strict: false
+groups:
+  docker_hosts: "'docker' in (services | default([]))"
+  postgresql_hosts: "'postgresql' in (services | default([]))"
+  pihole_hosts: "'pihole' in (services | default([]))"
+  backup_hosts: "('docker' in (services | default([]))) or ('postgresql' in (services | default([])))"
+keyed_groups:
+  - key: services
+    prefix: svc

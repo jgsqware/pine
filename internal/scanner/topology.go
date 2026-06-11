@@ -4,11 +4,12 @@ import "github.com/jgsqware/pine/internal/model"
 
 // TopoNode is a vertex of the inventory topology graph.
 type TopoNode struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Type  string `json:"type"` // group | host
-	Group string `json:"group,omitempty"`
-	Size  int    `json:"size,omitempty"`
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Type        string `json:"type"` // group | host
+	Group       string `json:"group,omitempty"`
+	Size        int    `json:"size,omitempty"`
+	Constructed bool   `json:"constructed,omitempty"`
 }
 
 // TopoLink is an edge: group->group ("child") or group->host ("member").
@@ -58,6 +59,7 @@ func BuildTopology(inv *model.Inventory) *Topology {
 		}
 		t.Nodes = append(t.Nodes, TopoNode{
 			ID: "g:" + g.Name, Label: g.Name, Type: "group", Size: hostCount[g.Name],
+			Constructed: g.Constructed,
 		})
 		for _, c := range g.Children {
 			if c == "all" {

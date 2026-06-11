@@ -90,6 +90,39 @@ func scanInventories(root string) []model.Inventory {
 
 	addFromDir := func(dir string) {
 		files := inventoryFilesIn(dir)
+		cfgs, pluginFiles := pluginConfigsIn(dir)
+		for _, f := range pluginFiles {
+			seenFiles[f] = true
+		}
+		// drop plugin configs from the host-source list (a constructed
+		// file can be named hosts-constructed.yml and match both)
+		files = exclude(files, pluginFiles)
+
+		// A plugin config marks this directory as a single merged
+		// inventory (`-i dir/` semantics): combine every source file,
+		// then emulate the constructed plugin on the result.
+		if len(cfgs) > 0 {
+			var fresh []string
+			for _, f := range files {
+				if !seenFiles[f] {
+					seenFiles[f] = true
+					fresh = append(fresh, f)
+				}
+			}
+			if len(fresh) == 0 {
+				return
+			}
+			name := mergedInventoryName(root, dir, usedNames)
+			if inv, ok := parseInventorySources(root, fresh, name, dir); ok {
+				for _, cfg := range cfgs {
+					applyConstructed(&inv, cfg)
+				}
+				usedNames[name] = true
+				out = append(out, inv)
+			}
+			return
+		}
+
 		for _, f := range files {
 			if seenFiles[f] {
 				continue
@@ -188,6 +221,58 @@ func inventoryFilesIn(dir string) []string {
 	return out
 }
 
+// pluginConfigsIn finds inventory plugin config files in dir. Every plugin
+// file is returned in files (so it is never parsed as a hosts source);
+// constructed-plugin configs are also parsed for emulation.
+func pluginConfigsIn(dir string) (cfgs []*constructedConfig, files []string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || strings.HasPrefix(name, ".") ||
+			(!strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml")) {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if isPlugin, cfg := parsePluginFile(full); isPlugin {
+			files = append(files, full)
+			if cfg != nil {
+				cfgs = append(cfgs, cfg)
+			}
+		}
+	}
+	sort.Strings(files)
+	return cfgs, files
+}
+
+func exclude(list, drop []string) []string {
+	var out []string
+	for _, e := range list {
+		if !contains(drop, e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// mergedInventoryName names a directory-merged inventory after its dir,
+// falling back to "default" for generic dir names and to the repo-relative
+// path on collision.
+func mergedInventoryName(root, dir string, used map[string]bool) string {
+	name := filepath.Base(dir)
+	if dir == root || inventoryDirNames[name] {
+		name = "default"
+	}
+	if used[name] {
+		if rel, err := filepath.Rel(root, dir); err == nil && rel != "." {
+			name = rel
+		}
+	}
+	return name
+}
+
 // inventoryName derives a human name for an inventory source: the env dir
 // name when meaningful (inventories/production/hosts.ini -> production), the
 // file stem when the dir is generic (inventories/staging.yml -> staging),
@@ -212,16 +297,35 @@ func inventoryName(root, dir, file string, used map[string]bool) string {
 }
 
 func parseInventoryFile(root, file, name, varsDir string) (model.Inventory, bool) {
+	return parseInventorySources(root, []string{file}, name, varsDir)
+}
+
+// parseInventorySources merges one or more inventory files (lexicographic
+// order, like ansible does for `-i dir/`) into a single inventory, then
+// layers varsDir's group_vars/host_vars on top.
+func parseInventorySources(root string, files []string, name, varsDir string) (model.Inventory, bool) {
 	b := newInvBuilder()
-	format := detectInventoryFormat(file)
-	if format == "yaml" {
-		if !parseYAMLInventory(file, b) {
-			return model.Inventory{}, false
+	format := ""
+	sort.Strings(files)
+	for _, file := range files {
+		f := detectInventoryFormat(file)
+		if f == "yaml" {
+			if !parseYAMLInventory(file, b) {
+				continue
+			}
+		} else {
+			if !parseINIInventory(file, b) {
+				continue
+			}
 		}
-	} else {
-		if !parseINIInventory(file, b) {
-			return model.Inventory{}, false
+		if format == "" {
+			format = f
+		} else if format != f {
+			format = "mixed"
 		}
+	}
+	if format == "" {
+		return model.Inventory{}, false
 	}
 
 	mergeVarsDir(filepath.Join(varsDir, "group_vars"), func(group string, vars map[string]any) {
@@ -243,8 +347,8 @@ func parseInventoryFile(root, file, name, varsDir string) (model.Inventory, bool
 	})
 
 	relPath, _ := filepath.Rel(root, varsDir)
-	if relPath == "." {
-		relPath, _ = filepath.Rel(root, file)
+	if relPath == "." && len(files) == 1 {
+		relPath, _ = filepath.Rel(root, files[0])
 	}
 	inv := model.Inventory{Name: name, Path: relPath, Format: format}
 

@@ -31,8 +31,31 @@ func TestScanDemoInfra(t *testing.T) {
 	if got := len(res.Roles); got != 12 {
 		t.Errorf("roles = %d, want 12", got)
 	}
-	if got := len(res.Inventories); got != 2 {
-		t.Errorf("inventories = %d, want 2", got)
+	if got := len(res.Inventories); got != 3 {
+		t.Errorf("inventories = %d, want 3 (production, staging, homelab)", got)
+	}
+
+	// homelab: directory-merged inventory with constructed groups
+	var homelab *model.Inventory
+	for i := range res.Inventories {
+		if res.Inventories[i].Name == "homelab" {
+			homelab = &res.Inventories[i]
+		}
+	}
+	if homelab == nil {
+		t.Fatal("homelab inventory not found")
+	}
+	foundDocker := false
+	for _, g := range homelab.Groups {
+		if g.Name == "docker_hosts" {
+			foundDocker = true
+			if !g.Constructed || len(g.Hosts) != 4 {
+				t.Errorf("docker_hosts constructed=%v hosts=%v", g.Constructed, g.Hosts)
+			}
+		}
+	}
+	if !foundDocker {
+		t.Error("homelab missing constructed docker_hosts group")
 	}
 
 	// site.yml must resolve every import_playbook stage
