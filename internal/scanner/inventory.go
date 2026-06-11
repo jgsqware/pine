@@ -56,59 +56,159 @@ func contains(s []string, v string) bool {
 	return false
 }
 
-// scanInventories finds inventory sources: inventories/<env>/ dirs, an
-// inventory/ dir, or top-level hosts/hosts.ini/hosts.yml files.
+// dirs that never contain inventory sources (role internals, code, deps).
+var nonInventoryDirs = map[string]bool{
+	"roles": true, "tasks": true, "handlers": true, "templates": true,
+	"files": true, "defaults": true, "meta": true, "vars": true,
+	"library": true, "filter_plugins": true, "module_utils": true,
+	"molecule": true, "collections": true, "node_modules": true,
+	"venv": true, ".venv": true,
+}
+
+// dir names that conventionally hold inventories.
+var inventoryDirNames = map[string]bool{
+	"inventory": true, "inventories": true, "environments": true, "envs": true,
+}
+
+// generic file stems that don't make good inventory names.
+var genericInvStems = map[string]bool{"hosts": true, "inventory": true, "00-hosts": true}
+
+const maxInventoryDepth = 6
+
+// scanInventories discovers inventory sources anywhere in the repository.
+// A directory is considered an inventory location when it is named
+// inventory/inventories/environments, sits directly inside one, carries
+// group_vars/ or host_vars/, or is the repo root. Within such a directory,
+// every hosts*/inventory* file, every .ini file and every YAML file shaped
+// like an inventory becomes an inventory source (so both
+// inventories/<env>/hosts.ini and inventories/production.yml layouts work),
+// with sibling group_vars/host_vars merged in.
 func scanInventories(root string) []model.Inventory {
+	seenFiles := map[string]bool{}
+	usedNames := map[string]bool{}
 	var out []model.Inventory
 
-	for _, base := range []string{"inventories", "environments"} {
-		dir := filepath.Join(root, base)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
+	addFromDir := func(dir string) {
+		files := inventoryFilesIn(dir)
+		for _, f := range files {
+			if seenFiles[f] {
 				continue
 			}
-			invDir := filepath.Join(dir, e.Name())
-			if inv, ok := parseInventoryDir(root, invDir, e.Name()); ok {
+			seenFiles[f] = true
+			name := inventoryName(root, dir, f, usedNames)
+			if inv, ok := parseInventoryFile(root, f, name, dir); ok {
+				// several sources share this dir: -i must target the file,
+				// not the dir, or ansible would load all of them at once
+				if len(files) > 1 {
+					if rel, err := filepath.Rel(root, f); err == nil {
+						inv.Path = rel
+					}
+				}
+				usedNames[name] = true
 				out = append(out, inv)
 			}
 		}
 	}
 
-	if inv, ok := parseInventoryDir(root, filepath.Join(root, "inventory"), "inventory"); ok {
-		out = append(out, inv)
-	}
-
-	if len(out) == 0 {
-		for _, f := range []string{"hosts", "hosts.ini", "hosts.yml", "hosts.yaml", "inventory.ini", "inventory.yml"} {
-			p := filepath.Join(root, f)
-			if isFile(p) {
-				if inv, ok := parseInventoryFile(root, p, "default", root); ok {
-					out = append(out, inv)
-					break
-				}
+	var walk func(dir string, depth int, parentIsInvDir bool)
+	walk = func(dir string, depth int, parentIsInvDir bool) {
+		if depth > maxInventoryDepth {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		hasVars := false
+		var subdirs []string
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
 			}
+			n := e.Name()
+			if n == "group_vars" || n == "host_vars" {
+				hasVars = true
+				continue
+			}
+			if nonInventoryDirs[n] || strings.HasPrefix(n, ".") {
+				continue
+			}
+			subdirs = append(subdirs, filepath.Join(dir, n))
+		}
+		isInvDir := inventoryDirNames[filepath.Base(dir)]
+		if dir == root || isInvDir || parentIsInvDir || hasVars {
+			addFromDir(dir)
+		}
+		for _, sd := range subdirs {
+			walk(sd, depth+1, isInvDir)
 		}
 	}
+	walk(root, 0, false)
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// parseInventoryDir parses an inventory directory containing a hosts file
-// plus optional group_vars/ and host_vars/.
-func parseInventoryDir(root, dir, name string) (model.Inventory, bool) {
-	if !isDir(dir) {
-		return model.Inventory{}, false
+// inventoryFilesIn lists the inventory source files directly inside dir:
+// hosts*/inventory* files with any of no/.ini/.yml/.yaml extension, any
+// .ini file, or YAML files whose content is shaped like an inventory.
+func inventoryFilesIn(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
 	}
-	for _, f := range []string{"hosts", "hosts.ini", "hosts.yml", "hosts.yaml", "inventory.ini", "inventory.yml", "00-hosts.ini"} {
-		p := filepath.Join(dir, f)
-		if isFile(p) {
-			return parseInventoryFile(root, p, name, dir)
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(name))
+		stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+		full := filepath.Join(dir, name)
+		switch {
+		case ext != "" && ext != ".ini" && ext != ".yml" && ext != ".yaml":
+			continue
+		case stem == "requirements" || stem == "galaxy" || stem == "site" || stem == "ansible":
+			continue
+		case strings.Contains(stem, "hosts") || strings.Contains(stem, "inventor"):
+			out = append(out, full)
+		case ext == ".ini":
+			out = append(out, full)
+		case ext == ".yml" || ext == ".yaml":
+			if looksLikeYAMLInventory(full) {
+				out = append(out, full)
+			}
 		}
 	}
-	return model.Inventory{}, false
+	sort.Strings(out)
+	return out
+}
+
+// inventoryName derives a human name for an inventory source: the env dir
+// name when meaningful (inventories/production/hosts.ini -> production), the
+// file stem when the dir is generic (inventories/staging.yml -> staging),
+// and "default" when both are generic (inventories/hosts.yml, ./hosts).
+// Collisions get the repo-relative path instead.
+func inventoryName(root, dir, file string, used map[string]bool) string {
+	dirBase := filepath.Base(dir)
+	stem := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	name := dirBase
+	if dir == root || inventoryDirNames[dirBase] {
+		name = stem
+		if genericInvStems[strings.ToLower(stem)] {
+			name = "default"
+		}
+	}
+	if used[name] {
+		if rel, err := filepath.Rel(root, file); err == nil {
+			name = strings.TrimSuffix(rel, filepath.Ext(rel))
+		}
+	}
+	return name
 }
 
 func parseInventoryFile(root, file, name, varsDir string) (model.Inventory, bool) {
