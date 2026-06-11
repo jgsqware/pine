@@ -1,0 +1,41 @@
+[tools]
+go = "1.24"
+glow = "latest"
+
+[env]
+# Where the Pine server is published by docker-compose (host:container 8743).
+PINE_URL = "http://localhost:8743"
+
+[tasks.up]
+description = "Build the image and start the Pine stack in the background"
+run = "docker compose up --build -d"
+
+[tasks.down]
+description = "Stop and remove the Pine stack"
+run = "docker compose down"
+
+[tasks.logs]
+description = "Follow the Pine container logs"
+run = "docker compose logs -f pine"
+
+[tasks.tui]
+description = "Open the terminal UI inside the running container (shares its data)"
+run = "docker compose exec pine pine tui"
+
+[tasks.open]
+description = "Open the Pine web UI in the default browser"
+run = '''
+url="${PINE_URL:-http://localhost:8743}"
+echo "opening $url"
+if command -v wslview >/dev/null 2>&1; then wslview "$url"
+elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$url"
+elif command -v open >/dev/null 2>&1; then open "$url"
+elif command -v explorer.exe >/dev/null 2>&1; then explorer.exe "$url"
+elif command -v sensible-browser >/dev/null 2>&1; then sensible-browser "$url"
+else echo "no browser opener found - visit $url manually"; fi
+'''
+
+[tasks.dev]
+description = "Build & start the stack, then open the web UI"
+depends = ["up"]
+run = "mise run open"
