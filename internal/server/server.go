@@ -46,6 +46,10 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("POST /api/plans", s.computePlan)
 	mux.HandleFunc("GET /api/fact-profiles", s.factProfiles)
 	mux.HandleFunc("POST /api/repos/{id}/inventory-preview", s.inventoryPreview)
+	mux.HandleFunc("GET /api/repos/{id}/lineage", s.lineage)
+	mux.HandleFunc("GET /api/repos/{id}/hygiene", s.hygiene)
+	mux.HandleFunc("GET /api/repos/{id}/impact", s.impact)
+	mux.HandleFunc("GET /api/jobs/{id}/diff", s.jobDiff)
 
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("POST /api/jobs", s.createJob)
@@ -378,6 +382,7 @@ func (s *Server) computePlan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errCode(err), err)
 		return
 	}
+	req.TaskDurations = s.taskDurationHistory(repo.ID, req.Playbook)
 	out, err := plan.Compute(res, s.Mgr.Store.RepoWorkdir(&repo), repo, req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -565,4 +570,102 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/svg+xml")
 	}
 	_, _ = w.Write(data)
+}
+
+// --- insights: lineage, hygiene, impact, job diff ---
+
+func (s *Server) lineage(w http.ResponseWriter, r *http.Request) {
+	res, err := s.Mgr.Scan(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	out, err := plan.Lineage(res, r.URL.Query().Get("inventory"), r.URL.Query().Get("host"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) hygiene(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	res, err := s.Mgr.Scan(repo.ID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, plan.Hygiene(res, s.Mgr.Store.RepoWorkdir(&repo)))
+}
+
+func (s *Server) impact(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	res, err := s.Mgr.Scan(repo.ID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	out, err := plan.Impact(res, s.Mgr.Store.RepoWorkdir(&repo),
+		r.URL.Query().Get("base"), r.URL.Query().Get("head"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) jobDiff(w http.ResponseWriter, r *http.Request) {
+	other := r.URL.Query().Get("with")
+	if other == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("query parameter 'with' is required"))
+		return
+	}
+	out, err := s.Mgr.DiffJobs(r.PathValue("id"), other)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+		} else {
+			writeErr(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// taskDurationHistory averages per-task durations over the most recent
+// terminal jobs of the same repo+playbook, for plan time estimates.
+func (s *Server) taskDurationHistory(repoID, playbook string) map[string]int64 {
+	jobs := s.Mgr.Store.ListJobs()
+	sum := map[string]int64{}
+	count := map[string]int64{}
+	used := 0
+	for _, j := range jobs {
+		if used >= 5 {
+			break
+		}
+		if j.RepoID != repoID || j.Playbook != playbook || !j.Terminal() || len(j.TaskDurations) == 0 {
+			continue
+		}
+		used++
+		for _, td := range j.TaskDurations {
+			sum[td.Task] += td.MS
+			count[td.Task]++
+		}
+	}
+	if used == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(sum))
+	for k := range sum {
+		out[k] = sum[k] / count[k]
+	}
+	return out
 }

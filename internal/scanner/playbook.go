@@ -290,6 +290,7 @@ func parseTask(m map[string]any) model.Task {
 		When:   toStr(m["when"]),
 		Loop:   hasLoop(m),
 		Notify: toStrSlice(m["notify"]),
+		Listen: toStr(m["listen"]),
 	}
 	if t.Loop {
 		loopVal, ok := m["loop"]

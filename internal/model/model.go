@@ -13,6 +13,7 @@ type Task struct {
 	Loop        bool     `json:"loop,omitempty"`
 	LoopExpr    string   `json:"loop_expr,omitempty"`  // raw loop expression, for plan-time resolution
 	LoopItems   int      `json:"loop_items,omitempty"` // literal list size known at scan time
+	Listen      string   `json:"listen,omitempty"`     // handler listen topic
 	Notify      []string `json:"notify,omitempty"`
 	Block       []Task   `json:"block,omitempty"`
 	Rescue      []Task   `json:"rescue,omitempty"`
@@ -167,23 +168,30 @@ const (
 	JobCanceled = "canceled"
 )
 
+// TaskDuration is the measured wall time of one task in a job run.
+type TaskDuration struct {
+	Task string `json:"task"`
+	MS   int64  `json:"ms"`
+}
+
 // Job is one playbook execution.
 type Job struct {
-	ID         string     `json:"id"`
-	RepoID     string     `json:"repo_id"`
-	RepoName   string     `json:"repo_name"`
-	Playbook   string     `json:"playbook"`
-	Inventory  string     `json:"inventory,omitempty"`
-	Limit      string     `json:"limit,omitempty"`
-	Tags       string     `json:"tags,omitempty"`
-	Check      bool       `json:"check"`
-	Simulated  bool       `json:"simulated"`
-	Status     string     `json:"status"`
-	Created    string     `json:"created"`
-	Started    string     `json:"started,omitempty"`
-	Finished   string     `json:"finished,omitempty"`
-	DurationMS int64      `json:"duration_ms"`
-	Summary    JobSummary `json:"summary"`
+	ID            string         `json:"id"`
+	RepoID        string         `json:"repo_id"`
+	RepoName      string         `json:"repo_name"`
+	Playbook      string         `json:"playbook"`
+	Inventory     string         `json:"inventory,omitempty"`
+	Limit         string         `json:"limit,omitempty"`
+	Tags          string         `json:"tags,omitempty"`
+	Check         bool           `json:"check"`
+	Simulated     bool           `json:"simulated"`
+	Status        string         `json:"status"`
+	Created       string         `json:"created"`
+	Started       string         `json:"started,omitempty"`
+	Finished      string         `json:"finished,omitempty"`
+	DurationMS    int64          `json:"duration_ms"`
+	Summary       JobSummary     `json:"summary"`
+	TaskDurations []TaskDuration `json:"task_durations,omitempty"`
 }
 
 // Terminal reports whether the job reached a final state.

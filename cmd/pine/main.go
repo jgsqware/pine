@@ -30,6 +30,7 @@ Usage:
   pine tui   [--data DIR] [--demo]                  Start the terminal UI
   pine scan  PATH                                   Scan an Ansible repo and print JSON
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
+  pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
   pine version                                      Print version
 
 Plan flags:
@@ -70,6 +71,8 @@ func main() {
 		cmdScan(os.Args[2:])
 	case "plan":
 		cmdPlan(os.Args[2:])
+	case "impact":
+		cmdImpact(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("pine", version)
 	default:
@@ -305,5 +308,65 @@ func printPlan(out *plan.Result) {
 		for _, mv := range s.MissingVars {
 			fmt.Printf("  %s (%d verdicts)\n", mv.Name, mv.Count)
 		}
+	}
+}
+
+func cmdImpact(args []string) {
+	fs := flag.NewFlagSet("impact", flag.ExitOnError)
+	base := fs.String("base", "", "base git ref (default: HEAD, comparing the worktree)")
+	head := fs.String("head", "", "head git ref (default: worktree)")
+	asJSON := fs.Bool("json", false, "print raw JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine impact PATH [--base REF] [--head REF]")
+		os.Exit(2)
+	}
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:])
+
+	res, err := scanner.Scan(root)
+	if err != nil {
+		log.Fatal(err)
+	}
+	abs, _ := filepath.Abs(root)
+	out, err := plan.Impact(res, abs, *base, *head)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return
+	}
+	fmt.Printf("%sIMPACT%s %s..%s\n", cBold, cOff, out.Base, out.Head)
+	if len(out.ChangedFiles) == 0 {
+		fmt.Println("no changes detected")
+		return
+	}
+	for _, e := range out.Entries {
+		fmt.Printf("\n%s%s%s %s(%s)%s\n", cBold, e.File, cOff, cGray, e.Kind, cOff)
+		if len(e.Roles) > 0 {
+			fmt.Printf("  roles:     %s\n", strings.Join(e.Roles, ", "))
+		}
+		for _, pb := range e.Playbooks {
+			fmt.Printf("  playbook:  %s %s(%s)%s\n", pb.Path, cGray, pb.Via, cOff)
+		}
+		if len(e.Handlers) > 0 {
+			fmt.Printf("  %shandlers:  %s%s\n", cAmber, strings.Join(e.Handlers, ", "), cOff)
+		}
+	}
+	s := out.Summary
+	fmt.Printf("\n%sSummary:%s %d file(s) → %d role(s) → %d playbook(s) → %s%d host(s)%s",
+		cBold, cOff, s.Files, s.Roles, s.Playbooks, cAmber, s.HostsTotal, cOff)
+	for inv, n := range s.HostsByInventory {
+		fmt.Printf("  %s%s: %d%s", cGray, inv, n, cOff)
+	}
+	fmt.Println()
+	if len(s.Handlers) > 0 {
+		fmt.Printf("%swould trigger: %s%s\n", cAmber, strings.Join(s.Handlers, ", "), cOff)
+	}
+	if s.HostsTotal > 0 {
+		os.Exit(3) // distinct exit code for CI: changes have impact
 	}
 }

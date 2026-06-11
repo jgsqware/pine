@@ -24,6 +24,10 @@ type Request struct {
 	Vars        map[string]any            `json:"vars"`
 	HostVars    map[string]map[string]any `json:"host_vars"`
 	FactProfile string                    `json:"fact_profile"`
+
+	// TaskDurations maps task labels ("role : name") to historical average
+	// milliseconds; filled server-side from past jobs, not by clients.
+	TaskDurations map[string]int64 `json:"-"`
 }
 
 // Verdict statuses.
@@ -59,6 +63,7 @@ type TaskPlan struct {
 	LoopItems int                    `json:"loop_items"`
 	Notify    []string               `json:"notify,omitempty"`
 	CheckNote string                 `json:"check_note,omitempty"`
+	AvgMS     int64                  `json:"avg_ms,omitempty"`
 	Counts    Counts                 `json:"counts"`
 	Hosts     map[string]HostVerdict `json:"hosts"`
 }
@@ -101,15 +106,16 @@ type Summary struct {
 
 // Result is a computed plan.
 type Result struct {
-	Mode        string     `json:"mode"`
-	RepoID      string     `json:"repo_id"`
-	RepoName    string     `json:"repo_name"`
-	Playbook    string     `json:"playbook"`
-	Inventory   string     `json:"inventory"`
-	FactProfile string     `json:"fact_profile,omitempty"`
-	Check       bool       `json:"check"`
-	Summary     Summary    `json:"summary"`
-	Plays       []PlayPlan `json:"plays"`
+	Mode                string     `json:"mode"`
+	RepoID              string     `json:"repo_id"`
+	RepoName            string     `json:"repo_name"`
+	Playbook            string     `json:"playbook"`
+	Inventory           string     `json:"inventory"`
+	FactProfile         string     `json:"fact_profile,omitempty"`
+	Check               bool       `json:"check"`
+	EstimatedDurationMS int64      `json:"estimated_duration_ms,omitempty"`
+	Summary             Summary    `json:"summary"`
+	Plays               []PlayPlan `json:"plays"`
 }
 
 // checkModeModules never run under --check.
@@ -172,6 +178,9 @@ func Compute(res *model.ScanResult, root string, repo model.Repo, req Request) (
 			out.Summary.Run += tp.Counts.Run
 			out.Summary.Skip += tp.Counts.Skip
 			out.Summary.Unknown += tp.Counts.Unknown
+			if tp.AvgMS > 0 && tp.Counts.Run+tp.Counts.Unknown > 0 {
+				out.EstimatedDurationMS += tp.AvgMS
+			}
 		}
 	}
 	out.Summary.Hosts = len(hosts)
@@ -352,6 +361,13 @@ func (c *computer) task(play model.Play, section, role, when string, t model.Tas
 		Hosts:   map[string]HostVerdict{},
 	}
 	tp.CheckNote = checkNote(c.req.Check, t.Module)
+	if len(c.req.TaskDurations) > 0 {
+		label := t.Name
+		if role != "" {
+			label = role + " : " + t.Name
+		}
+		tp.AvgMS = c.req.TaskDurations[label]
+	}
 	if rescue {
 		tp.CheckNote = strings.TrimSpace(tp.CheckNote + " rescue: runs only when the block fails")
 	}

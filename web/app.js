@@ -5,7 +5,8 @@
      2. global state + repo selector
      3. router
      4. pages: dashboard, repos, playbooks, playbook detail,
-        roles, role detail, inventory, topology, jobs, job detail
+        roles, role detail, inventory, topology, hygiene, impact,
+        jobs, job detail, plan
      5. run-playbook modal, keyboard shortcuts, boot
    ============================================================ */
 "use strict";
@@ -102,6 +103,9 @@ const ICONS = {
   tree: '<svg viewBox="0 0 24 24"><path d="M12 1 L16.5 8.5 H7.5 Z" fill="#4ade80"/><path d="M12 5.5 L18 14.5 H6 Z" fill="#34c46a"/><path d="M12 10.5 L20 20.5 H4 Z" fill="#22a356"/><rect x="10.9" y="20" width="2.2" height="3.2" rx="0.6" fill="#8a5a3b"/></svg>',
   code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6M13 4l-2 16"/></svg>',
   clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 13l2 2 4-4"/></svg>',
+  sparkle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>',
+  radar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7M8.5 15.5a5 5 0 0 1 0-7"/><path d="M18.4 5.6a9 9 0 0 1 0 12.8M5.6 18.4a9 9 0 0 1 0-12.8"/></svg>',
+  diff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3l4 4-4 4M20 7H7M8 13l-4 4 4 4M4 17h13"/></svg>',
 };
 
 function icon(name) {
@@ -299,6 +303,7 @@ const State = {
   reposLoaded: false,
   repoId: localStorage.getItem("pine.repo") || "",
   scanCache: new Map(),   // repoId -> Promise<scan>
+  lineageCache: new Map(),// "repoId␁inventory␁host" -> Promise<lineage>
   cleanups: [],           // run on navigation
   invSelection: new Map(),// repoId -> inventory name (inventory + topology pages)
 };
@@ -352,7 +357,7 @@ function setRepo(id) {
   renderRepoSelector();
   // repo-scoped pages re-render on selection change
   const seg = currentRoute()[0];
-  if (["playbooks", "roles", "inventory", "topology", "playbook", "role"].includes(seg)) {
+  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "playbook", "role"].includes(seg)) {
     if (seg === "playbook" || seg === "role") location.hash = "#/" + (seg === "playbook" ? "playbooks" : "roles");
     else route();
   }
@@ -391,7 +396,8 @@ async function requireRepo(view) {
 const PAGE_TITLES = {
   dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
   playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
-  topology: "Topology", jobs: "Jobs", job: "Job", plan: "Plan",
+  topology: "Topology", hygiene: "Hygiene", impact: "Impact",
+  jobs: "Jobs", job: "Job", plan: "Plan",
 };
 
 function currentRoute() {
@@ -412,6 +418,8 @@ async function route() {
     role: pageRoleDetail,
     inventory: pageInventory,
     topology: pageTopology,
+    hygiene: pageHygiene,
+    impact: pageImpact,
     jobs: pageJobs,
     job: pageJobDetail,
     plan: pagePlan,
@@ -1426,10 +1434,46 @@ async function pageInventory(page) {
     right.appendChild(el("h3", { style: { margin: "0 0 12px", display: "flex", alignItems: "center", gap: "8px" } },
       icon("host"), h.name,
       h.vars && h.vars.ansible_host ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, String(h.vars.ansible_host)) : null));
-    right.appendChild(el("div", { class: "section-title" }, "Host vars"));
+
     const vars = h.vars || {};
-    right.appendChild(Object.keys(vars).length ? varsTable(vars)
-      : el("div", { class: "muted small" }, "No host variables."));
+    const varFilter = el("input", { type: "search", placeholder: "Filter vars…", class: "vars-filter" });
+    const lineageNote = el("span", { class: "muted small", style: { display: "none" } }, "lineage unavailable");
+    right.appendChild(el("div", { class: "row", style: { margin: "0 0 8px", gap: "10px" } },
+      el("div", { class: "section-title", style: { margin: 0 } }, "Host vars"),
+      lineageNote,
+      el("div", { class: "grow" }),
+      varFilter));
+    const varsBox = el("div");
+    right.appendChild(varsBox);
+
+    let lineage; // undefined = loading, null = unavailable, object = loaded
+    const renderVars = () => {
+      varsBox.innerHTML = "";
+      if (lineage && (lineage.vars || []).length) {
+        varsBox.appendChild(lineageVarsView(lineage.vars, varFilter.value));
+      } else if (lineage) {
+        varsBox.appendChild(el("div", { class: "muted small" }, "No variables for this host."));
+      } else if (Object.keys(vars).length) {
+        varsBox.appendChild(varsTable(vars, varFilter.value)); // plain fallback
+      } else {
+        varsBox.appendChild(el("div", { class: "muted small" }, "No host variables."));
+      }
+    };
+    varFilter.addEventListener("input", renderVars);
+
+    varsBox.appendChild(el("div", { class: "skeleton", style: { height: "64px" } }));
+    const stillHere = () => selected && selected.type === "host" && selected.name === h.name;
+    getLineage(repo.id, invName, h.name).then((lin) => {
+      if (!stillHere()) return;
+      lineage = lin && Array.isArray(lin.vars) ? lin : { vars: [] };
+      renderVars();
+    }).catch(() => {
+      // graceful fallback: keep the plain vars table
+      if (!stillHere()) return;
+      lineage = null;
+      lineageNote.style.display = "";
+      renderVars();
+    });
   };
 
   const hostRow = (h) => el("div", { class: "host-row", onclick: () => showHost(h) },
@@ -1511,12 +1555,89 @@ function invSourceCandidates(inv) {
   return [p, ...names.map((n) => (p ? `${p}/${n}` : n))];
 }
 
-function varsTable(vars) {
+/** Compact JSON-ish rendering of a variable value. */
+function fmtVarValue(v) {
+  if (v === null || v === undefined) return "null";
+  return typeof v === "object" ? JSON.stringify(v, null, 1).replace(/\n\s*/g, " ") : String(v);
+}
+
+function varsTable(vars, query) {
+  const q = (query || "").trim().toLowerCase();
+  let entries = Object.entries(vars);
+  if (q) entries = entries.filter(([k]) => k.toLowerCase().includes(q));
+  if (!entries.length) {
+    return el("div", { class: "muted small" }, q ? "No variables match." : "No variables.");
+  }
   return el("table", { class: "vars-table" },
-    el("tbody", null, Object.entries(vars).map(([k, v]) =>
+    el("tbody", null, entries.map(([k, v]) =>
       el("tr", null,
         el("td", { class: "k" }, k),
-        el("td", { class: "v" }, typeof v === "object" && v !== null ? JSON.stringify(v, null, 1).replace(/\n\s*/g, " ") : String(v))))));
+        el("td", { class: "v" }, fmtVarValue(v))))));
+}
+
+/* ---- variable lineage (where does each host var come from?) ---- */
+
+/** Cached GET /api/repos/{id}/lineage for one inventory host. */
+function getLineage(repoId, inventory, host) {
+  const key = `${repoId}${inventory}${host}`;
+  if (!State.lineageCache.has(key)) {
+    const p = api(`/repos/${repoId}/lineage?inventory=${encodeURIComponent(inventory)}&host=${encodeURIComponent(host)}`)
+      .catch((e) => { State.lineageCache.delete(key); throw e; });
+    State.lineageCache.set(key, p);
+  }
+  return State.lineageCache.get(key);
+}
+
+function lineageScopeBadge(entry) {
+  if (entry.scope === "role_default") {
+    return el("span", { class: "scope-badge sc-default", title: `role default from “${entry.name}”` }, `default · ${entry.name}`);
+  }
+  if (entry.scope === "group") {
+    return el("span", { class: "scope-badge sc-group", title: `group vars of “${entry.name}”` }, `group · ${entry.name}`);
+  }
+  return el("span", { class: "scope-badge sc-host", title: `host vars of “${entry.name}”` }, "host");
+}
+
+/** Lineage-aware vars list: each row expands to its precedence chain. */
+function lineageVarsView(vars, query) {
+  const q = (query || "").trim().toLowerCase();
+  const list = q ? vars.filter((v) => v.key.toLowerCase().includes(q)) : vars;
+  if (!list.length) {
+    return el("div", { class: "muted small" }, q ? "No variables match." : "No variables.");
+  }
+  const box = el("div", { class: "lineage-table" });
+  for (const v of list) {
+    const chain = v.chain || [];
+    const expandable = chain.length > 1;
+    const row = el("div", { class: "lineage-row" });
+    const head = el("div", { class: "lin-head" + (expandable ? " expandable" : "") },
+      el("span", { class: "lin-caret" + (expandable ? "" : " none") }, "▸"),
+      el("span", { class: "lin-key mono" }, v.key),
+      el("span", { class: "lin-val mono" }, fmtVarValue(v.value)),
+      expandable ? el("span", { class: "chip lin-levels", title: "value is layered — click to see the precedence chain" },
+        `${chain.length} levels`) : null);
+    row.appendChild(head);
+    if (expandable) {
+      let detail = null;
+      head.addEventListener("click", () => {
+        if (detail) { detail.remove(); detail = null; row.classList.remove("open"); return; }
+        row.classList.add("open");
+        detail = el("div", { class: "lin-chain" },
+          chain.map((c, i) => {
+            const last = i === chain.length - 1;
+            return el("div", { class: "lin-chain-row" + (last ? " final" : " overridden") },
+              lineageScopeBadge(c),
+              el("span", { class: "lin-chain-val mono" }, fmtVarValue(c.value)),
+              last
+                ? el("span", { class: "chip green" }, "effective")
+                : el("span", { class: "lin-arrow", title: "overridden by the next, higher-precedence level" }, "overridden ↓"));
+          }));
+        row.appendChild(detail);
+      });
+    }
+    box.appendChild(row);
+  }
+  return box;
 }
 
 /* ============================================================
@@ -1925,7 +2046,418 @@ function startClusterView({ canvas, canvasBox, nodes, hostVars, sidePanel }) {
 }
 
 /* ============================================================
-   4h. Jobs (list)
+   4h. Hygiene — repo health report
+   ============================================================ */
+
+/** SVG score ring (0-100) tinted by tone: good ≥90, warn ≥70, bad below. */
+function hygieneScoreRing(score, tone) {
+  const ns = "http://www.w3.org/2000/svg";
+  const r = 30, c = 2 * Math.PI * r;
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 76 76");
+  svg.setAttribute("class", "score-ring " + tone);
+  const bg = document.createElementNS(ns, "circle");
+  bg.setAttribute("cx", "38"); bg.setAttribute("cy", "38"); bg.setAttribute("r", String(r));
+  bg.setAttribute("class", "ring-bg");
+  const fg = document.createElementNS(ns, "circle");
+  fg.setAttribute("cx", "38"); fg.setAttribute("cy", "38"); fg.setAttribute("r", String(r));
+  fg.setAttribute("class", "ring-fg");
+  fg.setAttribute("stroke-dasharray", `${(c * score / 100).toFixed(1)} ${c.toFixed(1)}`);
+  fg.setAttribute("transform", "rotate(-90 38 38)");
+  const txt = document.createElementNS(ns, "text");
+  txt.setAttribute("x", "38"); txt.setAttribute("y", "44");
+  txt.setAttribute("text-anchor", "middle");
+  txt.setAttribute("class", "ring-num");
+  txt.textContent = String(score);
+  svg.appendChild(bg); svg.appendChild(fg); svg.appendChild(txt);
+  return svg;
+}
+
+function hygieneRow(ic, name, reason, ...extras) {
+  return el("div", { class: "hy-row" },
+    ic,
+    el("span", { class: "mono hy-name" }, name),
+    reason ? el("span", { class: "muted small hy-reason" }, reason) : null,
+    el("div", { class: "grow" }),
+    extras);
+}
+
+async function pageHygiene(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Hygiene"),
+    el("span", { class: "sub" }, `repository health for ${repo.name}`)));
+
+  const box = el("div");
+  page.appendChild(box);
+  box.appendChild(skeletonRows(3, 90));
+
+  let hy;
+  try {
+    hy = await api(`/repos/${repo.id}/hygiene`);
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Could not compute hygiene"),
+      el("p", null, e.message),
+      el("button", { class: "btn", onclick: route }, "Retry")));
+    toast(e.message, "error", "Hygiene failed");
+    return;
+  }
+  box.innerHTML = "";
+
+  const score = Math.max(0, Math.min(100, Math.round(hy.score ?? 0)));
+  const tone = score >= 90 ? "good" : score >= 70 ? "warn" : "bad";
+  const vaults = hy.vault_files ?? 0;
+
+  box.appendChild(el("div", { class: "panel hygiene-head" },
+    hygieneScoreRing(score, tone),
+    el("div", null,
+      el("div", { class: "hh-title" }, "Repository hygiene score"),
+      el("div", { class: "muted small", style: { maxWidth: "520px" } },
+        "Static analysis of unused roles, never-notified handlers, dead variables, untargeted hosts and plaintext secrets.")),
+    el("div", { class: "grow" }),
+    el("span", { class: "chip" + (vaults > 0 ? " green" : "") },
+      `${vaults} vault-encrypted file${vaults === 1 ? "" : "s"}`)));
+
+  const sections = [
+    {
+      key: "unused_roles", title: "Unused roles", ok: "No unused roles", icon: "role",
+      row: (f) => hygieneRow(icon("role"), f.name, f.reason),
+    },
+    {
+      key: "unnotified_handlers", title: "Unnotified handlers", ok: "No unnotified handlers", icon: "bell",
+      row: (f) => hygieneRow(icon("bell"), f.name, f.reason,
+        f.role ? el("span", { class: "chip" }, `role · ${f.role}`) : null),
+    },
+    {
+      key: "unused_vars", title: "Unused variables", ok: "No unused variables", icon: "code",
+      row: (f) => hygieneRow(icon("code"), f.key, null,
+        f.defined_in ? el("span", { class: "chip mono" }, f.defined_in) : null),
+    },
+    {
+      key: "untargeted_hosts", title: "Untargeted hosts", ok: "No untargeted hosts", icon: "host",
+      row: (f) => hygieneRow(icon("host"), f.name, f.reason,
+        f.inventory ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, f.inventory) : null),
+    },
+    {
+      key: "secret_findings", title: "Plaintext secrets", ok: "No plaintext secrets", icon: "search",
+      row: (f) => hygieneRow(icon("search"), f.key, f.reason,
+        f.hint ? el("span", { class: "hy-hint" }, icon("question"), f.hint) : null,
+        f.file ? el("span", { class: "chip mono" }, f.file) : null,
+        el("span", { class: `pill sev-${f.severity === "high" ? "high" : "med"}` }, f.severity || "medium")),
+    },
+  ];
+
+  const total = sections.reduce((n, s) => n + (hy[s.key] || []).length, 0);
+  if (!total) {
+    box.appendChild(el("div", { class: "hero" },
+      el("div", { html: ICONS.sparkle.replace("<svg", '<svg class="tree" style="color:var(--accent)"') }),
+      el("h2", null, "Your repo is tidy"),
+      el("p", null, "Every role is referenced, every handler gets notified, no dead variables, no untargeted hosts, no plaintext secrets. Keep it that way.")));
+    return;
+  }
+
+  for (const s of sections) {
+    const findings = hy[s.key] || [];
+    if (!findings.length) {
+      box.appendChild(el("div", { class: "hy-ok" }, el("span", { class: "hy-check" }, "✓"), s.ok));
+      continue;
+    }
+    box.appendChild(el("div", { class: "card hy-section" },
+      el("div", { class: "hy-sec-head" },
+        icon(s.icon),
+        el("span", { class: "hy-sec-title" }, s.title),
+        el("span", { class: "chip warn" }, String(findings.length))),
+      findings.map(s.row)));
+  }
+}
+
+/* ============================================================
+   4i. Impact — blast radius of a change (Files → Roles →
+       Playbooks → Hosts ripple flow)
+   ============================================================ */
+
+async function pageImpact(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  const baseIn = el("input", { type: "text", placeholder: "HEAD~1", spellcheck: "false", style: { width: "150px" } });
+  const headIn = el("input", { type: "text", placeholder: "HEAD", spellcheck: "false", style: { width: "150px" } });
+  const analyzeBtn = el("button", { class: "btn btn-primary btn-sm" }, icon("radar"), "Analyze");
+  const presetWorktree = el("button", { class: "btn btn-sm", title: "Uncommitted changes vs HEAD" }, "Uncommitted");
+  const presetLast = el("button", { class: "btn btn-sm", title: "HEAD~1 → HEAD" }, "Last commit");
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Impact"),
+    el("span", { class: "sub" }, `blast radius of changes in ${repo.name}`)));
+
+  page.appendChild(el("div", { class: "panel impact-bar" },
+    el("span", { class: "muted small" }, "base"), baseIn,
+    el("span", { class: "muted small" }, "head"), headIn,
+    analyzeBtn,
+    el("span", { class: "muted small", style: { marginLeft: "10px" } }, "presets:"),
+    presetWorktree, presetLast));
+
+  const resultBox = el("div");
+  page.appendChild(resultBox);
+
+  let redraw = null;
+  const onResize = () => { if (redraw) redraw(); };
+  window.addEventListener("resize", onResize);
+  onCleanup(() => window.removeEventListener("resize", onResize));
+
+  const analyze = async () => {
+    redraw = null;
+    resultBox.innerHTML = "";
+    resultBox.appendChild(skeletonRows(2, 120));
+    analyzeBtn.disabled = true;
+    const params = new URLSearchParams();
+    if (baseIn.value.trim()) params.set("base", baseIn.value.trim());
+    if (headIn.value.trim()) params.set("head", headIn.value.trim());
+    const qs = params.toString();
+    try {
+      const imp = await api(`/repos/${repo.id}/impact${qs ? "?" + qs : ""}`);
+      resultBox.innerHTML = "";
+      redraw = renderImpact(resultBox, repo, imp);
+    } catch (e) {
+      resultBox.innerHTML = "";
+      resultBox.appendChild(el("div", { class: "empty" },
+        el("h3", null, "Impact analysis failed"),
+        el("p", null, e.message)));
+      toast(e.message, "error", "Impact failed");
+    } finally {
+      analyzeBtn.disabled = false;
+    }
+  };
+  analyzeBtn.onclick = analyze;
+  presetWorktree.onclick = () => { baseIn.value = ""; headIn.value = ""; analyze(); };
+  presetLast.onclick = () => { baseIn.value = "HEAD~1"; headIn.value = "HEAD"; analyze(); };
+  for (const input of [baseIn, headIn]) {
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") analyze(); });
+  }
+
+  analyze(); // default: worktree mode (uncommitted vs HEAD)
+}
+
+/**
+ * Render the impact result: summary strip + 4-column ripple flow with
+ * bezier links (same technique as the playbook notify arrows).
+ * Returns the link-redraw function (called again on window resize).
+ */
+function renderImpact(box, repo, imp) {
+  const files = imp.changed_files || [];
+  const entries = imp.entries || [];
+  const hosts = imp.hosts || [];
+  const sum = imp.summary || {};
+
+  if (!files.length) {
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No changes detected"),
+      el("p", null, `Nothing differs between ${imp.base || "base"} and ${imp.head || "head"}.`)));
+    return null;
+  }
+
+  // ---- summary strip ----
+  const handlers = sum.handlers || [];
+  box.appendChild(el("div", { class: "panel impact-summary" },
+    el("span", { class: "chip mono" }, `${imp.base || "?"} → ${imp.head || "?"}`),
+    el("span", { class: "sum-chip" }, el("b", null, String(sum.files ?? files.length)), el("span", null, "files")),
+    el("span", { class: "imp-arrow" }, "→"),
+    el("span", { class: "sum-chip" }, el("b", { style: { color: "var(--purple)" } }, String(sum.roles ?? 0)), el("span", null, "roles")),
+    el("span", { class: "imp-arrow" }, "→"),
+    el("span", { class: "sum-chip" }, el("b", { style: { color: "var(--secondary)" } }, String(sum.playbooks ?? 0)), el("span", null, "playbooks")),
+    el("span", { class: "imp-arrow" }, "→"),
+    el("span", { class: "sum-chip" }, el("b", { style: { color: "var(--accent)" } }, String(sum.hosts_total ?? hosts.length)), el("span", null, "hosts")),
+    handlers.map((h) => el("span", { class: "chip warn", title: "a change to a notifying task or template would fire this handler" },
+      icon("bell"), `would trigger: ${h}`))));
+
+  // ---- graph model: nodes per column + directed edges ----
+  const nodes = new Map(); // id -> {id, col, label, ...extra}
+  const edges = [];
+  const edgeSeen = new Set();
+  const addNode = (id, col, label, extra) => {
+    if (!nodes.has(id)) nodes.set(id, { id, col, label, ...(extra || {}) });
+    return nodes.get(id);
+  };
+  const addEdge = (from, to) => {
+    const k = from + "" + to;
+    if (edgeSeen.has(k)) return;
+    edgeSeen.add(k);
+    edges.push({ from, to });
+  };
+
+  for (const en of entries) {
+    const fid = "f:" + en.file;
+    addNode(fid, 0, en.file, { kind: en.kind, handlers: en.handlers || [] });
+    for (const r of en.roles || []) {
+      addNode("r:" + r, 1, r);
+      addEdge(fid, "r:" + r);
+    }
+    for (const pb of en.playbooks || []) {
+      const pid = "p:" + pb.path;
+      addNode(pid, 2, pb.path, { via: new Set() });
+      if (pb.via) nodes.get(pid).via.add(pb.via);
+      const m = /^role (.+)$/.exec(pb.via || "");
+      if (m) {
+        addNode("r:" + m[1], 1, m[1]);
+        addEdge(fid, "r:" + m[1]);
+        addEdge("r:" + m[1], pid);
+      } else {
+        addEdge(fid, pid);
+      }
+    }
+  }
+  const byInv = new Map();
+  for (const h of hosts) {
+    const inv = h.inventory || "(no inventory)";
+    if (!byInv.has(inv)) byInv.set(inv, []);
+    byInv.get(inv).push(h);
+  }
+  for (const [inv, list] of byInv) {
+    const iid = "i:" + inv;
+    addNode(iid, 3, inv, { hosts: list });
+    for (const h of list) {
+      for (const via of h.via || []) {
+        if (nodes.has("p:" + via)) addEdge("p:" + via, iid);
+      }
+    }
+  }
+
+  // ---- adjacency for hover highlighting (full up/downstream chain) ----
+  const out = new Map(), inn = new Map();
+  for (const e of edges) {
+    if (!out.has(e.from)) out.set(e.from, []);
+    out.get(e.from).push(e.to);
+    if (!inn.has(e.to)) inn.set(e.to, []);
+    inn.get(e.to).push(e.from);
+  }
+  const chainOf = (id) => {
+    const set = new Set([id]);
+    const walk = (adj) => {
+      const stack = [id];
+      while (stack.length) {
+        const cur = stack.pop();
+        for (const nxt of adj.get(cur) || []) {
+          if (!set.has(nxt)) { set.add(nxt); stack.push(nxt); }
+        }
+      }
+    };
+    walk(out); walk(inn);
+    return set;
+  };
+
+  // ---- DOM: 4 columns + svg link layer ----
+  const flow = el("div", { class: "impact-flow" });
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "impact-svg");
+  flow.appendChild(svg);
+  const cardEls = new Map(); // node id -> element
+
+  function drawLinks() {
+    if (!flow.isConnected) return;
+    svg.innerHTML = "";
+    const rect = flow.getBoundingClientRect();
+    svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+    svg.setAttribute("width", rect.width);
+    svg.setAttribute("height", rect.height);
+    for (const e of edges) {
+      const a = cardEls.get(e.from), b = cardEls.get(e.to);
+      if (!a || !b) continue;
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const x1 = ra.right - rect.left, y1 = ra.top + ra.height / 2 - rect.top;
+      const x2 = rb.left - rect.left, y2 = rb.top + rb.height / 2 - rect.top;
+      const mx = (x1 + x2) / 2;
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`);
+      path.setAttribute("class", "impact-link");
+      path.dataset.from = e.from;
+      path.dataset.to = e.to;
+      svg.appendChild(path);
+    }
+  }
+
+  const setHover = (id) => {
+    flow.classList.toggle("hovering", !!id);
+    const chain = id ? chainOf(id) : null;
+    for (const [nid, card] of cardEls) card.classList.toggle("hl", !!(chain && chain.has(nid)));
+    for (const p of svg.querySelectorAll(".impact-link")) {
+      p.classList.toggle("hl", !!(chain && chain.has(p.dataset.from) && chain.has(p.dataset.to)));
+    }
+  };
+
+  const cardFor = (n) => {
+    let card;
+    if (n.col === 0) {
+      card = el("div", { class: "impact-card" },
+        el("div", { class: "mono imp-file" }, n.label),
+        el("div", { class: "row", style: { gap: "5px", marginTop: "6px", flexWrap: "wrap" } },
+          n.kind ? el("span", { class: "chip imp-kind" }, n.kind) : null,
+          (n.handlers || []).map((h) => el("span", { class: "chip warn", title: "handler this change would trigger" }, h))));
+    } else if (n.col === 1) {
+      card = el("div", {
+        class: "impact-card clickable",
+        onclick: () => (location.hash = `#/role/${repo.id}/${encodeURIComponent(n.label)}`),
+      }, el("div", { class: "imp-name" }, icon("role"), n.label));
+    } else if (n.col === 2) {
+      const via = [...(n.via || [])];
+      card = el("div", { class: "impact-card" },
+        el("div", { class: "imp-name mono" }, n.label),
+        via.length ? el("div", { class: "muted small", style: { marginTop: "2px" } }, "via " + via.join(", ")) : null,
+        el("div", { class: "row", style: { gap: "6px", marginTop: "8px" } },
+          el("button", {
+            class: "btn btn-sm btn-secondary", title: "Plan this playbook",
+            onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: n.label, plan: true }); },
+          }, icon("clipboard"), "Plan"),
+          el("button", {
+            class: "btn btn-sm btn-primary", title: "Run this playbook",
+            onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: n.label }); },
+          }, icon("play"), "Run")));
+    } else {
+      const count = (sum.hosts_by_inventory || {})[n.label] ?? (n.hosts || []).length;
+      const caret = el("span", { class: "lin-caret" }, "▸");
+      const list = el("div", { class: "imp-host-list", style: { display: "none" } },
+        (n.hosts || []).map((h) => el("div", { class: "imp-host mono", title: "via " + ((h.via || []).join(", ") || "—") }, h.name)));
+      let open = false;
+      card = el("div", { class: "impact-card" },
+        el("div", {
+          class: "imp-name imp-inv-head",
+          onclick: () => {
+            open = !open;
+            caret.classList.toggle("open", open);
+            list.style.display = open ? "" : "none";
+            requestAnimationFrame(drawLinks); // heights changed
+          },
+        }, caret, icon("host"), el("span", null, `${n.label} · ${count} host${count === 1 ? "" : "s"}`)),
+        list);
+    }
+    card.addEventListener("mouseenter", () => setHover(n.id));
+    card.addEventListener("mouseleave", () => setHover(null));
+    cardEls.set(n.id, card);
+    return card;
+  };
+
+  const colNodes = [[], [], [], []];
+  for (const n of nodes.values()) colNodes[n.col].push(n);
+  for (const col of [1, 2, 3]) colNodes[col].sort((a, b) => a.label.localeCompare(b.label));
+
+  ["Files", "Roles", "Playbooks", "Hosts"].forEach((title, i) => {
+    const colEl = el("div", { class: "impact-col" }, el("div", { class: "impact-col-title" }, title));
+    if (!colNodes[i].length) colEl.appendChild(el("div", { class: "col-empty" }, "none"));
+    for (const n of colNodes[i]) colEl.appendChild(cardFor(n));
+    flow.appendChild(colEl);
+  });
+  box.appendChild(flow);
+
+  requestAnimationFrame(() => requestAnimationFrame(drawLinks));
+  return drawLinks;
+}
+
+/* ============================================================
+   4j. Jobs (list)
    ============================================================ */
 
 async function pageJobs(page) {
@@ -1966,7 +2498,7 @@ async function pageJobs(page) {
 }
 
 /* ============================================================
-   4i. Job detail — live log via SSE
+   4k. Job detail — live log via SSE + run diff
    ============================================================ */
 
 const TERMINAL_STATUSES = new Set(["success", "failed", "canceled"]);
@@ -2019,6 +2551,10 @@ async function pageJobDetail(page, segs) {
       job.simulated ? el("span", { class: "flag-badge sim", title: "Simulated run (no real ansible-playbook execution)" }, "simulated") : null,
       el("span", { style: { flex: 1 } }),
       running ? cancelBtn : null,
+      TERMINAL_STATUSES.has(job.status) ? el("button", {
+        class: "btn btn-sm", title: "Diff this run against another run of the same playbook",
+        onclick: () => openCompareModal(job, showDiff),
+      }, icon("diff"), "Compare") : null,
       el("a", { class: "btn btn-sm", href: `/api/jobs/${jobId}/log`, download: `${jobId}.log` }, icon("download"), "Download log")));
     headBox.appendChild(el("div", { class: "row small muted", style: { marginBottom: "12px", gap: "16px" } },
       el("span", null, "repo ", el("b", { style: { color: "var(--text)" } }, job.repo_name || job.repo_id)),
@@ -2037,17 +2573,47 @@ async function pageJobDetail(page, segs) {
   };
   renderHead();
 
-  // log toolbar + terminal
+  // log toolbar + terminal (wrapped so the diff view can swap in for it)
   let autoscroll = true;
   const autoBox = el("input", { type: "checkbox", checked: true, onchange: (e) => { autoscroll = e.target.checked; if (autoscroll) scrollLog(); } });
-  page.appendChild(el("div", { class: "log-toolbar" },
+  const logSection = el("div");
+  logSection.appendChild(el("div", { class: "log-toolbar" },
     el("span", { class: "section-title", style: { margin: 0 } }, "Output"),
     el("div", { class: "grow" }),
     el("label", { class: "check-row muted small" }, autoBox, "Autoscroll")));
 
   const logBox = el("div", { class: "job-log" });
-  page.appendChild(logBox);
+  logSection.appendChild(logBox);
+  page.appendChild(logSection);
+  const diffSection = el("div", { style: { display: "none" } });
+  page.appendChild(diffSection);
   const cursor = el("span", { class: "cursor" });
+
+  function backToLog() {
+    diffSection.style.display = "none";
+    diffSection.innerHTML = "";
+    logSection.style.display = "";
+  }
+
+  /** Fetch + render the run diff against another (older or newer) job. */
+  async function showDiff(other) {
+    logSection.style.display = "none";
+    diffSection.style.display = "";
+    diffSection.innerHTML = "";
+    diffSection.appendChild(skeletonRows(3, 64));
+    try {
+      const diff = await api(`/jobs/${jobId}/diff?with=${encodeURIComponent(other.id)}`);
+      diffSection.innerHTML = "";
+      renderJobDiff(diffSection, diff, backToLog, () => openCompareModal(job, showDiff));
+    } catch (e) {
+      diffSection.innerHTML = "";
+      diffSection.appendChild(el("div", { class: "empty" },
+        el("h3", null, "Could not compute diff"),
+        el("p", null, e.message),
+        el("button", { class: "btn", onclick: backToLog }, "Back to log")));
+      toast(e.message, "error", "Diff failed");
+    }
+  }
 
   const scrollLog = () => { if (autoscroll) logBox.scrollTop = logBox.scrollHeight; };
   const appendLine = (line) => {
@@ -2100,8 +2666,106 @@ async function pageJobDetail(page, segs) {
   }
 }
 
+/** Modal listing other terminal runs of the same playbook+repo to diff against. */
+async function openCompareModal(job, onPick) {
+  const { body } = openModal({
+    title: "Compare with another run",
+    body: skeletonRows(3, 44),
+    footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel")],
+    width: "560px",
+  });
+  let jobs;
+  try {
+    jobs = (await api("/jobs")) || [];
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Could not load jobs"),
+      el("p", null, e.message)));
+    toast(e.message, "error");
+    return;
+  }
+  const cands = jobs
+    .filter((j) => j.id !== job.id && j.repo_id === job.repo_id && j.playbook === job.playbook && TERMINAL_STATUSES.has(j.status))
+    .sort((a, b) => new Date(b.started || b.created || 0) - new Date(a.started || a.created || 0));
+  body.innerHTML = "";
+  if (!cands.length) {
+    body.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Nothing to compare"),
+      el("p", null, `No other finished runs of ${job.playbook} in this repository yet.`)));
+    return;
+  }
+  body.appendChild(el("p", { class: "muted small", style: { marginTop: 0 } },
+    "Other finished runs of ", el("span", { class: "mono" }, job.playbook), " — pick one to diff against this run."));
+  body.appendChild(el("div", { class: "cmp-list" },
+    cands.map((c) => el("div", { class: "cmp-row", onclick: () => { closeModal(); onPick(c); } },
+      statusPill(c.status),
+      el("span", { class: "mono small muted" }, (c.id || "").slice(0, 8)),
+      el("span", { class: "muted small mono" }, c.inventory || "—"),
+      el("div", { class: "grow" }),
+      el("span", { class: "mono small" }, fmtDuration(c.duration_ms)),
+      el("span", { class: "muted small", title: c.started || c.created }, relTime(c.started || c.created))))));
+}
+
+function diffStatusWord(s) {
+  const st = s || "missing";
+  return el("span", { class: "ds ds-" + st }, st);
+}
+
+/** Render a GET /api/jobs/{id}/diff result: summary chips + per-task host transitions. */
+function renderJobDiff(box, diff, onBack, onRepick) {
+  const sum = diff.summary || {};
+  const a = diff.a || {}, b = diff.b || {};
+
+  box.appendChild(el("div", { class: "log-toolbar" },
+    el("span", { class: "section-title", style: { margin: 0 } }, "Run diff"),
+    el("span", { class: "muted small" },
+      el("span", { class: "mono" }, (a.id || "").slice(0, 8)),
+      ` (${relTime(a.started || a.created)}) → `,
+      el("span", { class: "mono" }, (b.id || "").slice(0, 8)),
+      ` (${relTime(b.started || b.created)})`),
+    el("div", { class: "grow" }),
+    onRepick ? el("button", { class: "btn btn-sm", onclick: onRepick }, icon("diff"), "Compare with…") : null,
+    el("a", { href: "#", onclick: (e) => { e.preventDefault(); onBack(); } }, "Back to log")));
+
+  box.appendChild(el("div", { class: "panel diff-summary" },
+    el("span", { class: "sum-chip failed" }, el("b", null, String(sum.regressed ?? 0)), el("span", null, "regressed")),
+    el("span", { class: "sum-chip ok" }, el("b", null, String(sum.improved ?? 0)), el("span", null, "improved")),
+    el("span", { class: "sum-chip changed" }, el("b", null, String(sum.changed ?? 0)), el("span", null, "changed")),
+    el("span", { class: "sum-chip" }, el("b", null, String(sum.new_tasks ?? 0)), el("span", null, "new")),
+    el("span", { class: "sum-chip" }, el("b", null, String(sum.removed_tasks ?? 0)), el("span", null, "removed")),
+    el("span", { class: "sum-chip skipped" }, el("b", null, String(sum.same ?? 0)), el("span", null, "same"))));
+
+  const tasks = diff.tasks || [];
+  if (!tasks.length) {
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No differences"),
+      el("p", null, `All ${sum.same ?? 0} task${(sum.same ?? 0) === 1 ? "" : "s"} behaved identically in both runs.`)));
+    return;
+  }
+
+  const list = el("div", { class: "panel diff-list" });
+  for (const t of tasks) {
+    const changes = t.changes || [];
+    const regressed = changes.some((c) => c.b === "failed");
+    const improved = !regressed && changes.some((c) => c.a === "failed" && c.b === "ok");
+    list.appendChild(el("div", { class: "diff-task" + (regressed ? " regressed" : improved ? " improved" : "") },
+      el("div", { class: "diff-task-head" },
+        el("span", { class: "diff-name mono" }, t.name),
+        t.only_in === "b" ? el("span", { class: "flag-badge diff-new" }, "new in this run") : null,
+        t.only_in === "a" ? el("span", { class: "flag-badge diff-removed" }, "removed") : null),
+      changes.length ? el("div", { class: "diff-hosts" },
+        changes.map((c) => el("span", { class: "diff-host mono" },
+          el("span", { class: "muted" }, `${c.host}: `),
+          diffStatusWord(c.a),
+          el("span", { class: "diff-arrow" }, " → "),
+          diffStatusWord(c.b)))) : null));
+  }
+  box.appendChild(list);
+}
+
 /* ============================================================
-   4j. Plan mode — static "terraform plan" for playbooks
+   4l. Plan mode — static "terraform plan" for playbooks
    ============================================================ */
 
 /** Last plan request+result. Plans are not persisted server-side, so the
@@ -2294,7 +2958,10 @@ async function pagePlan(page) {
     verdictBar(s),
     el("span", { class: "sum-chip ok" }, el("b", null, String(s.run ?? 0)), el("span", null, "run")),
     el("span", { class: "sum-chip skipped" }, el("b", null, String(s.skip ?? 0)), el("span", null, "skip")),
-    el("span", { class: "sum-chip unknown" }, el("b", null, String(s.unknown ?? 0)), el("span", null, "unknown"))));
+    el("span", { class: "sum-chip unknown" }, el("b", null, String(s.unknown ?? 0)), el("span", null, "unknown")),
+    (result.estimated_duration_ms || 0) > 0 ? el("span", {
+      class: "sum-chip", title: "estimated duration, from average task timings of previous runs",
+    }, el("b", null, `≈ ${fmtDuration(result.estimated_duration_ms)}`), el("span", null, "est.")) : null));
 
   // missing-variables panel: fill values inline → merge into vars → re-plan
   const missingInputs = new Map(); // var name -> input element
@@ -2346,10 +3013,11 @@ async function pagePlan(page) {
       el("p", null, "The plan contains no plays. Check the playbook, inventory and limit, then re-plan.")));
     return;
   }
-  plays.forEach((play, idx) => page.appendChild(renderPlanPlay(play, idx, focusMissingVar)));
+  const totalMs = result.estimated_duration_ms || 0;
+  plays.forEach((play, idx) => page.appendChild(renderPlanPlay(play, idx, focusMissingVar, totalMs)));
 }
 
-function renderPlanPlay(play, idx, focusMissingVar) {
+function renderPlanPlay(play, idx, focusMissingVar, totalMs) {
   // pure import plays carry no tasks — render a thin pass-through row
   if (play.import) {
     return el("div", { class: "plan-import-row" },
@@ -2377,7 +3045,7 @@ function renderPlanPlay(play, idx, focusMissingVar) {
   if (!tasks.length) {
     body.appendChild(el("div", { class: "muted small", style: { padding: "6px" } }, "No tasks in this play."));
   }
-  for (const t of tasks) body.appendChild(renderPlanTaskRow(t, focusMissingVar));
+  for (const t of tasks) body.appendChild(renderPlanTaskRow(t, focusMissingVar, totalMs));
 
   const handlers = play.handlers || [];
   if (handlers.length) {
@@ -2401,8 +3069,10 @@ function renderPlanPlay(play, idx, focusMissingVar) {
   return el("div", { class: "play-section" }, head, body);
 }
 
-function renderPlanTaskRow(task, focusMissingVar) {
+function renderPlanTaskRow(task, focusMissingVar, totalMs) {
   const counts = task.counts || {};
+  const avgMs = task.avg_ms || 0;
+  const hotTask = avgMs > 0 && (totalMs || 0) > 0 && avgMs > totalMs * 0.3;
   const templated = task.raw_name && task.raw_name !== task.name;
   const row = el("div", { class: "plan-task" });
   let detail = null;
@@ -2436,6 +3106,12 @@ function renderPlanTaskRow(task, focusMissingVar) {
       chips.childNodes.length ? chips : null,
       task.check_note ? el("div", { class: "pt-checknote" }, task.check_note) : null),
     el("div", { class: "pt-verdict" },
+      avgMs > 0 ? el("span", {
+        class: "chip pt-dur" + (hotTask ? " warn" : ""),
+        title: hotTask
+          ? "average duration from previous runs — more than 30% of the estimated total"
+          : "average duration from previous runs",
+      }, `≈ ${fmtDuration(avgMs)}`) : null,
       verdictBar(counts, true),
       el("span", { class: "pt-counts mono" },
         el("b", { class: "c-run" }, String(counts.run || 0)), " · ",
@@ -2635,7 +3311,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (gPressed) {
-    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", j: "jobs" };
+    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", j: "jobs" };
     if (map[e.key]) { location.hash = "#/" + map[e.key]; e.preventDefault(); }
     gPressed = false;
   } else if (e.key === "n") {

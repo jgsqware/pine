@@ -23,11 +23,17 @@ type run struct {
 	file   *os.File
 	cancel context.CancelFunc
 	done   bool
+
+	// per-task wall-time, measured from the TASK banners as they stream
+	curTask  string
+	curStart time.Time
+	timings  []model.TaskDuration
 }
 
 func (r *run) publish(line string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.track(line)
 	if r.file != nil {
 		_, _ = r.file.WriteString(line + "\n")
 	}
@@ -37,6 +43,47 @@ func (r *run) publish(line string) {
 		default: // slow subscriber: drop rather than block the job
 		}
 	}
+}
+
+// track records task durations from the streamed output (caller holds mu).
+func (r *run) track(line string) {
+	banner := taskBannerRe.FindStringSubmatch(line)
+	if banner == nil && !strings.HasPrefix(line, "PLAY ") {
+		return
+	}
+	now := time.Now()
+	if r.curTask != "" {
+		r.timings = append(r.timings, model.TaskDuration{
+			Task: r.curTask, MS: now.Sub(r.curStart).Milliseconds(),
+		})
+	}
+	r.curTask, r.curStart = "", now
+	if banner != nil {
+		r.curTask = banner[1]
+	}
+}
+
+// takeTimings finalizes and returns the collected durations, averaging
+// repeats of the same task (serial batches).
+func (r *run) takeTimings() []model.TaskDuration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.track("PLAY RECAP") // close the last open task
+	sum := map[string]int64{}
+	count := map[string]int64{}
+	var order []string
+	for _, t := range r.timings {
+		if count[t.Task] == 0 {
+			order = append(order, t.Task)
+		}
+		sum[t.Task] += t.MS
+		count[t.Task]++
+	}
+	out := make([]model.TaskDuration, 0, len(order))
+	for _, task := range order {
+		out = append(out, model.TaskDuration{Task: task, MS: sum[task] / count[task]})
+	}
+	return out
 }
 
 func (r *run) close() {
@@ -174,6 +221,7 @@ func (m *Manager) execute(ctx context.Context, job model.Job, r *run) {
 	}
 	job.Finished = time.Now().UTC().Format(time.RFC3339)
 	job.DurationMS = time.Since(start).Milliseconds()
+	job.TaskDurations = r.takeTimings()
 	_ = m.Store.SaveJob(job)
 
 	r.close()

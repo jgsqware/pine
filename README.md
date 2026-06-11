@@ -49,6 +49,13 @@ JSON storage, a polished web UI, a full terminal UI and a REST API.
   (`pine plan PATH PLAYBOOK -e key=value --profile ubuntu-24.04`).
   Topology gets a **what-if** panel: preview how variables reshape
   constructed groups. See [docs/design/plan-mode.md](docs/design/plan-mode.md)
+- **Insights** — *variable lineage* ("where does this value come from?":
+  the full precedence chain per host × variable), a *hygiene report*
+  (unused roles, never-notified handlers, unused vars, untargeted hosts,
+  plaintext-secret findings, vault usage, tidiness score), *run diff*
+  (per task × host status transitions between two runs) and *blast
+  radius* (`pine impact`: git diff → roles → playbooks → hosts →
+  handlers, with a ripple visualization and a CI-friendly exit code)
 - **Job engine** — run playbooks with `--check`, `--limit`, `--tags`; live
   output streaming over SSE; per-host recap summaries; full history.
   When `ansible-playbook` isn't installed, Pine switches to a realistic
@@ -99,6 +106,10 @@ immediately in the UI, the TUI and the API.
 | `POST /api/plans` | compute an estimated plan (vars, host_vars, fact_profile) |
 | `GET /api/fact-profiles` | built-in fact presets |
 | `POST /api/repos/{id}/inventory-preview` | what-if constructed groups |
+| `GET /api/repos/{id}/lineage?inventory=…&host=…` | variable precedence chains |
+| `GET /api/repos/{id}/hygiene` | dead-code + secrets report |
+| `GET /api/repos/{id}/impact?base=…&head=…` | blast radius of a git diff |
+| `GET /api/jobs/{id}/diff?with=…` | compare two runs |
 | `GET/POST /api/jobs` | job history / launch a playbook |
 | `GET /api/jobs/{id}/events` | live SSE stream (`line` + `status` events) |
 | `GET /api/jobs/{id}/log` | raw log |
@@ -141,7 +152,7 @@ make website   # serves it on :8080
 ## Project layout
 
 ```
-cmd/pine/          CLI entrypoint (serve | tui | scan | plan)
+cmd/pine/          CLI entrypoint (serve | tui | scan | plan | impact)
 internal/scanner/  Ansible repo parser (playbooks, roles, INI/YAML inventories)
 internal/store/    JSON persistence (repos, jobs, logs)
 internal/runner/   git sync, scan cache, job execution + simulation

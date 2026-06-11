@@ -5,20 +5,20 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 
 ## Quick wins (engine already exists)
 
-- [ ] 🚧 **1. Variable lineage** — "where does this value come from?":
+- [x] ✅ **1. Variable lineage** — "where does this value come from?":
       full precedence chain per host × variable (role default → group_vars
       parents-first → host_vars → magic), shown in the inventory host panel.
       `GET /api/repos/{id}/lineage?inventory=…&host=…`
-- [ ] 🚧 **2. Dead-code detection** — unused roles, never-notified handlers,
+- [x] ✅ **2. Dead-code detection** — unused roles, never-notified handlers,
       unused vars (best effort), hosts targeted by no playbook.
       Part of `GET /api/repos/{id}/hygiene`, "Hygiene" page.
-- [ ] 🚧 **3. Run diff** — compare two jobs of the same playbook: per
+- [x] ✅ **3. Run diff** — compare two jobs of the same playbook: per
       task × host status transitions (ok→changed, ok→failed, new/removed
       tasks). `GET /api/jobs/{id}/diff?with=…`, view in job detail.
 
 ## Strong differentiators
 
-- [ ] 🚧 **4. Blast radius on git diff** — changed files → impacted roles →
+- [x] ✅ **4. Blast radius on git diff** — changed files → impacted roles →
       playbooks → hosts → handlers. `GET /api/repos/{id}/impact?base=…&head=…`,
       "Impact" page + `pine impact` CLI for CI.
 - [ ] ⏳🔗 **5. Continuous drift detection** — scheduled check-mode /
@@ -28,7 +28,7 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       when the current plan differs from the last approved plan.
 - [ ] ⏳ **7. Light pipelines** — chained playbooks with recap conditions,
       canary batch + health gate, manual approval gates.
-- [ ] 🚧 **8. Estimated duration in plans** — record real per-task durations
+- [x] ✅ **8. Estimated duration in plans** — record real per-task durations
       from job logs, surface `≈ Xmin` on plans and slowest-task insights.
 
 ## Fun / demo
@@ -37,7 +37,7 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       animate the inventory topology commit by commit.
 - [ ] ⏳ **10. Web SSH console** — per-host terminal in the browser
       (the TUI already has `s`); xterm.js + websocket, vendored.
-- [ ] 🚧 **11. Secrets hygiene** — plaintext password-like values in vars,
+- [x] ✅ **11. Secrets hygiene** — plaintext password-like values in vars,
       vault usage inventory. Part of the hygiene report.
 
 ## Earlier milestones (done)
