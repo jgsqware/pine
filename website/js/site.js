@@ -66,12 +66,12 @@
     var NS = "http://www.w3.org/2000/svg";
     var W = 860, H = 540, CX = W / 2, CY = H / 2;
 
-    // id, parent, type, radius
+    // id, parent, type, radius, constructed?
     var spec = [
       ["acme", null, "group", 27],
       ["frontend", "acme", "group", 21],
       ["backend", "acme", "group", 21],
-      ["docker_hosts", "acme", "group", 19],
+      ["docker_hosts", "acme", "group", 19, true],
       ["monitoring", "acme", "group", 19],
       ["lb", "frontend", "group", 16],
       ["web", "frontend", "group", 16],
@@ -91,7 +91,7 @@
       var depth = s[1] === null ? 0 : (s[1] === "acme" ? 1 : (s[3] > 10 ? 2 : 3));
       var ang = (i / spec.length) * Math.PI * 2 + depth * 0.7;
       var n = {
-        id: s[0], parent: s[1], type: s[2], r: s[3],
+        id: s[0], parent: s[1], type: s[2], r: s[3], constructed: !!s[4],
         x: CX + Math.cos(ang) * (40 + depth * 95),
         y: CY + Math.sin(ang) * (30 + depth * 60),
         vx: 0, vy: 0
@@ -124,7 +124,7 @@
     });
     list.forEach(function (n) {
       var g = document.createElementNS(NS, "g");
-      g.setAttribute("class", "node node-" + n.type);
+      g.setAttribute("class", "node node-" + n.type + (n.constructed ? " node-constructed" : ""));
       var c = document.createElementNS(NS, "circle");
       c.setAttribute("r", n.r);
       var t = document.createElementNS(NS, "text");
@@ -153,8 +153,10 @@
         if (nodes[x].type === "host") hostCount++;
         (children[x] || []).forEach(count);
       })(n.id);
-      return n.id + " — group · " + hostCount + " host" + (hostCount === 1 ? "" : "s") +
-        (kids.length ? " · children: " + kids.join(", ") : "");
+      return n.id + " — " + (n.constructed ? "constructed group" : "group") +
+        " · " + hostCount + " host" + (hostCount === 1 ? "" : "s") +
+        (kids.length ? " · children: " + kids.join(", ") : "") +
+        (n.constructed ? " · built from services var" : "");
     }
     function focus(id) {
       var keep = lineage(id);
@@ -580,5 +582,340 @@
       if (row[1] === "web01") defaultNode = { el: el, row: row };
     });
     if (defaultNode) select(defaultNode.el, defaultNode.row);
+  })();
+
+  /* ============================================================
+     Plan mode — animated three-valued plan. Renders verdict rows,
+     types a value into the missing-variables panel, re-plans:
+     unknowns collapse into run/skip and the summary updates.
+     ============================================================ */
+  (function planMode() {
+    var tasksEl = document.getElementById("plan-tasks");
+    if (!tasksEl) return;
+
+    var runEl = document.getElementById("plan-run");
+    var skipEl = document.getElementById("plan-skip");
+    var unknownEl = document.getElementById("plan-unknown");
+    var unknownChip = document.getElementById("plan-unknown-chip");
+    var exitEl = document.getElementById("plan-exit");
+    var etaEl = document.getElementById("plan-eta");
+    var missingEl = document.getElementById("plan-missing");
+    var missingCount = document.getElementById("plan-missing-count");
+    var inputVal = document.getElementById("plan-input-val");
+    var inputCursor = document.getElementById("plan-cursor");
+    var replanBtn = document.getElementById("plan-replan");
+    var replayBtn = document.getElementById("plan-replay");
+    var panel = tasksEl.closest(".plan-panel");
+
+    var HOSTS = 14; // production inventory
+    // b = [run, skip, unknown] before re-plan; a = after (defaults to b)
+    var baseRows = [
+      { name: "common : Install base packages", b: [14, 0, 0] },
+      { name: "common : Configure NTP servers", b: [14, 0, 0] },
+      {
+        name: "base : Include OS tasks · {{ ansible_facts.os_family }}.yml",
+        b: [0, 0, 14], a: [14, 0, 0],
+        whenB: { t: "missing: ansible_facts.os_family", c: "pw-missing" },
+        whenA: { t: "resolved → debian.yml · 51 tasks planned", c: "pw-resolved" }
+      },
+      {
+        name: "hardening : Configure SELinux",
+        b: [0, 0, 14], a: [0, 14, 0],
+        whenB: { t: "missing: ansible_facts.os_family", c: "pw-missing" },
+        whenA: { t: 'when: ansible_facts.os_family == "RedHat" → false', c: "pw-false" }
+      },
+      { name: "hardening : Disable root SSH login", b: [14, 0, 0] },
+      {
+        name: "nginx : Deploy vhost template",
+        b: [3, 11, 0],
+        whenB: { t: "when: 'web' in group_names → false on 11 hosts", c: "pw-false" }
+      },
+      {
+        name: "postgresql : Tune shared_buffers",
+        b: [2, 12, 0],
+        whenB: { t: "when: 'db' in group_names → false on 12 hosts", c: "pw-false" }
+      },
+      {
+        name: "app_deploy : Pull release 2.4.1",
+        b: [3, 11, 0],
+        whenB: { t: "loop: ×3 artifacts · serial: 1 · notifies: restart app", c: "pw-loop" }
+      }
+    ];
+    // rows that only exist once the include above is resolved
+    var newRows = [
+      { name: "debian : Configure apt pinning", a: [14, 0, 0] },
+      {
+        name: "debian : Enable unattended-upgrades",
+        a: [12, 2, 0],
+        whenA: { t: "when: unattended_upgrades | bool → false on 2 hosts", c: "pw-false" }
+      }
+    ];
+
+    var timers = [];
+    function later(fn, ms) { timers.push(setTimeout(fn, prefersReduced ? 0 : ms)); }
+    function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+    function verdictFor(c) {
+      if (c[2] > 0) return ["pv-unknown", "?"];
+      if (c[0] > 0 && c[1] > 0) return ["pv-mixed", "mixed"];
+      if (c[0] > 0) return ["pv-run", "run"];
+      return ["pv-skip", "skip"];
+    }
+    function countsText(c) {
+      var parts = [];
+      if (c[0]) parts.push('<span class="c-run">' + c[0] + " ✓</span>");
+      if (c[1]) parts.push('<span class="c-skip">' + c[1] + " –</span>");
+      if (c[2]) parts.push('<span class="c-unknown">' + c[2] + " ?</span>");
+      return parts.join(" ");
+    }
+    function setRow(r, c, when) {
+      var v = verdictFor(c);
+      r.elVerdict.className = "plan-verdict " + v[0];
+      r.elVerdict.textContent = v[1];
+      r.elRun.style.width = (c[0] / HOSTS * 100) + "%";
+      r.elSkip.style.width = (c[1] / HOSTS * 100) + "%";
+      r.elUnknown.style.width = (c[2] / HOSTS * 100) + "%";
+      r.elCounts.innerHTML = countsText(c);
+      if (r.elWhen) {
+        if (when) {
+          r.elWhen.className = "plan-task-when " + when.c;
+          r.elWhen.textContent = when.t;
+          r.elWhen.style.display = "";
+        } else {
+          r.elWhen.style.display = "none";
+        }
+      }
+    }
+    function buildRow(r, isNew) {
+      var el = document.createElement("div");
+      el.className = "plan-row" + (isNew ? " plan-row-new" : "");
+      r.elVerdict = document.createElement("span");
+      var task = document.createElement("div");
+      task.className = "plan-task";
+      var name = document.createElement("span");
+      name.className = "plan-task-name";
+      name.textContent = r.name;
+      task.appendChild(name);
+      if (r.whenB || r.whenA) {
+        r.elWhen = document.createElement("span");
+        task.appendChild(r.elWhen);
+      }
+      var bar = document.createElement("span");
+      bar.className = "pbar";
+      r.elRun = document.createElement("i"); r.elRun.className = "pb-run";
+      r.elSkip = document.createElement("i"); r.elSkip.className = "pb-skip";
+      r.elUnknown = document.createElement("i"); r.elUnknown.className = "pb-unknown";
+      bar.appendChild(r.elRun); bar.appendChild(r.elSkip); bar.appendChild(r.elUnknown);
+      r.elCounts = document.createElement("span");
+      r.elCounts.className = "plan-counts";
+      el.appendChild(r.elVerdict);
+      el.appendChild(task);
+      el.appendChild(bar);
+      el.appendChild(r.elCounts);
+      r.el = el;
+      return el;
+    }
+    function moreRow(text) {
+      var el = document.createElement("div");
+      el.className = "plan-row plan-row-more";
+      el.textContent = text;
+      return el;
+    }
+    function countUp(el, from, to, ms) {
+      if (prefersReduced || ms <= 0) { el.textContent = String(to); return; }
+      var t0 = null;
+      function frame(t) {
+        if (t0 === null) t0 = t;
+        var p = Math.min(1, (t - t0) / ms);
+        p = 1 - Math.pow(1 - p, 3);
+        el.textContent = String(Math.round(from + (to - from) * p));
+        if (p < 1) requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    }
+
+    var moreEl = null, replanned = false, started = false;
+
+    function reset() {
+      clearTimers();
+      tasksEl.textContent = "";
+      replanned = false;
+      baseRows.forEach(function (r) {
+        tasksEl.appendChild(buildRow(r, false));
+        setRow(r, r.b, r.whenB);
+      });
+      moreEl = moreRow("… 30 more tasks");
+      tasksEl.appendChild(moreEl);
+      runEl.textContent = "144";
+      skipEl.textContent = "12";
+      unknownEl.textContent = "28";
+      unknownChip.classList.remove("zero");
+      exitEl.className = "plan-exit";
+      exitEl.textContent = "exit 3 — unknowns present";
+      etaEl.textContent = "planned in 9 ms · ~4m 36s est. from past runs";
+      missingEl.classList.remove("resolved");
+      missingCount.textContent = "×28";
+      inputVal.textContent = "";
+      inputCursor.classList.remove("done");
+      replanBtn.classList.remove("flash");
+    }
+
+    function replan() {
+      if (replanned) return;
+      replanned = true;
+      inputVal.textContent = "Debian";
+      inputCursor.classList.add("done");
+      replanBtn.classList.add("flash");
+      later(function () { replanBtn.classList.remove("flash"); }, 320);
+
+      // unknowns collapse to run / skip
+      baseRows.forEach(function (r) {
+        setRow(r, r.a || r.b, r.whenA || r.whenB);
+      });
+      // the resolved include pulls newly-planned tasks into the plan
+      var anchor = baseRows[3].el; // insert after the include row
+      newRows.forEach(function (r, i) {
+        var el = buildRow(r, true);
+        tasksEl.insertBefore(el, anchor);
+        setRow(r, r.a, r.whenA);
+        later(function () { el.classList.add("in"); }, 120 + i * 110);
+      });
+      var moreNew = moreRow("… 49 more tasks from debian.yml");
+      moreNew.classList.add("plan-row-new");
+      tasksEl.insertBefore(moreNew, anchor);
+      later(function () { moreNew.classList.add("in"); }, 340);
+
+      missingEl.classList.add("resolved");
+      missingCount.textContent = "✓ 0";
+      countUp(runEl, 144, 762, 800);
+      countUp(skipEl, 12, 138, 800);
+      countUp(unknownEl, 28, 0, 800);
+      later(function () {
+        unknownChip.classList.add("zero");
+        exitEl.className = "plan-exit ok";
+        exitEl.textContent = "exit 0 — safe to apply";
+        etaEl.textContent = "re-planned in 11 ms · ~11m 02s est. from past runs";
+      }, 820);
+    }
+
+    function play() {
+      reset();
+      // stagger rows in
+      var all = tasksEl.children;
+      Array.prototype.forEach.call(all, function (el, i) {
+        later(function () { el.classList.add("in"); }, 80 + i * 90);
+      });
+      // type the missing value, then re-plan
+      var value = "Debian";
+      var typeAt = 1900;
+      value.split("").forEach(function (ch, i) {
+        later(function () { inputVal.textContent = value.slice(0, i + 1); }, typeAt + i * 150);
+      });
+      later(replan, typeAt + value.length * 150 + 450);
+    }
+
+    replayBtn.addEventListener("click", play);
+    replanBtn.addEventListener("click", function () {
+      clearTimers();
+      Array.prototype.forEach.call(tasksEl.children, function (el) { el.classList.add("in"); });
+      replan();
+    });
+
+    if (prefersReduced || !("IntersectionObserver" in window)) {
+      play();
+    } else {
+      var io = new IntersectionObserver(function (entries) {
+        if (entries[0].isIntersecting && !started) {
+          started = true;
+          io.disconnect();
+          play();
+        }
+      }, { threshold: 0.25 });
+      io.observe(panel);
+    }
+  })();
+
+  /* ============================================================
+     Drift heatmap — playbooks × hosts, --check replays
+     ============================================================ */
+  (function drift() {
+    var table = document.getElementById("drift");
+    if (!table) return;
+    var readout = document.getElementById("drift-readout");
+    var DEFAULT = "web02 × webservers.yml — nginx : Deploy config · changed under --check";
+
+    var hosts = ["lb01", "lb02", "web01", "web02", "web03", "db-primary",
+      "db-replica", "redis01", "dock01", "dock02", "mon01"];
+    var rows = [
+      {
+        pb: "site.yml", targets: null,
+        cells: {
+          web02: ["warn", "nginx : Deploy config · changed under --check"],
+          dock01: ["warn", "docker : Configure daemon.json · changed under --check"]
+        }
+      },
+      {
+        pb: "webservers.yml", targets: ["lb01", "lb02", "web01", "web02", "web03"],
+        cells: {
+          web02: ["warn", "nginx : Deploy config · changed under --check"],
+          web03: ["bad", "nginx : Validate config · failed under --check"]
+        }
+      },
+      {
+        pb: "hardening.yml", targets: null,
+        cells: { "db-replica": ["warn", "hardening : Configure sysctl · changed under --check"] }
+      },
+      {
+        pb: "databases.yml", targets: ["db-primary", "db-replica", "redis01"],
+        cells: { "db-replica": ["warn", "postgresql : Render pg_hba.conf · changed under --check"] }
+      },
+      { pb: "monitoring.yml", targets: null, cells: {} }
+    ];
+
+    var thead = document.createElement("thead");
+    var hr = document.createElement("tr");
+    var corner = document.createElement("th");
+    corner.className = "drift-pb";
+    hr.appendChild(corner);
+    hosts.forEach(function (h) {
+      var th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    rows.forEach(function (row) {
+      var tr = document.createElement("tr");
+      var label = document.createElement("td");
+      label.className = "drift-pb";
+      label.textContent = row.pb;
+      tr.appendChild(label);
+      hosts.forEach(function (h) {
+        var td = document.createElement("td");
+        var cell = document.createElement("span");
+        var targeted = !row.targets || row.targets.indexOf(h) !== -1;
+        var state = "ok", msg = "in sync · last --check 18m ago";
+        if (!targeted) {
+          state = "na"; msg = "not targeted by this playbook";
+        } else if (row.cells[h]) {
+          state = row.cells[h][0]; msg = row.cells[h][1];
+        }
+        cell.className = "dcell d-" + state;
+        var text = h + " × " + row.pb + " — " + msg;
+        cell.title = text;
+        cell.addEventListener("mouseenter", function () {
+          if (readout) readout.textContent = text;
+        });
+        cell.addEventListener("mouseleave", function () {
+          if (readout) readout.textContent = DEFAULT;
+        });
+        td.appendChild(cell);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
   })();
 })();

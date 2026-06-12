@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pine — The Ansible control plane that doesn't need a control plane</title>
-<meta name="description" content="Pine is a single static binary that turns your Ansible repositories into a fast, beautiful control center. Web UI, TUI and REST API. A modern open-source alternative to AWX.">
+<meta name="description" content="Pine is a single static binary that turns your Ansible repositories into a fast, beautiful control center. Plan mode shows what every playbook would do — per task, per host — before you apply. Web UI, TUI and REST API. A modern open-source alternative to AWX.">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 L25 14 H20 L27 24 H18 V30 H14 V24 H5 L12 14 H7 Z' fill='%234ade80'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/site.css">
 </head>
@@ -22,7 +22,10 @@
     <nav class="nav-links" aria-label="Main">
       <a href="#why">Why Pine</a>
       <a href="#features">Features</a>
+      <a href="#plan">Plan</a>
       <a href="#examples">Examples</a>
+      <a href="#insights">Insights</a>
+      <a href="#operate">Operate</a>
       <a href="#quickstart">Quickstart</a>
       <a href="#api">API</a>
     </nav>
@@ -48,7 +51,8 @@
       <p class="lede">
         Pine is one static Go binary that turns your Ansible repositories into a fast,
         beautiful control center — web UI, full TUI and REST API included.
-        No operator. No PostgreSQL. No message broker. Just your playbooks, visualized and runnable.
+        No operator. No PostgreSQL. No message broker. Just your playbooks — visualized,
+        <em class="lede-em">planned before they run</em>, and runnable.
       </p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="#quickstart">Get Started</a>
@@ -78,9 +82,10 @@
             <div class="mock-nav-item">Overview</div>
             <div class="mock-nav-item">Repos</div>
             <div class="mock-nav-item active">Playbooks</div>
-            <div class="mock-nav-item">Roles</div>
             <div class="mock-nav-item">Inventory</div>
+            <div class="mock-nav-item">Plans</div>
             <div class="mock-nav-item">Jobs</div>
+            <div class="mock-nav-item">Schedules</div>
             <div class="mock-side-foot"><span class="sync-dot"></span> acme-infra · synced</div>
           </aside>
           <main class="mock-main">
@@ -115,9 +120,9 @@
                 <span class="mock-job-time">1h ago</span>
               </div>
               <div class="mock-job">
-                <span class="status status-failed"></span>
-                <span class="mock-job-name">backup.yml --check</span>
-                <span class="recap-bar"><i style="width:70%" class="rb-ok"></i><i style="width:12%" class="rb-failed"></i><i style="width:18%" class="rb-skipped"></i></span>
+                <span class="status status-ok"></span>
+                <span class="mock-job-name">plan · site.yml</span>
+                <span class="mock-job-meta">762 run · 0 unknown</span>
                 <span class="mock-job-time">3h ago</span>
               </div>
             </div>
@@ -171,6 +176,16 @@
         <div class="compare-pine">Web UI, full terminal TUI, REST API</div>
       </div>
       <div class="compare-row">
+        <div class="compare-label">Dry run</div>
+        <div class="compare-awx"><code>--check</code> executed against every host — takes as long as a real run</div>
+        <div class="compare-pine">Static plan in milliseconds, per task × host — plus exact <code>--check</code> mode when you want it</div>
+      </div>
+      <div class="compare-row">
+        <div class="compare-label">Change safety</div>
+        <div class="compare-awx">None — schedules fire whatever is on the branch</div>
+        <div class="compare-pine">Plan-gated schedules, blast radius analysis, drift detection</div>
+      </div>
+      <div class="compare-row">
         <div class="compare-label">Footprint</div>
         <div class="compare-awx">Several pods, gigabytes of RAM</div>
         <div class="compare-pine">~30&nbsp;MB binary — happily runs on a Raspberry&nbsp;Pi</div>
@@ -188,46 +203,143 @@
       <p>Pine scans real Ansible repositories — no special project format, no surveys, no job templates to maintain.</p>
     </div>
     <div class="features-grid">
-      <article class="card reveal">
-        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M12 2 21 7v10l-9 5-9-5V7l9-5Z"/><path d="M12 12 21 7M12 12v10M12 12 3 7"/></svg></div>
-        <h3>Single static binary</h3>
-        <p>One Go binary, zero runtime dependencies. Deploy with Docker, docker-compose, or <code>scp</code> it to a box and run it.</p>
+      <article class="card card-flagship reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M9 4h6M9 4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2"/><path d="m9.5 13.5 2 2 3.5-4.5"/></svg></div>
+        <h3>Plan mode</h3>
+        <p>The <code>terraform plan</code> Ansible never had. Per task × host verdicts — run, skip or unknown with the exact missing variables — in milliseconds. <a href="#plan">See it below ↓</a></p>
       </article>
       <article class="card reveal">
-        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M6 8.5v7M8.2 6.8 15.6 11M8.2 17.2 15.6 13"/></svg></div>
-        <h3>Multiple repos, auto-synced</h3>
-        <p>Connect any number of Ansible repositories — git URLs or local paths. Pine keeps them fresh automatically.</p>
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M3 8c3 0 3 3 6 3s3-3 6-3 3 3 6 3"/><path d="M3 16c3 0 3-3 6-3s3 3 6 3 3-3 6-3" class="slash"/></svg></div>
+        <h3>Drift detection</h3>
+        <p>Pine periodically replays playbooks under <code>--check</code> and heat-maps where reality diverged from the repo, per playbook × host.</p>
       </article>
       <article class="card reveal">
-        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg></div>
-        <h3>Deep scanning</h3>
-        <p>Playbooks, plays, tasks, roles — defaults, handlers, meta, dependencies — plus INI &amp; YAML inventories, <code>group_vars</code> and <code>host_vars</code>.</p>
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M8.5 5.5v3l2 1.5"/><path d="M17 12.2c1.7.7 3 .7 4 .3v3.6c0 2.4-2 3.7-4 4.7-2-1-4-2.3-4-4.7v-3.6c1 .4 2.3.4 4-.3Z"/></svg></div>
+        <h3>Plan-gated schedules</h3>
+        <p>Cron-style schedules that refuse to fire blindly: if the plan fingerprint changed since you approved it, the run blocks until you review.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="4.5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19.5" cy="12" r="2.2"/><path d="M6.7 12h3.1M14.2 12h3.1"/></svg></div>
+        <h3>Light pipelines</h3>
+        <p>Canary → approval gate → fleet, in three lines of YAML. Enough orchestration for rollouts without a workflow engine to feed.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M9.5 18h5M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3Z"/></svg></div>
+        <h3>Insights</h3>
+        <p>Variable lineage, hygiene reports, run diffs and blast-radius analysis — static analysis over everything Pine already knows about your repo.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M11 7h4M11 17h6"/></svg></div>
+        <h3>Facts, three ways</h3>
+        <p>Built-in fact profiles (<code>ubuntu-24.04</code>, <code>debian-12</code>, <code>rhel-9</code>…), harvesting from real hosts via <code>ansible -m setup</code>, or pin values by hand.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="7" cy="6.5" r="2.6"/><circle cx="17" cy="6.5" r="2.6"/><circle cx="12" cy="17.5" r="2.6"/><path d="M8.3 8.8 10.8 15M15.7 8.8 13.2 15"/></svg></div>
+        <h3>Constructed inventories</h3>
+        <p>Split inventory dirs merge in order and <code>ansible.builtin.constructed</code> is emulated — generated groups appear on the topology with badges.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12l5.5-5.5"/></svg></div>
+        <h3>Smart scanning</h3>
+        <p>Recursive playbook <em>and</em> role discovery anywhere in the repo. Inventories detected by content — <code>.yml</code>, <code>.yaml</code>, <code>.ini</code> or no extension at all.</p>
       </article>
       <article class="card reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><circle cx="12" cy="13" r="2"/><path d="M12 7.5V11M10.8 14.6 6.3 17.2M13.2 14.6l4.5 2.6"/></svg></div>
-        <h3>Interactive topology graph</h3>
-        <p>Your inventories rendered live — groups, children and hosts as an explorable graph, not a wall of INI.</p>
-      </article>
-      <article class="card reveal">
-        <div class="card-icon"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="6" height="5" rx="1.5"/><rect x="16" y="4" width="6" height="5" rx="1.5"/><rect x="9" y="15" width="6" height="5" rx="1.5"/><path d="M5 9v3a2 2 0 0 0 2 2h2m10-5v3a2 2 0 0 1-2 2h-2"/></svg></div>
-        <h3>Playbook task-flow</h3>
-        <p>See every playbook as plays → roles → tasks, with tags, handlers and <code>notify</code> edges. Understand before you run.</p>
+        <h3>Topology &amp; task-flow</h3>
+        <p>Inventories as an explorable live graph — with a time-lapse over its git history — and every playbook as plays → roles → tasks → handlers.</p>
       </article>
       <article class="card reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M7 4.5 18.5 12 7 19.5Z"/></svg></div>
-        <h3>Job engine with live streaming</h3>
-        <p>Run playbooks with <code>--check</code>, <code>--limit</code>, <code>--tags</code>. Output streams live over SSE; history keeps a per-host ok / changed / failed recap. No Ansible installed? Simulation mode still works.</p>
+        <h3>Jobs, streamed live</h3>
+        <p>Run with <code>--check</code>, <code>--limit</code>, <code>--tags</code>. Output streams over SSE; history keeps per-host recaps and feeds plan duration estimates.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M12 2 21 7v10l-9 5-9-5V7l9-5Z"/><path d="M12 12 21 7M12 12v10M12 12 3 7"/></svg></div>
+        <h3>Single static binary</h3>
+        <p>One Go binary, state in plain JSON you can git-diff. No PostgreSQL, no operator, no broker. Nothing to babysit at 3&nbsp;a.m.</p>
       </article>
       <article class="card reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 3 3-3 3M12 15h6"/></svg></div>
         <h3>Web UI + TUI + REST API</h3>
         <p>An embedded web UI, a full terminal UI for SSH sessions, and a clean REST API for everything else. Same data, three doors.</p>
       </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== PLAN MODE ============================== -->
+<section class="section section-plan" id="plan">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Plan mode</span>
+      <h2>Plan before you apply.</h2>
+      <p>The <code>terraform plan</code> Ansible never had. Pine statically evaluates every task against every host — no SSH, no side effects — and tells you what would <b class="v-run-word">run</b>, what would <b class="v-skip-word">skip</b> and why, and exactly which variables it <b class="v-unknown-word">can't know yet</b>. Then you fill in the blanks and re-plan, instantly.</p>
+    </div>
+
+    <div class="panel plan-panel reveal">
+      <div class="term-bar">
+        <span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span>
+        <span class="term-title">pine plan acme-infra/ site.yml -i production</span>
+        <span class="plan-badge" id="plan-badge">estimated</span>
+        <button class="btn btn-ghost btn-xs" id="plan-replay" type="button">↺ Replay</button>
+      </div>
+      <div class="plan-body">
+        <div class="plan-tasks" id="plan-tasks" aria-label="Plan verdicts per task"></div>
+        <aside class="plan-side">
+          <div class="plan-side-title">Missing variables</div>
+          <div class="plan-missing" id="plan-missing">
+            <span class="plan-missing-name">ansible_facts.os_family</span>
+            <span class="plan-missing-count" id="plan-missing-count">×28</span>
+          </div>
+          <div class="plan-input" id="plan-input">
+            <span class="plan-input-key">ansible_facts.os_family =</span>
+            <span class="plan-input-val" id="plan-input-val"></span><span class="cursor plan-cursor" id="plan-cursor"></span>
+          </div>
+          <button class="plan-replan" id="plan-replan" type="button">⟳ Re-plan</button>
+          <p class="plan-side-hint">Type a value, pick a fact profile or harvest real facts — Pine re-plans in milliseconds and the unknowns collapse into run / skip.</p>
+        </aside>
+      </div>
+      <div class="plan-foot">
+        <span class="plan-sum ps-run">run <b id="plan-run">144</b></span>
+        <span class="plan-sum ps-skip">skip <b id="plan-skip">12</b></span>
+        <span class="plan-sum ps-unknown" id="plan-unknown-chip">unknown <b id="plan-unknown">28</b></span>
+        <span class="plan-exit" id="plan-exit">exit 3 — unknowns present</span>
+        <span class="term-duration" id="plan-eta">planned in 9 ms · ~4m 36s est. from past runs</span>
+      </div>
+    </div>
+
+    <div class="plan-grid">
       <article class="card reveal">
-        <div class="card-icon"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.66 3.58 3 8 3s8-1.34 8-3V6M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/><path d="m3 21 18-18" class="slash"/></svg></div>
-        <h3>No moving parts</h3>
-        <p>State is plain JSON on disk. No external database, no Kubernetes operator, no RabbitMQ. Nothing to babysit at 3&nbsp;a.m.</p>
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="5" cy="6" r="1.6"/><circle cx="5" cy="12" r="1.6"/><circle cx="5" cy="18" r="1.6"/></svg></div>
+        <h3>Three-valued, honest</h3>
+        <p>Every task × host gets a verdict: <span class="v-run-word">run</span>, <span class="v-skip-word">skip</span> — with the condition that was false — or <span class="v-unknown-word">unknown</span>, with the exact variable names Pine is missing. No guesses dressed up as certainty.</p>
       </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M11 7h4M11 17h6"/></svg></div>
+        <h3>Facts, three ways</h3>
+        <p>Built-in profiles (<code>ubuntu-24.04</code>, <code>debian-12</code>, <code>rhel-9</code>…), facts harvested from real hosts with <code>ansible -m setup</code>, or values you pin by hand in the missing-variables panel.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M4 19V9m5.3 10V5m5.4 14v-8m5.3 8V11"/></svg></div>
+        <h3>The whole shape of the run</h3>
+        <p>Loop sizes, serial batches, which handlers would be notified, and an estimated duration learned from the timings of your past runs.</p>
+      </article>
+      <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.4 2.4 4.6-5.4"/></svg></div>
+        <h3>Exact mode</h3>
+        <p>Want ground truth? Pine runs <code>ansible-playbook --check</code> through a JSON callback and renders it in the same UI — the badge flips from <span class="plan-badge plan-badge-inline">estimated</span> to <span class="plan-badge plan-badge-inline plan-badge-exact">exact</span>.</p>
+      </article>
+    </div>
+
+    <div class="codeblock plan-cli reveal">
+      <button class="copy-btn" type="button" aria-label="Copy command">Copy</button>
+      <pre><code><span class="t-comment"># plan from the CLI — same engine, same verdicts</span>
+<span class="t-prompt">$</span> pine plan acme-infra/ site.yml -e app_version=2.4.2 --profile ubuntu-24.04
+<span class="t-plan-ok">run 762</span> · <span class="t-plan-skip">skip 138</span> · <span class="t-plan-ok">unknown 0</span>   (9 ms)
+
+<span class="t-comment"># no facts pinned? unknowns make it exit 3 — a perfect CI gate</span>
+<span class="t-prompt">$</span> pine plan acme-infra/ site.yml &amp;&amp; echo safe-to-merge
+<span class="t-plan-ok">run 144</span> · <span class="t-plan-skip">skip 12</span> · <span class="t-plan-unknown">unknown 28</span>   → exit <span class="t-num">3</span></code></pre>
     </div>
   </div>
 </section>
@@ -246,7 +358,7 @@
       <div class="example-head">
         <div>
           <h3><span class="example-num">01</span> Inventory topology</h3>
-          <p>The production inventory as a live graph. Hover a node to trace its group lineage.</p>
+          <p>The production inventory as a live graph — constructed groups included. Hover a node to trace its lineage, or scrub the time-lapse to replay the inventory's git history.</p>
         </div>
         <span class="example-tag">inventories/production</span>
       </div>
@@ -254,6 +366,8 @@
         <div class="topo-toolbar">
           <span class="topo-legend"><i class="lg lg-group"></i> group</span>
           <span class="topo-legend"><i class="lg lg-host"></i> host</span>
+          <span class="topo-legend"><i class="lg lg-constructed"></i> constructed</span>
+          <span class="topo-chip" title="Replay the inventory's git history">⏪ time-lapse · 47 commits</span>
           <span class="topo-readout" id="topo-readout">acme — 11 hosts, 8 child groups</span>
         </div>
         <svg id="topo" viewBox="0 0 860 540" role="img" aria-label="Topology graph of the Acme production inventory"></svg>
@@ -386,9 +500,9 @@
         </div>
         <div class="tui">
           <div class="tui-top">
-            <span class="tui-brand">🌲 Pine <span class="tui-dim">v1.4</span></span>
+            <span class="tui-brand">🌲 Pine <span class="tui-dim">v2.1</span></span>
             <span class="tui-tabs">
-              <span class="tui-tab">Repos</span><span class="tui-tab tui-tab-active">Playbooks</span><span class="tui-tab">Roles</span><span class="tui-tab">Inventory</span><span class="tui-tab">Jobs</span>
+              <span class="tui-tab">Repos</span><span class="tui-tab tui-tab-active">Playbooks</span><span class="tui-tab">Inventory</span><span class="tui-tab">Plans</span><span class="tui-tab">Jobs</span>
             </span>
             <span class="tui-dim">? help · q quit</span>
           </div>
@@ -421,11 +535,12 @@
 <span class="th">handlers</span>
   • reload nginx · restart app
 
+<span class="tk">plan</span>     <span class="tok">38 run</span> · 4 skip · <span class="tok">0 unknown</span>  <span class="td">9 ms</span>
 <span class="tk">last run</span> <span class="tok">✓ ok</span> 2m ago · 3 hosts</pre>
             </div>
           </div>
           <div class="tui-status">
-            <span><b>↑/↓</b> move · <b>enter</b> run · <b>c</b> --check · <b>t</b> tags · <b>/</b> filter</span>
+            <span><b>↑/↓</b> move · <b>enter</b> run · <b>p</b> plan · <b>c</b> --check · <b>/</b> filter</span>
             <span class="tui-dim">repo: acme-infra <span class="tok">✓ synced</span></span>
           </div>
         </div>
@@ -437,7 +552,7 @@
       <div class="example-head">
         <div>
           <h3><span class="example-num">05</span> Inventory browser</h3>
-          <p>Groups, hosts and merged variables side by side. Click anything in the tree.</p>
+          <p>Groups, hosts and merged variables side by side — with full lineage for every value. Click anything in the tree.</p>
         </div>
         <span class="example-tag">group_vars · host_vars</span>
       </div>
@@ -449,6 +564,309 @@
             <span class="example-tag">merged vars</span>
           </div>
           <pre class="inv-json" id="inv-json"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- f. Constructed inventories -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3><span class="example-num">06</span> Constructed inventories</h3>
+          <p>Split inventory directories merge in order, and <code>ansible.builtin.constructed</code> is emulated — groups build themselves from host variables.</p>
+        </div>
+        <span class="example-tag">inventories/production/*.yml</span>
+      </div>
+      <div class="panel constructed-panel">
+        <div class="cfile">
+          <div class="cfile-name">00-hosts.yml</div>
+          <pre><code><span class="t-key">all</span>:
+  <span class="t-key">hosts</span>:
+    <span class="t-key">web01</span>:  { <span class="t-key">services</span>: [<span class="t-str">nginx</span>, <span class="t-str">app</span>] }
+    <span class="t-key">dock01</span>: { <span class="t-key">services</span>: [<span class="t-str">docker</span>] }
+    <span class="t-key">dock02</span>: { <span class="t-key">services</span>: [<span class="t-str">docker</span>, <span class="t-str">registry</span>] }</code></pre>
+        </div>
+        <div class="cfile">
+          <div class="cfile-name">99-constructed.yml</div>
+          <pre><code><span class="t-key">plugin</span>: ansible.builtin.constructed
+<span class="t-key">groups</span>:
+  <span class="t-key">docker_hosts</span>: <span class="t-str">"'docker' in (services | default([]))"</span>
+<span class="t-key">keyed_groups</span>:
+  - <span class="t-key">key</span>: env
+    <span class="t-key">prefix</span>: env</code></pre>
+        </div>
+        <div class="cres">
+          <div class="cres-title">Generated groups</div>
+          <div class="cres-group">
+            <span class="inv-icon inv-icon-group"></span>
+            <span class="cres-name">docker_hosts</span>
+            <span class="badge-constructed">CONSTRUCTED</span>
+            <span class="cres-hosts">dock01 · dock02</span>
+          </div>
+          <div class="cres-group">
+            <span class="inv-icon inv-icon-group"></span>
+            <span class="cres-name">env_production</span>
+            <span class="badge-constructed">CONSTRUCTED</span>
+            <span class="cres-hosts">11 hosts</span>
+          </div>
+          <p class="cres-hint">What-if preview: edit <code>services</code> on any host and watch the generated groups rebuild live on the topology — before you commit.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== INSIGHTS ============================== -->
+<section class="section" id="insights">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Insights</span>
+      <h2>Pine reads your repo so well, it can review it.</h2>
+      <p>Static analysis over everything Pine already knows — variables, roles, handlers, hosts and run history. Four lenses, zero setup.</p>
+    </div>
+    <div class="insights-grid">
+
+      <div class="panel insight reveal">
+        <div class="insight-head">
+          <h3>Variable lineage</h3>
+          <span class="example-tag">where does this value come from?</span>
+        </div>
+        <div class="insight-body">
+          <div class="lineage">
+            <div class="lineage-var">nginx_port <span class="lineage-on">on</span> web02</div>
+            <div class="lin-step lin-struck">
+              <span class="lin-src">role default</span>
+              <span class="lin-loc">roles/nginx/defaults/main.yml</span>
+              <span class="lin-val">8080</span>
+            </div>
+            <div class="lin-step lin-struck">
+              <span class="lin-src">group · web</span>
+              <span class="lin-loc">group_vars/web.yml</span>
+              <span class="lin-val">80</span>
+            </div>
+            <div class="lin-step lin-effective">
+              <span class="lin-src">host · web02</span>
+              <span class="lin-loc">host_vars/web02.yml</span>
+              <span class="lin-val">8443</span>
+              <span class="lin-badge">effective</span>
+            </div>
+          </div>
+          <p class="insight-cap">The full precedence chain for any variable on any host — every losing definition struck through, the effective value in green. Available everywhere a variable appears.</p>
+        </div>
+      </div>
+
+      <div class="panel insight reveal">
+        <div class="insight-head">
+          <h3>Hygiene report</h3>
+          <span class="example-tag">repos/acme-infra/hygiene</span>
+        </div>
+        <div class="insight-body hygiene">
+          <div class="score">
+            <svg viewBox="0 0 84 84" role="img" aria-label="Hygiene score 67 of 100">
+              <circle class="score-bg" cx="42" cy="42" r="34"/>
+              <circle class="score-val" cx="42" cy="42" r="34" stroke-dasharray="143.1 213.6"/>
+              <text class="score-num" x="42" y="47">67</text>
+            </svg>
+            <span class="score-label">repo score</span>
+          </div>
+          <ul class="findings">
+            <li><span class="f-dot f-warn"></span>3 unused roles <span class="f-loc">mysql_legacy, …</span></li>
+            <li><span class="f-dot f-warn"></span>2 handlers never notified <span class="f-loc">restart memcached, …</span></li>
+            <li><span class="f-dot f-warn"></span>7 dead variables <span class="f-loc">defined, never read</span></li>
+            <li><span class="f-dot f-warn"></span>group <code>staging_old</code> targets 0 hosts</li>
+            <li><span class="f-dot f-bad"></span>plaintext secret: <code>pg_password</code> <span class="pill-bad">encrypt with ansible-vault</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="panel insight reveal">
+        <div class="insight-head">
+          <h3>Run diff</h3>
+          <span class="example-tag">site.yml · #138 → #142</span>
+        </div>
+        <div class="insight-body">
+          <div class="rundiff">
+            <div class="rd-row rd-bad">
+              <span class="rd-host">web03</span>
+              <span class="rd-change">ok → failed</span>
+              <span class="rd-task">nginx : Validate config</span>
+            </div>
+            <div class="rd-row rd-good">
+              <span class="rd-host">web01</span>
+              <span class="rd-change">failed → ok</span>
+              <span class="rd-task">app_deploy : Migrate database</span>
+            </div>
+            <div class="rd-row">
+              <span class="rd-host">db-primary</span>
+              <span class="rd-change">changed 4 → 1</span>
+              <span class="rd-task">converging</span>
+            </div>
+            <div class="rd-row rd-new">
+              <span class="rd-host">mon02</span>
+              <span class="rd-badge">new in this run</span>
+              <span class="rd-task">ok 31 · changed 9</span>
+            </div>
+          </div>
+          <p class="insight-cap">Compare any two runs of the same playbook — regressions in red, recoveries in green, hosts that joined the fleet flagged.</p>
+        </div>
+      </div>
+
+      <div class="panel insight reveal">
+        <div class="insight-head">
+          <h3>Blast radius</h3>
+          <span class="example-tag">$ pine impact</span>
+        </div>
+        <div class="insight-body">
+          <div class="blast">
+            <div class="blast-stage">
+              <span class="blast-stage-label">file</span>
+              <div class="blast-node b-file">nginx.conf.j2</div>
+            </div>
+            <div class="blast-arrow" aria-hidden="true">→</div>
+            <div class="blast-stage">
+              <span class="blast-stage-label">role</span>
+              <div class="blast-node b-role">nginx</div>
+            </div>
+            <div class="blast-arrow" aria-hidden="true">→</div>
+            <div class="blast-stage">
+              <span class="blast-stage-label">playbooks</span>
+              <div class="blast-node b-play">webservers.yml</div>
+              <div class="blast-node b-play">rolling-update.yml</div>
+            </div>
+            <div class="blast-arrow" aria-hidden="true">→</div>
+            <div class="blast-stage">
+              <span class="blast-stage-label">hosts</span>
+              <div class="blast-node b-hosts">14 hosts</div>
+            </div>
+          </div>
+          <div class="blast-trigger">⚡ would trigger: <b>Reload nginx</b></div>
+          <p class="insight-cap">Touch a file, see the ripple: files → roles → playbooks → hosts. <code>pine impact</code> exits 3 when a change has reach — wire it into CI before the merge, not after the incident.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== OPERATE ============================== -->
+<section class="section section-operate" id="operate">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="kicker">Operate</span>
+      <h2>Day-2 operations, without the 3 a.m. surprises.</h2>
+      <p>Drift detection tells you when reality wandered off. Plan-gated schedules refuse to fire blindly. Light pipelines roll changes out one careful step at a time.</p>
+    </div>
+
+    <!-- Drift -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3>Drift detection</h3>
+          <p>Pine periodically replays playbooks under <code>--check</code>. <em>changed</em> under <code>--check</code> = reality diverged from the repo. Hover a cell.</p>
+        </div>
+        <span class="example-tag">--check · every 6h</span>
+      </div>
+      <div class="panel drift-panel">
+        <div class="drift-scroll">
+          <table class="drift" id="drift" aria-label="Drift heatmap: playbooks by hosts"></table>
+        </div>
+        <div class="drift-foot">
+          <span class="drift-legend"><i class="dd d-ok"></i> in sync</span>
+          <span class="drift-legend"><i class="dd d-warn"></i> drifted</span>
+          <span class="drift-legend"><i class="dd d-bad"></i> failing</span>
+          <span class="drift-legend"><i class="dd d-na"></i> not targeted</span>
+          <span class="topo-readout" id="drift-readout">web02 × webservers.yml — nginx : Deploy config · changed under --check</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="op-grid">
+      <!-- Schedules -->
+      <div class="op-block reveal">
+        <div class="example-head">
+          <div>
+            <h3>Plan-gated schedules</h3>
+            <p>Scheduled runs that refuse to fire blindly. If the plan fingerprint changed since approval, the run blocks.</p>
+          </div>
+        </div>
+        <div class="panel sched-panel">
+          <div class="sched-card">
+            <div class="sched-top">
+              <span class="sched-name">hardening.yml · production</span>
+              <span class="sched-chips"><span class="chip">every 1h</span><span class="chip chip-gate">plan-gated 🛡</span></span>
+            </div>
+            <div class="sched-status"><span class="status status-ok"></span> last run ok · plan fingerprint matches approval</div>
+          </div>
+          <div class="sched-card sched-blocked">
+            <div class="sched-top">
+              <span class="sched-name">site.yml · production</span>
+              <span class="sched-chips"><span class="chip">nightly 02:00</span><span class="chip chip-gate">plan-gated 🛡</span></span>
+            </div>
+            <div class="sched-status sched-status-warn"><span class="status status-warn"></span> <b>BLOCKED</b> — plan fingerprint changed since approval</div>
+            <div class="sched-detail">+2 tasks would now run on <b>db-primary</b> · review &amp; approve to resume</div>
+            <div class="sched-actions">
+              <button class="btn btn-ghost btn-xs" type="button">Review plan</button>
+              <button class="btn btn-primary btn-xs" type="button">Approve</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pipelines -->
+      <div class="op-block reveal">
+        <div class="example-head">
+          <div>
+            <h3>Light pipelines</h3>
+            <p>Canary, gate, fleet. Enough orchestration for safe rollouts — not a workflow engine to feed.</p>
+          </div>
+        </div>
+        <div class="panel pipe-panel">
+          <div class="pipe-name">deploy-web · run #18</div>
+          <div class="pipe">
+            <div class="pipe-step pipe-done">
+              <span class="pipe-status">✓</span>
+              <div class="pipe-info"><b>canary</b><span>--limit web01 · ok 41 · changed 6</span></div>
+            </div>
+            <div class="pipe-link" aria-hidden="true"></div>
+            <div class="pipe-step pipe-gate">
+              <span class="pipe-status">⏸</span>
+              <div class="pipe-info"><b>approval gate</b><span>waiting · requested 12m ago</span></div>
+            </div>
+            <div class="pipe-link pipe-link-dim" aria-hidden="true"></div>
+            <div class="pipe-step pipe-pending">
+              <span class="pipe-status">·</span>
+              <div class="pipe-info"><b>fleet</b><span>--limit web · queued</span></div>
+            </div>
+          </div>
+          <div class="pipe-actions">
+            <button class="btn btn-primary btn-sm" type="button">Approve &amp; continue</button>
+            <span class="pipe-hint">canary recap looks clean — fleet is 13 hosts</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== BATTLE-TESTED ============================== -->
+<section class="section section-battle">
+  <div class="container">
+    <div class="battle reveal">
+      <span class="kicker">Battle-tested</span>
+      <div class="battle-items">
+        <div class="battle-item">
+          <b>debops/debops</b>
+          <span class="battle-num">240 playbooks · 203 roles</span>
+          <span class="battle-sub">scanned, mapped and planned — the whole data center in one graph</span>
+        </div>
+        <div class="battle-item">
+          <b>ansible-for-devops</b>
+          <span class="battle-num">9.7k ★</span>
+          <span class="battle-sub">every example chapter renders end to end in the task-flow view</span>
+        </div>
+        <div class="battle-item">
+          <b>ansible-nas</b>
+          <span class="battle-num">3.7k ★</span>
+          <span class="battle-sub">a 420-task plan, computed in 37 ms</span>
         </div>
       </div>
     </div>
@@ -510,6 +928,10 @@
 <span class="t-comment"># serve the web UI with the bundled Acme demo</span>
 <span class="t-prompt">$</span> pine serve --demo      <span class="t-comment"># → http://localhost:8743</span>
 
+<span class="t-comment"># plan before you apply — exit 3 if anything is unknown</span>
+<span class="t-prompt">$</span> pine plan ~/ansible site.yml --profile ubuntu-24.04
+<span class="t-prompt">$</span> pine impact ~/ansible roles/nginx/templates/nginx.conf.j2
+
 <span class="t-comment"># or stay in the terminal</span>
 <span class="t-prompt">$</span> pine tui</code></pre>
           </div>
@@ -525,7 +947,7 @@
     <div class="section-head reveal">
       <span class="kicker">REST API</span>
       <h2>Everything the UI does, your scripts can too.</h2>
-      <p>A small, predictable JSON API. List repos, inspect inventories, launch jobs, follow the SSE stream.</p>
+      <p>A small, predictable JSON API. List repos, inspect inventories, launch jobs and plans, query blast radius, follow the SSE stream.</p>
     </div>
     <div class="api-grid reveal">
       <div class="codeblock api-block">
@@ -558,6 +980,34 @@
   <span class="t-key">"id"</span>: <span class="t-str">"job_01HZX4Q8"</span>,
   <span class="t-key">"status"</span>: <span class="t-str">"running"</span>,
   <span class="t-key">"stream"</span>: <span class="t-str">"/api/jobs/job_01HZX4Q8/events"</span>  <span class="t-comment">// SSE</span>
+}</code></pre>
+      </div>
+      <div class="codeblock api-block">
+        <div class="api-method"><span class="method method-post">POST</span> <code>/api/plans</code></div>
+        <pre><code>{
+  <span class="t-key">"repo"</span>: <span class="t-str">"acme-infra"</span>,
+  <span class="t-key">"playbook"</span>: <span class="t-str">"site.yml"</span>,
+  <span class="t-key">"inventory"</span>: <span class="t-str">"production"</span>,
+  <span class="t-key">"vars"</span>: { <span class="t-key">"app_version"</span>: <span class="t-str">"2.4.2"</span> },
+  <span class="t-key">"fact_profile"</span>: <span class="t-str">"ubuntu-24.04"</span>
+}
+
+<span class="t-comment">→ 201 Created</span>
+{
+  <span class="t-key">"id"</span>: <span class="t-str">"plan_01J8KQ2V"</span>,
+  <span class="t-key">"mode"</span>: <span class="t-str">"estimated"</span>,
+  <span class="t-key">"summary"</span>: { <span class="t-key">"run"</span>: <span class="t-num">762</span>, <span class="t-key">"skip"</span>: <span class="t-num">138</span>, <span class="t-key">"unknown"</span>: <span class="t-num">0</span> },
+  <span class="t-key">"estimated_duration"</span>: <span class="t-str">"11m02s"</span>
+}</code></pre>
+      </div>
+      <div class="codeblock api-block">
+        <div class="api-method"><span class="method method-get">GET</span> <code>/api/repos/acme-infra/impact?file=roles/nginx/templates/nginx.conf.j2</code></div>
+        <pre><code>{
+  <span class="t-key">"file"</span>: <span class="t-str">"roles/nginx/templates/nginx.conf.j2"</span>,
+  <span class="t-key">"roles"</span>: [<span class="t-str">"nginx"</span>],
+  <span class="t-key">"playbooks"</span>: [<span class="t-str">"webservers.yml"</span>, <span class="t-str">"rolling-update.yml"</span>],
+  <span class="t-key">"hosts"</span>: <span class="t-num">14</span>,
+  <span class="t-key">"handlers"</span>: [<span class="t-str">"nginx : Reload nginx"</span>]
 }</code></pre>
       </div>
     </div>
