@@ -75,3 +75,30 @@ func TestInterpolate(t *testing.T) {
 		t.Errorf("got %q known=%v", out, known)
 	}
 }
+
+func TestEvalIsValueTests(t *testing.T) {
+	vars := map[string]any{"on": true, "off": false, "empty": nil}
+	cases := []struct {
+		expr        string
+		want        Tri
+		wantMissing []string
+	}{
+		{`on is true`, True, nil},
+		{`on is false`, False, nil},
+		{`off is false`, True, nil},
+		{`on is not true`, False, nil},
+		{`empty is none`, True, nil},
+		{`on is sameas true`, True, nil},
+		{`missing_flag is true`, Unknown, []string{"missing_flag"}},
+		{`missing_flag is false`, Unknown, []string{"missing_flag"}},
+	}
+	for _, c := range cases {
+		got, missing := EvalCondition(c.expr, vars)
+		if got != c.want {
+			t.Errorf("EvalCondition(%q) = %v, want %v", c.expr, got, c.want)
+		}
+		if len(missing) != len(c.wantMissing) {
+			t.Errorf("EvalCondition(%q) missing = %v, want %v", c.expr, missing, c.wantMissing)
+		}
+	}
+}

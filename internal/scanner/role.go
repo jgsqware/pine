@@ -4,10 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/jgsqware/pine/internal/model"
 	"gopkg.in/yaml.v3"
 )
+
+// roleDirNames are directory names whose children are roles.
+var roleDirNames = map[string]bool{"roles": true}
 
 // scanRoles parses every role under roles/, plus any extra role parent dirs
 // contributed by a layout plugin (e.g. generic_roles/).
@@ -16,6 +20,10 @@ func scanRoles(root string, plugin *Plugin) []model.Role {
 	if plugin != nil {
 		dirs = append(dirs, plugin.RoleDirs...)
 	}
+	// nested roles dirs anywhere in the tree (ansible-for-devops style:
+	// one roles/ per chapter or project)
+	dirs = append(dirs, findRoleDirs(root)...)
+
 	var out []model.Role
 	seen := map[string]bool{}
 	for _, rd := range dirs {
@@ -28,11 +36,65 @@ func scanRoles(root string, plugin *Plugin) []model.Role {
 			if !e.IsDir() || seen[e.Name()] {
 				continue
 			}
+			roleDir := filepath.Join(rolesDir, e.Name())
+			if !looksLikeRole(roleDir) {
+				continue
+			}
 			seen[e.Name()] = true
-			out = append(out, parseRole(root, filepath.Join(rolesDir, e.Name())))
+			out = append(out, parseRole(root, roleDir))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// looksLikeRole requires at least one conventional role subdirectory, so
+// arbitrary folders inside a roles/ dir are not misparsed.
+func looksLikeRole(dir string) bool {
+	for _, sub := range []string{"tasks", "defaults", "handlers", "meta", "templates", "vars", "files"} {
+		if isDir(filepath.Join(dir, sub)) {
+			return true
+		}
+	}
+	return false
+}
+
+const maxRoleDirDepth = 5
+
+// findRoleDirs returns repo-relative paths of nested "roles" directories
+// (the repo root one is handled by the caller). It does not descend into
+// roles themselves or vendored/code directories.
+func findRoleDirs(root string) []string {
+	var out []string
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if depth > maxRoleDirDepth {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasPrefix(name, ".") || nonPlaybookDirs[name] && !roleDirNames[name] {
+				continue
+			}
+			full := filepath.Join(dir, name)
+			if roleDirNames[name] {
+				if rel, err := filepath.Rel(root, full); err == nil && rel != "roles" {
+					out = append(out, rel)
+				}
+				continue // don't look for roles dirs inside roles
+			}
+			walk(full, depth+1)
+		}
+	}
+	walk(root, 0)
+	sort.Strings(out)
 	return out
 }
 

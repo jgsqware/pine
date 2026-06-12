@@ -374,6 +374,29 @@ func (p *exprParser) parseCmp() any {
 		if p.accept("ident", "undefined") {
 			return neg != isUndef(left)
 		}
+		// value tests: is true / is false / is none (+ sameas)
+		boolTest := func(want any) any {
+			if isUndef(left) {
+				p.commit(leftPending)
+				return undefined
+			}
+			eq, _ := cmpEq(left, want).(bool)
+			return eq != neg
+		}
+		switch {
+		case p.accept("ident", "true"), p.accept("ident", "True"):
+			return boolTest(true)
+		case p.accept("ident", "false"), p.accept("ident", "False"):
+			return boolTest(false)
+		case p.accept("ident", "none"), p.accept("ident", "None"):
+			if isUndef(left) {
+				p.commit(leftPending)
+				return undefined
+			}
+			return (left == nil) != neg
+		case p.accept("ident", "sameas"):
+			return boolTest(p.parseValue())
+		}
 		p.commit(leftPending)
 		return undefined
 	}

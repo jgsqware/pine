@@ -52,6 +52,10 @@ type HygieneResult struct {
 
 var secretKeyRe = regexp.MustCompile(`(?i)(^|_)(pass(word|wd)?|secret|token|api_?key|access_?key|private_?key|credentials?)s?$`)
 
+// server_tokens is the apache/nginx version-disclosure directive, not a
+// credential, despite ending in "tokens"
+var notSecretKeyRe = regexp.MustCompile(`(?i)server_+tokens?$`)
+
 // Hygiene cross-references the scan result (plus the raw repo text for
 // variable usage and vault detection) into a tidiness report.
 func Hygiene(res *model.ScanResult, root string) *HygieneResult {
@@ -149,6 +153,25 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 		}
 		walk(r.Tasks)
 	}
+	// templated notifies ("Restart {{ item }}") can hit any handler of the
+	// role at runtime: skip handler analysis for those roles entirely
+	templatedNotify := map[string]bool{}
+	for _, r := range res.Roles {
+		var walk func(ts []model.Task)
+		walk = func(ts []model.Task) {
+			for _, t := range ts {
+				for _, n := range t.Notify {
+					if strings.Contains(n, "{{") {
+						templatedNotify[r.Name] = true
+					}
+				}
+				walk(t.Block)
+				walk(t.Rescue)
+				walk(t.Always)
+			}
+		}
+		walk(r.Tasks)
+	}
 	checkHandler := func(role string, h model.Task) {
 		if notified[h.Name] || (h.Listen != "" && notified[h.Listen]) {
 			return
@@ -159,8 +182,8 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 		})
 	}
 	for _, r := range res.Roles {
-		if !referenced[r.Name] {
-			continue // already reported as unused role
+		if !referenced[r.Name] || templatedNotify[r.Name] {
+			continue // unused role, or notifies resolved only at runtime
 		}
 		for _, h := range r.Handlers {
 			checkHandler(r.Name, h)
@@ -211,7 +234,8 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 	seenSecret := map[string]bool{}
 	for _, c := range candidates {
 		// secrets: suspicious key with a plaintext scalar value
-		if s, isStr := c.value.(string); isStr && secretKeyRe.MatchString(c.key) && !seenSecret[c.key+c.definedIn] {
+		if s, isStr := c.value.(string); isStr && secretKeyRe.MatchString(c.key) &&
+			!notSecretKeyRe.MatchString(c.key) && !seenSecret[c.key+c.definedIn] {
 			seenSecret[c.key+c.definedIn] = true
 			if looksLikeSecretValue(s) {
 				sev, reason := "high", "password-like key with a plaintext value"
@@ -307,9 +331,13 @@ func isMagicish(key string) bool {
 	return false
 }
 
-// textIndex holds the repo's text content, split into lines per file.
+// textIndex counts identifier tokens across the repo's text files:
+// counts = every occurrence, defs = occurrences as a "key:" / "key ="
+// definition. Built once, so unused-var checks are O(1) per key instead
+// of rescanning every line (15s -> ms on debops-sized repos).
 type textIndex struct {
-	lines []string
+	counts map[string]int
+	defs   map[string]int
 }
 
 const maxHygieneFile = 256 * 1024
@@ -320,9 +348,9 @@ var textExts = map[string]bool{
 	".json": true, ".toml": true,
 }
 
-// repoText loads all small text files; also counts vault-encrypted files.
+// repoText indexes all small text files; also counts vault-encrypted files.
 func repoText(root string) (*textIndex, int) {
-	idx := &textIndex{}
+	idx := &textIndex{counts: map[string]int{}, defs: map[string]int{}}
 	vault := 0
 	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -350,31 +378,59 @@ func repoText(root string) (*textIndex, int) {
 		if strings.Contains(s, "$ANSIBLE_VAULT") {
 			vault++
 		}
-		idx.lines = append(idx.lines, strings.Split(s, "\n")...)
+		for _, line := range strings.Split(s, "\n") {
+			idx.indexLine(line)
+		}
 		return nil
 	})
 	return idx, vault
 }
 
-// usedOutsideDefinition reports whether key appears on any line that is
-// not a plain "key:" / "key =" definition.
-func (idx *textIndex) usedOutsideDefinition(key string) bool {
-	for _, line := range idx.lines {
-		i := strings.Index(line, key)
-		if i < 0 {
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, key+":") || strings.HasPrefix(trimmed, key+" :") ||
-			strings.HasPrefix(trimmed, key+"=") || strings.HasPrefix(trimmed, key+" =") {
-			// definition line; but the key may ALSO be used in the value part
-			rest := trimmed[len(key):]
-			if strings.Contains(rest, key) {
-				return true
+// indexLine tokenizes one line into identifiers and records whether the
+// leading token is a definition ("key:" / "key =").
+func (idx *textIndex) indexLine(line string) {
+	first := true
+	i := 0
+	for i < len(line) {
+		c := line[i]
+		if isWordStart(c) {
+			j := i + 1
+			for j < len(line) && isWordChar(line[j]) {
+				j++
 			}
+			tok := line[i:j]
+			idx.counts[tok]++
+			if first {
+				// definition shape: optional spaces then ':' or '='
+				k := j
+				for k < len(line) && line[k] == ' ' {
+					k++
+				}
+				if k < len(line) && (line[k] == ':' || line[k] == '=') {
+					idx.defs[tok]++
+				}
+			}
+			first = false
+			i = j
 			continue
 		}
-		return true
+		if c != ' ' && c != '\t' && c != '-' {
+			first = false
+		}
+		i++
 	}
-	return false
+}
+
+func isWordStart(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_'
+}
+
+func isWordChar(c byte) bool {
+	return isWordStart(c) || c >= '0' && c <= '9'
+}
+
+// usedOutsideDefinition reports whether key appears anywhere beyond its
+// own "key:" definition lines.
+func (idx *textIndex) usedOutsideDefinition(key string) bool {
+	return idx.counts[key] > idx.defs[key]
 }
