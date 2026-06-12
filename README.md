@@ -3,178 +3,197 @@
 **The Ansible control plane that doesn't need a control plane.**
 
 Pine is a modern, single-binary alternative to AWX / Ansible Tower. No
-Kubernetes operator, no PostgreSQL, no RabbitMQ — just one Go binary, plain
-JSON storage, a polished web UI, a full terminal UI and a REST API.
+Kubernetes operator, no PostgreSQL, no RabbitMQ — one Go binary, plain JSON
+storage, a polished web UI, a full terminal UI, a CLI and a REST API.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
-| Inventory topology | Playbook task-flow |
+| Plan mode | Inventory topology |
 |---|---|
-| ![Topology](docs/screenshots/topology.png) | ![Task flow](docs/screenshots/taskflow.png) |
+| ![Plan](docs/screenshots/plan.png) | ![Topology](docs/screenshots/topology.png) |
 
-| Live job output | Roles |
+| Playbook task-flow | Live job output |
 |---|---|
-| ![Job](docs/screenshots/job.png) | ![Roles](docs/screenshots/roles.png) |
+| ![Task flow](docs/screenshots/taskflow.png) | ![Job](docs/screenshots/job.png) |
+
+| Drift heatmap | Blast radius |
+|---|---|
+| ![Drift](docs/screenshots/drift.png) | ![Impact](docs/screenshots/impact.png) |
+
+## Why Pine?
+
+| | AWX / Tower | Pine |
+|---|---|---|
+| Deployment | Kubernetes operator + PostgreSQL + Redis | `docker compose up -d` or one binary |
+| Storage | PostgreSQL | plain JSON files |
+| Understands your repo | lists playbook files | parses playbooks, roles, inventories, vars, handlers |
+| Dry run | `--check` (executes against every host) | **static plan in milliseconds** + `--check` exact mode |
+| Interfaces | web | web + TUI + CLI + API |
 
 ## Features
 
+### Scan & visualize
 - **Multi-repo** — connect any number of Ansible repositories (git URL or
-  local path), with one-click re-sync
-- **Auto-scan** — playbooks, plays, tasks, roles (defaults, handlers, meta,
-  dependencies), inventories in INI *and* YAML, `group_vars` / `host_vars`.
-  Playbooks are discovered **recursively anywhere in the repo** (`.yml` and
-  `.yaml`), so nested layouts like `playbooks/<env>/<app>/deploy.yml` just
-  work; role/inventory internals are skipped automatically. If discovery
-  finds nothing (or too much), set per-repo **scan paths** (dirs, files or
-  globs) — the UI prompts you when a synced repo has zero playbooks
-- **Constructed inventories** — directories holding split sources
-  (`inventory/00-hosts.yml` + `99-constructed.yml`) are merged like
-  `-i inventory/`, and the `ansible.builtin.constructed` plugin is emulated:
-  `groups:` Jinja conditions over host vars (`'docker' in (services |
-  default([]))`, `and`/`or`/`not`, `==`, `is defined`, …) and `keyed_groups`
-  are evaluated, so generated groups show up in the UI, topology and TUI
-  with a *constructed* badge — no need to maintain the service axis by hand
-- **Topology graph** — interactive force-directed visualization of your
-  inventories (groups, children, hosts)
-- **Task-flow visualization** — plays → roles → tasks with tags, conditions,
-  loops, blocks/rescue and notify → handler links
-- **Plan mode** — a `terraform plan` for Ansible: predict per task × host
-  what would run, skip or stay **unknown** before applying anything.
-  Three-valued evaluation over the scanned repo: when a verdict depends on
-  variables Pine doesn't have, it tells you *which ones* and lets you supply
-  values (or pick a built-in **fact profile**: ubuntu-24.04, debian-12,
-  rhel-9, …) and re-plan live. Loop sizes, serial batches, notified
-  handlers, `--check`/`--limit`/`--tags` all accounted for. Available in
-  the web UI ("Plan" next to every "Run"), the TUI (`p`) and the CLI
-  (`pine plan PATH PLAYBOOK -e key=value --profile ubuntu-24.04`).
-  Topology gets a **what-if** panel: preview how variables reshape
-  constructed groups. See [docs/design/plan-mode.md](docs/design/plan-mode.md)
-- **Insights** — *variable lineage* ("where does this value come from?":
-  the full precedence chain per host × variable), a *hygiene report*
-  (unused roles, never-notified handlers, unused vars, untargeted hosts,
-  plaintext-secret findings, vault usage, tidiness score), *run diff*
-  (per task × host status transitions between two runs) and *blast
-  radius* (`pine impact`: git diff → roles → playbooks → hosts →
-  handlers, with a ripple visualization and a CI-friendly exit code)
-- **Ops** — *drift detection* (heatmap playbooks × hosts from `--check`
-  runs), *plan-gated schedules* (recurring runs that refuse to fire when
-  the plan fingerprint changed since approval), *light pipelines*
-  (chained playbooks, canary steps, manual approval gates) and *fact
-  harvesting* (`ansible -m setup --tree`, simulated fallback) feeding
-  plans with real per-host facts; plus a topology *time-lapse* replaying
-  your inventory's git history
-- **Job engine** — run playbooks with `--check`, `--limit`, `--tags`; live
-  output streaming over SSE; per-host recap summaries; full history.
-  When `ansible-playbook` isn't installed, Pine switches to a realistic
-  **simulation mode** (great for demos and dry environments)
-- **Web UI + TUI + REST API** — same engine, three interfaces
+  local path), one-click re-sync.
+- **Deep auto-scan** — playbooks, plays, tasks, roles (defaults, handlers,
+  meta dependencies), inventories in INI *and* YAML, `group_vars`/`host_vars`.
+  Playbooks and roles are discovered **recursively anywhere in the repo**
+  (nested `playbooks/<env>/<app>/` and per-project `roles/` layouts just
+  work); per-repo **scan paths** override discovery when needed — the UI
+  prompts you when a synced repo has zero playbooks.
+- **Constructed inventories** — split sources (`inventory/00-hosts.yml` +
+  `99-constructed.yml`) are merged like `-i inventory/`, and the
+  `ansible.builtin.constructed` plugin is emulated (`groups:` Jinja
+  conditions + `keyed_groups`), so generated groups appear everywhere with
+  a *constructed* badge. No more hand-maintained service groups.
+- **Topology graph** — interactive force-directed view of every inventory,
+  with a **what-if panel** (preview how variables reshape constructed
+  groups) and a **time-lapse** player that replays your inventory's git
+  history commit by commit.
+- **Task-flow visualization** — plays → roles → tasks with tags,
+  conditions, loops, blocks/rescue and notify → handler arrows.
+
+### Plan before you apply
+A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
+
+- **Three-valued static engine** — per task × host: `run`, `skip` (with the
+  false condition), or **`unknown` with the exact missing variables**.
+  Supply values inline and re-plan live, or pick a built-in **fact
+  profile** (ubuntu-24.04, debian-12, rhel-9, …).
+- **Fact harvesting** — `[gather facts]` jobs (`ansible -m setup --tree`,
+  simulated fallback) store real per-host facts that feed every plan.
+- **Exact mode** — with ansible installed, `mode: "exact"` runs
+  `ansible-playbook --check` through the JSON callback into the same UI.
+- Loop sizes, `serial` batches, predicted handlers, `--limit`/`--tags`/
+  `--check`, and **estimated duration** from past run timings.
+- Everywhere: web ("Plan" next to every "Run"), TUI (`p`), CLI
+  (`pine plan PATH PLAYBOOK -e key=value --profile ubuntu-24.04`,
+  exit code 3 when the plan has unknowns — CI-friendly).
+
+### Run
+- **Job engine** — live SSE output streaming, per-host recap summaries,
+  per-task durations, full history, cancel. Without `ansible-playbook`
+  installed, Pine switches to a realistic **simulation mode** (demos,
+  dry environments).
+- **Run diff** — compare two runs of a playbook: per task × host
+  transitions (`ok → changed`, `ok → failed`), new/removed tasks.
+
+### Operate
+- **Drift detection** — heatmap playbooks × hosts built from the latest
+  `--check` run of each playbook: *changed under check = reality diverged*.
+- **Plan-gated schedules** — recurring runs that **refuse to fire when the
+  plan fingerprint changed** since the last human approval. Review, approve,
+  resume.
+- **Light pipelines** — chained playbooks with stop-on-failure, canary
+  steps via `--limit`, and manual **approval gates**.
+
+### Insights
+- **Variable lineage** — "where does this value come from?": the full
+  precedence chain per host × variable (role default → group → host),
+  overridden layers struck through.
+- **Hygiene report** — unused roles, never-notified handlers (listen- and
+  templated-notify-aware), dead variables, untargeted hosts, **plaintext
+  secret detection**, vault usage, tidiness score.
+- **Blast radius** — map a git diff to impacted roles (transitive
+  dependents) → playbooks → hosts → handlers, as a ripple visualization
+  and as `pine impact` (exit code 3 when hosts are affected — gate your CI).
 
 ## Quickstart
 
-### Docker (recommended)
-
 ```bash
-docker compose up -d
-# open http://localhost:8743 — the Acme Corp demo repo is pre-loaded
-```
+# Docker (recommended) - demo repo pre-loaded
+docker compose up -d         # → http://localhost:8743
 
-### From source
-
-```bash
+# From source
 go build -o pine ./cmd/pine
-
-./pine serve --demo          # web UI + API on :8743, with the demo repo
+./pine serve --demo          # web UI + API + scheduler on :8743
 ./pine tui --demo            # terminal UI
-./pine scan examples/demo-infra   # one-shot scan, JSON to stdout
+
+# CLI, no server needed
+./pine scan   examples/demo-infra
+./pine plan   examples/demo-infra rolling-update.yml -i inventories/production
+./pine impact examples/demo-infra --base HEAD~1 --head HEAD
 ```
 
-## Connecting repositories
+Connect repositories in the web UI (**Repositories → Add repository**) by
+git URL — Pine clones and keeps a managed working copy — or by local path
+(mount it into the container when using Docker). Every sync re-scans.
 
-In the web UI: **Repositories → Add repository**, then either:
+## Battle-tested on real repositories
 
-- a **git URL** (`https://github.com/you/ansible-infra.git`, optional branch) —
-  Pine clones and keeps a managed working copy under its data dir;
-- a **local path** — Pine scans the directory in place (mount it into the
-  container if you run Docker).
+Pine's scanner and engines are validated against three of the most popular
+public Ansible repositories:
 
-Every sync re-scans the repo: playbooks, roles and inventories appear
-immediately in the UI, the TUI and the API.
+| Repository | Scanned | Plan engine |
+|---|---|---|
+| [ansible-nas](https://github.com/davestephens/ansible-nas) (3.7k ⭐) | 107 roles, 2 inventories | 420 tasks planned in 37 ms — 134 run / 275 skip / 11 unknown (register vars) |
+| [ansible-for-devops](https://github.com/geerlingguy/ansible-for-devops) (9.7k ⭐) | 63 playbooks across nested chapter layouts | — |
+| [debops](https://github.com/debops/debops) (1.4k ⭐) | **240 playbooks, 203 roles** | 422-task playbook planned in 24 ms; hygiene report in 121 ms |
 
 ## REST API
 
 | Method & path | Purpose |
 |---|---|
 | `GET /api/stats` | dashboard counters + recent jobs |
-| `GET/POST /api/repos` | list / connect repositories |
-| `PATCH /api/repos/{id}` | update name / branch / `scan_paths`, then re-scan |
+| `GET/POST /api/repos`, `PATCH/DELETE /api/repos/{id}` | manage repositories (`scan_paths` included) |
 | `POST /api/repos/{id}/sync` | pull + re-scan |
-| `GET /api/repos/{id}/scan` | full scan result (playbooks, roles, inventories) |
-| `GET /api/repos/{id}/topology?inventory=…` | inventory graph (nodes + links) |
-| `POST /api/plans` | compute an estimated plan (vars, host_vars, fact_profile) |
+| `GET /api/repos/{id}/scan` | full scan result |
+| `GET /api/repos/{id}/topology?inventory=…` | inventory graph |
+| `POST /api/plans` | compute a plan (vars, host_vars, fact_profile, mode) |
 | `GET /api/fact-profiles` | built-in fact presets |
 | `POST /api/repos/{id}/inventory-preview` | what-if constructed groups |
 | `GET /api/repos/{id}/lineage?inventory=…&host=…` | variable precedence chains |
 | `GET /api/repos/{id}/hygiene` | dead-code + secrets report |
 | `GET /api/repos/{id}/impact?base=…&head=…` | blast radius of a git diff |
-| `GET /api/jobs/{id}/diff?with=…` | compare two runs |
 | `GET/POST /api/repos/{id}/facts[/refresh]` | harvested facts |
 | `GET/POST /api/repos/{id}/drift[/check]` | drift heatmap / launch checks |
 | `GET /api/repos/{id}/timelapse?inventory=…` | topology history frames |
 | `/api/schedules…` | plan-gated recurring runs (CRUD, approve, run-now) |
-| `/api/pipelines…`, `/api/pipeline-runs…` | chained playbooks with approval gates |
-| `GET/POST /api/jobs` | job history / launch a playbook |
-| `GET /api/jobs/{id}/events` | live SSE stream (`line` + `status` events) |
-| `GET /api/jobs/{id}/log` | raw log |
-| `POST /api/jobs/{id}/cancel` | stop a running job |
+| `/api/pipelines…`, `/api/pipeline-runs…` | chained playbooks, approval gates |
+| `GET/POST /api/jobs`, `GET /api/jobs/{id}/events` (SSE), `…/log`, `…/diff?with=…`, `POST …/cancel` | jobs |
 
-Launch a job:
+Errors are JSON `{"error": "…"}`. Launch a job:
 
 ```bash
 curl -X POST localhost:8743/api/jobs -d '{
   "repo_id": "r_xxxx",
   "playbook": "rolling-update.yml",
   "inventory": "inventories/production",
-  "limit": "web",
-  "tags": "deploy",
-  "check": false
+  "limit": "web", "tags": "deploy", "check": false
 }'
 ```
 
 ## The Acme Corp demo (`examples/demo-infra`)
 
-A deliberately rich Ansible setup used by the demo and the presentation
-website: 2 inventories (INI production with 11 hosts / 12 groups, YAML
-staging), 12 roles and 11 playbooks covering user management, packages per
-OS family, files & templates, systemd services and timers, Docker + Compose
-v2 stacks, PostgreSQL, HAProxy/Nginx, monitoring (Prometheus/Grafana),
+A deliberately rich setup used by `--demo` and the presentation website:
+3 inventories (INI production — 11 hosts / 12 groups, YAML staging, and a
+constructed-plugin homelab), 12 roles and 11 playbooks covering user
+management, per-OS packages, files & templates, systemd services and
+timers, Docker + Compose v2 stacks, PostgreSQL, HAProxy/Nginx, monitoring,
 hardening, backups and `serial: 1` rolling updates with LB draining.
 
-```bash
-./pine serve --demo
-```
-
-## Presentation website
-
-A static, dependency-free product site lives in [`website/`](website/):
-
-```bash
-make website   # serves it on :8080
-```
+A static, dependency-free product site lives in [`website/`](website/)
+(`make website` serves it on :8080).
 
 ## Project layout
 
 ```
-cmd/pine/          CLI entrypoint (serve | tui | scan | plan | impact)
-internal/scanner/  Ansible repo parser (playbooks, roles, INI/YAML inventories)
-internal/store/    JSON persistence (repos, jobs, logs)
-internal/runner/   git sync, scan cache, job execution + simulation
-internal/plan/     estimated plan engine (tri-state eval, fact profiles)
-internal/server/   REST API, SSE streams, embedded web UI
-internal/tui/      bubbletea terminal UI
-web/               embedded single-page web UI
-website/           static presentation site
-examples/demo-infra/  the Acme Corp demo Ansible repository
+cmd/pine/             CLI entrypoint (serve | tui | scan | plan | impact)
+internal/scanner/     Ansible parser: playbooks, roles, inventories,
+                      constructed plugin, tri-state Jinja evaluator
+internal/plan/        plan engine, lineage, hygiene, impact, time-lapse,
+                      exact mode, fact profiles
+internal/runner/      git sync, job execution + simulation, facts, drift,
+                      scheduler, pipelines, run diff
+internal/server/      REST API, SSE streams, embedded web UI
+internal/store/       JSON persistence (repos, jobs, facts, schedules…)
+internal/tui/         bubbletea terminal UI
+web/                  embedded single-page web UI
+website/              static presentation site
+examples/demo-infra/  the Acme Corp demo repository
 ```
+
+See [ROADMAP.md](ROADMAP.md) for what's done and what's next.
 
 ## License
 
