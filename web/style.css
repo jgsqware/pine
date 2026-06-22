@@ -729,6 +729,13 @@ table.data .mono { color: var(--muted); }
 .tree-row svg { width: 13px; height: 13px; color: var(--muted); flex: 0 0 auto; }
 .tree-row.selected svg { color: var(--accent); }
 .tree-row .cnt { margin-left: auto; font-size: 10.5px; color: var(--muted); background: rgba(255, 255, 255, 0.05); padding: 0 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+.tree-row.tree-root { font-weight: 600; }
+.tree-row.tree-root svg { color: var(--accent); }
+/* sub-label separating constructed facets from declared groups under `all` */
+.tree-sep { list-style: none; padding: 9px 9px 3px; font-size: 9.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+/* derivation hint shown for a constructed group in the detail pane */
+.inv-derived { margin: 2px 0 4px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.inv-derived code { font-family: var(--mono); font-size: 12px; color: var(--secondary); background: var(--secondary-dim); border: 1px solid rgba(34, 211, 238, 0.25); border-radius: 6px; padding: 2px 7px; }
 
 .host-row {
   display: flex;
