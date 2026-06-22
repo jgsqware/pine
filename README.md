@@ -100,13 +100,38 @@ A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
 
 ## Quickstart
 
+### Local (a binary + your repo)
+
+Install the binary, then point it at any Ansible repo:
+
+```bash
+go install github.com/jgsqware/pine/cmd/pine@latest   # or: make install
+
+cd ~/my-ansible-repo
+pine .                       # scans ., serves the web UI, opens your browser
+```
+
+`pine .` runs everything locally — no Docker, no demo data, just Pine and the
+repo you point it at. It keeps its state in `<repo>/.pine`. Useful flags:
+
+```bash
+pine . --tui                 # scan, then open the terminal UI instead of the web server
+pine . --addr :9000          # serve on a different port
+pine . --no-open             # don't auto-open the browser
+pine /path/to/another-repo   # any directory works, not just .
+```
+
+### Docker
+
 ```bash
 # Docker (recommended) - demo repo pre-loaded
 docker compose up -d         # → http://localhost:8743
 
 # From source
 go build -o pine ./cmd/pine
-./pine serve --demo          # web UI + API + scheduler on :8743
+
+./pine .                     # local mode against the current directory
+./pine serve --demo          # web UI + API + scheduler on :8743, with the demo repo
 ./pine tui --demo            # terminal UI
 
 # CLI, no server needed

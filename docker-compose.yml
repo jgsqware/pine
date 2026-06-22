@@ -11,6 +11,7 @@ services:
       PINE_DEMO_PATH: /usr/share/pine/demo-infra
     volumes:
       - pine-data:/data
+      - /home/jgsqware/go/src/gitlab.gaming1.net/landbased-gaming/devops/dockers:/dockers:ro
       # mount your local Ansible repos to connect them by path:
       # - ./my-ansible-repo:/repos/my-ansible-repo:ro
     restart: unless-stopped

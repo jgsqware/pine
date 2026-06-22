@@ -7,9 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/jgsqware/pine/internal/model"
@@ -27,6 +30,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `Pine %s - the Ansible control plane that doesn't need a control plane
 
 Usage:
+  pine PATH  [--addr :8743] [--no-open] [--tui]     Run Pine locally on one repo
   pine serve [--addr :8743] [--data DIR] [--demo]   Start the web UI + API server
   pine tui   [--data DIR] [--demo]                  Start the terminal UI
   pine scan  PATH                                   Scan an Ansible repo and print JSON
@@ -41,8 +45,12 @@ Plan flags:
   -e key=value   extra var (repeatable; value parsed as JSON when possible)
   --json         print the raw plan JSON
 
+Examples:
+  pine .                 Serve the current directory and open it in your browser
+  pine . --tui           Scan the current directory and open the terminal UI
+
 Environment:
-  PINE_DATA   data directory (default ~/.pine)
+  PINE_DATA   data directory (default ~/.pine, or <PATH>/.pine in local mode)
   PINE_DEMO   set to 1 to auto-register the bundled demo repository
 `, version)
 }
@@ -76,10 +84,23 @@ func main() {
 		cmdImpact(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("pine", version)
+	case "help", "--help", "-h":
+		usage()
 	default:
+		// `pine PATH` (e.g. `pine .`): if the first argument is a directory,
+		// run Pine locally against that single repository.
+		if isDir(os.Args[1]) {
+			cmdLocal(os.Args[1], os.Args[2:])
+			return
+		}
 		usage()
 		os.Exit(2)
 	}
+}
+
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
 }
 
 func openManager(dataDir string, demo bool) *runner.Manager {
@@ -128,6 +149,112 @@ func registerDemo(mgr *runner.Manager) {
 		}
 	}
 	log.Printf("demo requested but examples/demo-infra not found")
+}
+
+// cmdLocal runs Pine against a single local repository: it registers the
+// directory as a repo, then either serves the web UI + API (default) or
+// launches the terminal UI (--tui).
+// Data lives in <path>/.pine by default so each repo is self-contained.
+func cmdLocal(path string, args []string) {
+	fs := flag.NewFlagSet("local", flag.ExitOnError)
+	addr := fs.String("addr", ":8743", "listen address")
+	dataDefault := os.Getenv("PINE_DATA")
+	data := fs.String("data", dataDefault, "data directory (default <PATH>/.pine)")
+	noOpen := fs.Bool("no-open", false, "do not open the browser")
+	useTUI := fs.Bool("tui", false, "launch the terminal UI instead of the web server")
+	_ = fs.Parse(args)
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalf("resolve path: %v", err)
+	}
+	dataDir := *data
+	if dataDir == "" {
+		dataDir = filepath.Join(abs, ".pine")
+	}
+
+	st, err := store.Open(dataDir)
+	if err != nil {
+		log.Fatalf("open data dir: %v", err)
+	}
+	mgr := runner.New(st)
+	registerLocalRepo(mgr, abs)
+
+	if *useTUI {
+		if err := tui.Run(mgr); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatalf("listen on %s: %v", *addr, err)
+	}
+	url := localURL(ln.Addr())
+	log.Printf("Pine %s serving %s on %s (data: %s)", version, abs, url, dataDir)
+	if !*noOpen {
+		openBrowser(url)
+	}
+	if err := http.Serve(ln, server.New(mgr)); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// registerLocalRepo adds the directory as a repo (deduped by path) and scans it.
+func registerLocalRepo(mgr *runner.Manager, abs string) {
+	for _, r := range mgr.Store.ListRepos() {
+		if r.Path == abs {
+			_, _ = mgr.SyncRepo(r.ID)
+			return
+		}
+	}
+	repo := model.Repo{
+		ID:     store.NewID("r"),
+		Name:   filepath.Base(abs),
+		Path:   abs,
+		Status: model.RepoNew,
+	}
+	if err := mgr.Store.AddRepo(repo); err != nil {
+		log.Fatalf("register repo: %v", err)
+	}
+	if _, err := mgr.SyncRepo(repo.ID); err != nil {
+		log.Printf("scan %s: %v", abs, err)
+	}
+}
+
+// localURL turns a listener address into a browsable http://localhost URL.
+func localURL(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "http://" + addr.String()
+	}
+	if host == "" || host == "::" || host == "0.0.0.0" {
+		host = "localhost"
+	}
+	return fmt.Sprintf("http://%s:%s", host, port)
+}
+
+// openBrowser best-effort opens url in the user's default browser.
+func openBrowser(url string) {
+	var cmd string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+	case "windows":
+		cmd, args = "cmd", []string{"/c", "start"}
+	default: // linux, *bsd, wsl
+		if _, err := exec.LookPath("wslview"); err == nil {
+			cmd = "wslview"
+		} else {
+			cmd = "xdg-open"
+		}
+	}
+	if _, err := exec.LookPath(cmd); err != nil {
+		return
+	}
+	_ = exec.Command(cmd, append(args, url)...).Start()
 }
 
 func cmdServe(args []string) {
