@@ -32,7 +32,7 @@ func usage() {
 Usage:
   pine PATH  [--addr :8743] [--no-open] [--tui]     Run Pine locally on one repo
   pine serve [--addr :8743] [--data DIR] [--demo]   Start the web UI + API server
-  pine tui   [--data DIR] [--demo]                  Start the terminal UI
+  pine tui   [PATH] [--data DIR] [--demo]           Start the terminal UI (PATH opens that repo)
   pine scan  PATH                                   Scan an Ansible repo and print JSON
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
   pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
@@ -181,7 +181,7 @@ func cmdLocal(path string, args []string) {
 	registerLocalRepo(mgr, abs)
 
 	if *useTUI {
-		if err := tui.Run(mgr); err != nil {
+		if err := tui.Run(mgr, ""); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -280,9 +280,56 @@ func cmdTUI(args []string) {
 	_ = fs.Parse(args)
 
 	mgr := openManager(*data, *demo)
-	if err := tui.Run(mgr); err != nil {
+	tui.Version = version
+
+	// An optional PATH argument opens that directory as a repo and focuses it.
+	focus := ""
+	if path := fs.Arg(0); path != "" {
+		id, err := registerPath(mgr, path)
+		if err != nil {
+			log.Fatalf("open %s: %v", path, err)
+		}
+		focus = id
+	}
+
+	if err := tui.Run(mgr, focus); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// registerPath connects a local directory as a repo (reusing an existing
+// entry with the same path) and kicks off a sync, returning the repo ID.
+func registerPath(mgr *runner.Manager, path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("not a directory")
+	}
+	for _, r := range mgr.Store.ListRepos() {
+		if r.Path == abs {
+			_, _ = mgr.SyncRepo(r.ID)
+			return r.ID, nil
+		}
+	}
+	repo := model.Repo{
+		ID:     store.NewID("r"),
+		Name:   filepath.Base(abs),
+		Path:   abs,
+		Status: model.RepoNew,
+	}
+	if err := mgr.Store.AddRepo(repo); err != nil {
+		return "", err
+	}
+	if _, err := mgr.SyncRepo(repo.ID); err != nil {
+		return "", err
+	}
+	return repo.ID, nil
 }
 
 func cmdScan(args []string) {

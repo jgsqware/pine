@@ -39,3 +39,14 @@ else echo "no browser opener found - visit $url manually"; fi
 description = "Build & start the stack, then open the web UI"
 depends = ["up"]
 run = "mise run open"
+
+[tasks.install]
+description = "go install the pine binary with the version stamped from git"
+run = '''
+version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+bindir="$(go env GOBIN)"
+[ -n "$bindir" ] || bindir="$(go env GOPATH)/bin"
+echo "installing pine $version -> $bindir"
+go install -ldflags "-X main.version=$version" ./cmd/pine
+echo "done: run 'pine version' (ensure $bindir is on PATH)"
+'''
