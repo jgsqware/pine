@@ -35,6 +35,7 @@ Usage:
   pine serve [--addr :8743] [--data DIR] [--demo]   Start the web UI + API server
   pine tui   [PATH] [--data DIR] [--demo]           Start the terminal UI (PATH opens that repo)
   pine attach [--addr :8743]                        Attach the terminal UI to a running daemon
+  pine service install|status|uninstall             Run Pine as a systemd (user) service
   pine scan  PATH                                   Scan an Ansible repo and print JSON
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
   pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
@@ -81,6 +82,8 @@ func main() {
 		cmdTUI(os.Args[2:])
 	case "attach":
 		cmdAttach(os.Args[2:])
+	case "service":
+		cmdService(os.Args[2:])
 	case "scan":
 		cmdScan(os.Args[2:])
 	case "plan":

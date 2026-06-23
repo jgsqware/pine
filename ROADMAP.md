@@ -62,3 +62,7 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ `pine attach` — terminal UI over the daemon's HTTP API, so a
       systemd/Docker instance can be driven from a shell without opening a
       second engine on the single-writer store (`pine tui` warns on conflict)
+- [x] ✅ `pine service install|status|uninstall` — manage a systemd user unit
+      for the daemon (auto-restart, optional linger) straight from the CLI
+- [x] ✅ TUI auto-refresh — re-syncs connected repos on load and periodically,
+      announcing what changed in the status bar

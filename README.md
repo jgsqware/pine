@@ -134,6 +134,7 @@ go build -o pine ./cmd/pine
 ./pine serve --demo          # web UI + API + scheduler on :8743, with the demo repo
 ./pine tui --demo            # terminal UI (opens its own engine on the data dir)
 ./pine attach                # terminal UI attached to a running daemon over HTTP
+./pine service install       # run `pine serve` as a systemd (user) service
 
 # CLI, no server needed
 ./pine scan   examples/demo-infra
@@ -145,12 +146,25 @@ Connect repositories in the web UI (**Repositories → Add repository**) by
 git URL — Pine clones and keeps a managed working copy — or by local path
 (mount it into the container when using Docker). Every sync re-scans.
 
-> **Running Pine as a service?** When a daemon (`pine serve`, Docker, or a
-> systemd unit) already owns the data directory, use **`pine attach`** to open
-> the terminal UI against it over the HTTP API — `pine attach --addr :8743`, or
-> set `PINE_ADDR`. Pine's store is single-writer, so `pine tui` would open a
-> *second* engine on the same files; `pine tui` now warns when it detects a
-> running daemon and points you to `attach`.
+### Run Pine as a service
+
+`pine service install` writes a systemd **user** unit (`~/.config/systemd/user/pine.service`)
+pointing at the current binary, then enables and starts it:
+
+```bash
+pine service install              # --addr :8743 --data ~/.pine --demo all optional
+pine service status               # systemctl --user status pine
+pine service uninstall            # stop & remove the unit
+```
+
+It runs under your account (so it has your git/SSH credentials) and restarts on
+failure. To keep it running at boot before you log in, enable linger once:
+`sudo loginctl enable-linger $USER`.
+
+> **Once it's running**, drive it from a terminal with **`pine attach`**
+> (`--addr` / `PINE_ADDR` to point elsewhere). Pine's store is single-writer, so
+> `pine tui` would open a *second* engine on the same files — it now warns when
+> it detects a running daemon and points you to `attach`.
 
 ## Battle-tested on real repositories
 
