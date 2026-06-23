@@ -132,7 +132,8 @@ go build -o pine ./cmd/pine
 
 ./pine .                     # local mode against the current directory
 ./pine serve --demo          # web UI + API + scheduler on :8743, with the demo repo
-./pine tui --demo            # terminal UI
+./pine tui --demo            # terminal UI (opens its own engine on the data dir)
+./pine attach                # terminal UI attached to a running daemon over HTTP
 
 # CLI, no server needed
 ./pine scan   examples/demo-infra
@@ -143,6 +144,13 @@ go build -o pine ./cmd/pine
 Connect repositories in the web UI (**Repositories → Add repository**) by
 git URL — Pine clones and keeps a managed working copy — or by local path
 (mount it into the container when using Docker). Every sync re-scans.
+
+> **Running Pine as a service?** When a daemon (`pine serve`, Docker, or a
+> systemd unit) already owns the data directory, use **`pine attach`** to open
+> the terminal UI against it over the HTTP API — `pine attach --addr :8743`, or
+> set `PINE_ADDR`. Pine's store is single-writer, so `pine tui` would open a
+> *second* engine on the same files; `pine tui` now warns when it detects a
+> running daemon and points you to `attach`.
 
 ## Battle-tested on real repositories
 

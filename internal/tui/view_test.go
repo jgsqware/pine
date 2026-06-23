@@ -32,7 +32,7 @@ func demoApp(t *testing.T) *app {
 	if _, err := mgr.SyncRepo(repo.ID); err != nil {
 		t.Fatal(err)
 	}
-	a := newApp(mgr)
+	a := newApp(NewLocalEngine(mgr))
 	a.reload()
 	return a
 }

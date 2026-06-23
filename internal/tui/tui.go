@@ -50,10 +50,16 @@ func readGitSHA() string {
 	return rev + dirty
 }
 
-// Run starts the TUI on top of an opened manager. focusRepoID, when set,
-// selects that repo once repos load (e.g. a path passed on the command line).
+// Run starts the TUI on top of an in-process manager (pine tui). focusRepoID,
+// when set, selects that repo once repos load (e.g. a path passed on the CLI).
 func Run(mgr *runner.Manager, focusRepoID string) error {
-	m := newApp(mgr)
+	return RunEngine(NewLocalEngine(mgr), focusRepoID)
+}
+
+// RunEngine starts the TUI on top of any Engine — an in-process manager or an
+// HTTP client attached to a running daemon (pine attach).
+func RunEngine(eng Engine, focusRepoID string) error {
+	m := newApp(eng)
 	m.wantRepoID = focusRepoID
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
@@ -102,7 +108,7 @@ var (
 )
 
 type app struct {
-	mgr    *runner.Manager
+	eng    Engine
 	width  int
 	height int
 
@@ -140,10 +146,15 @@ type app struct {
 	logJob   string
 	logLines []string
 	logCh    chan string
+
+	// auto-refresh: re-sync connected repos on load and periodically so
+	// external edits surface without a manual sync, and announce completions.
+	lastSynced map[string]string // repoID -> last seen LastSynced (change detector)
+	syncTicks  int               // ticks since the last periodic auto-sync
 }
 
-func newApp(mgr *runner.Manager) *app {
-	return &app{mgr: mgr, cursor: map[int]int{}, mode: "list", collapsed: map[string]bool{}}
+func newApp(eng Engine) *app {
+	return &app{eng: eng, cursor: map[int]int{}, mode: "list", collapsed: map[string]bool{}}
 }
 
 type tickMsg time.Time
@@ -169,12 +180,14 @@ func waitLine(ch chan string) tea.Cmd {
 
 func (a *app) Init() tea.Cmd {
 	a.reload()
+	a.triggerSync(true) // auto-refresh on load so we show the latest, and say so
 	return tick()
 }
 
 func (a *app) reload() {
-	a.repos = a.mgr.Store.ListRepos()
-	a.jobs = a.mgr.Store.ListJobs()
+	prev := a.lastSynced
+	a.repos = a.eng.ListRepos()
+	a.jobs = a.eng.ListJobs()
 	if a.wantRepoID != "" {
 		for i, r := range a.repos {
 			if r.ID == a.wantRepoID {
@@ -187,12 +200,61 @@ func (a *app) reload() {
 	if a.repoIX >= len(a.repos) {
 		a.repoIX = 0
 	}
+
+	// Detect repos whose sync finished since the last reload (LastSynced moved
+	// and they're back to ready) so we can announce the refresh. On the first
+	// reload prev is nil, so we only record a baseline — no spurious notice.
+	next := make(map[string]string, len(a.repos))
+	var refreshed []model.Repo
+	for _, r := range a.repos {
+		next[r.ID] = r.LastSynced
+		if old, seen := prev[r.ID]; seen && r.Status == model.RepoReady && r.LastSynced != "" && r.LastSynced != old {
+			refreshed = append(refreshed, r)
+		}
+	}
+	a.lastSynced = next
+
 	a.scan = nil
 	if len(a.repos) > 0 {
-		if res, err := a.mgr.Scan(a.repos[a.repoIX].ID); err == nil {
+		if res, err := a.eng.Scan(a.repos[a.repoIX].ID); err == nil {
 			a.scan = res
 		}
 	}
+	a.clampCursor()
+	if len(refreshed) > 0 {
+		a.notifyRefreshed(refreshed)
+	}
+}
+
+// triggerSync asks the engine to re-sync (and thus rescan) every connected
+// repo. When announce is set it shows a "refreshing…" notice; completions are
+// announced later by reload via notifyRefreshed.
+func (a *app) triggerSync(announce bool) {
+	started := 0
+	for _, r := range a.repos {
+		if _, err := a.eng.SyncRepo(r.ID); err == nil {
+			started++
+		}
+	}
+	if !announce || started == 0 {
+		return
+	}
+	if len(a.repos) == 1 {
+		a.status = "↻ refreshing " + a.repos[0].Name + "…"
+	} else {
+		a.status = fmt.Sprintf("↻ refreshing %d repos…", started)
+	}
+}
+
+// notifyRefreshed posts a status notice summarizing what a finished sync found.
+func (a *app) notifyRefreshed(repos []model.Repo) {
+	if len(repos) == 1 {
+		s := repos[0].Summary
+		a.status = fmt.Sprintf("✓ %s refreshed · %d playbooks · %d roles · %d hosts",
+			repos[0].Name, s.Playbooks, s.Roles, s.Hosts)
+		return
+	}
+	a.status = fmt.Sprintf("✓ %d repos refreshed", len(repos))
 }
 
 func (a *app) listLen() int {
@@ -233,6 +295,13 @@ func (a *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		if a.mode != "log" {
+			// Periodically re-sync (~every 60s) so external repo edits keep
+			// surfacing while the UI is open; reload announces what changed.
+			a.syncTicks++
+			if a.syncTicks >= 30 {
+				a.syncTicks = 0
+				a.triggerSync(false)
+			}
 			a.reload()
 		}
 		return a, tick()
@@ -374,7 +443,7 @@ func (a *app) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch a.tab {
 		case tabRepos:
 			if a.cursor[a.tab] < len(a.repos) {
-				_, _ = a.mgr.SyncRepo(a.repos[a.cursor[a.tab]].ID)
+				_, _ = a.eng.SyncRepo(a.repos[a.cursor[a.tab]].ID)
 				a.status = "sync started"
 			}
 		case tabInventory:
@@ -412,7 +481,7 @@ func (a *app) launchJob() (tea.Model, tea.Cmd) {
 	if a.scan != nil && len(a.scan.Inventories) > 0 {
 		inv = a.scan.Inventories[0].Path
 	}
-	job, err := a.mgr.StartJob(model.Job{
+	job, err := a.eng.StartJob(model.Job{
 		RepoID: repo.ID, Playbook: a.runTarget, Inventory: inv, Check: a.runCheck,
 	})
 	if err != nil {
@@ -428,13 +497,13 @@ func (a *app) followJob(id string) (tea.Model, tea.Cmd) {
 	a.logJob = id
 	a.logLines = nil
 	a.scroll = 1 << 30
-	ch, live := a.mgr.Subscribe(id)
+	ch, live := a.eng.Subscribe(id)
 	if live {
 		a.logCh = ch
 		return a, waitLine(ch)
 	}
 	// finished job: read the stored log
-	if data, err := readFile(a.mgr.Store.JobLogPath(id)); err == nil {
+	if data, err := a.eng.JobLog(id); err == nil {
 		a.logLines = strings.Split(strings.TrimRight(data, "\n"), "\n")
 	}
 	return a, nil
@@ -849,7 +918,7 @@ func (a *app) renderJobDetail(j model.Job) string {
 		sErr.Render(fmt.Sprintf("failed=%d", s.Failed)) + " " +
 		sDim.Render(fmt.Sprintf("skipped=%d unreachable=%d", s.Skipped, s.Unreachable)) + "\n\n")
 
-	if data, err := readFile(a.mgr.Store.JobLogPath(j.ID)); err == nil {
+	if data, err := a.eng.JobLog(j.ID); err == nil {
 		lines := strings.Split(strings.TrimRight(data, "\n"), "\n")
 		if n := len(lines); n > 18 {
 			lines = lines[n-18:]
@@ -1154,14 +1223,7 @@ func (a *app) showPlan(playbook string) {
 		return
 	}
 	repo := a.repos[a.repoIX]
-	res, err := a.mgr.Scan(repo.ID)
-	if err != nil {
-		a.status = "plan failed: " + err.Error()
-		return
-	}
-	out, err := plan.Compute(res, a.mgr.Store.RepoWorkdir(&repo), repo, plan.Request{
-		RepoID: repo.ID, Playbook: playbook,
-	})
+	out, err := a.eng.Plan(repo, playbook)
 	if err != nil {
 		a.status = "plan failed: " + err.Error()
 		return

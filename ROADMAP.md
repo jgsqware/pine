@@ -59,3 +59,6 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       and schedule fingerprints)
 - [x] ✅ Plan mode phase 4 — exact mode via `ansible-playbook --check`
       with the JSON callback, rendered in the plan UI as mode "exact"
+- [x] ✅ `pine attach` — terminal UI over the daemon's HTTP API, so a
+      systemd/Docker instance can be driven from a shell without opening a
+      second engine on the single-writer store (`pine tui` warns on conflict)

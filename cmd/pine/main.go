@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/jgsqware/pine/internal/client"
 	"github.com/jgsqware/pine/internal/model"
 	"github.com/jgsqware/pine/internal/plan"
 	"github.com/jgsqware/pine/internal/runner"
@@ -33,6 +34,7 @@ Usage:
   pine PATH  [--addr :8743] [--no-open] [--tui]     Run Pine locally on one repo
   pine serve [--addr :8743] [--data DIR] [--demo]   Start the web UI + API server
   pine tui   [PATH] [--data DIR] [--demo]           Start the terminal UI (PATH opens that repo)
+  pine attach [--addr :8743]                        Attach the terminal UI to a running daemon
   pine scan  PATH                                   Scan an Ansible repo and print JSON
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
   pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
@@ -52,6 +54,7 @@ Examples:
 Environment:
   PINE_DATA   data directory (default ~/.pine, or <PATH>/.pine in local mode)
   PINE_DEMO   set to 1 to auto-register the bundled demo repository
+  PINE_ADDR   daemon address for 'pine attach' / detection (default :8743)
 `, version)
 }
 
@@ -76,6 +79,8 @@ func main() {
 		cmdServe(os.Args[2:])
 	case "tui":
 		cmdTUI(os.Args[2:])
+	case "attach":
+		cmdAttach(os.Args[2:])
 	case "scan":
 		cmdScan(os.Args[2:])
 	case "plan":
@@ -279,6 +284,15 @@ func cmdTUI(args []string) {
 	demo := fs.Bool("demo", false, "register the bundled demo repository")
 	_ = fs.Parse(args)
 
+	// Warn if a daemon already owns this data dir: the file-backed store has no
+	// cross-process lock, so a second engine racing the same files can corrupt
+	// state. Attaching over HTTP is the safe way to share a running instance.
+	if client.New(baseURL(defaultAddr())).Ping() == nil {
+		fmt.Fprintf(os.Stderr, "warning: a Pine daemon is already running on %s.\n"+
+			"Use `pine attach` to drive it instead of opening a second engine on %s.\n\n",
+			defaultAddr(), *data)
+	}
+
 	mgr := openManager(*data, *demo)
 	tui.Version = version
 
@@ -295,6 +309,46 @@ func cmdTUI(args []string) {
 	if err := tui.Run(mgr, focus); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// cmdAttach connects the terminal UI to an already-running Pine daemon over
+// its HTTP API instead of opening a second engine on the shared data dir
+// (which the file-backed store does not lock across processes).
+func cmdAttach(args []string) {
+	fs := flag.NewFlagSet("attach", flag.ExitOnError)
+	addr := fs.String("addr", defaultAddr(), "address of the running daemon (host:port or :port)")
+	_ = fs.Parse(args)
+
+	base := baseURL(*addr)
+	c := client.New(base)
+	if err := c.Ping(); err != nil {
+		log.Fatalf("no Pine daemon at %s: %v\nStart one with `pine serve`, or run `pine tui` for a local session.", base, err)
+	}
+	tui.Version = version
+	if err := tui.RunEngine(c, ""); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// defaultAddr is the daemon address attach/detection use, overridable via
+// PINE_ADDR (falls back to the default serve port).
+func defaultAddr() string {
+	if a := os.Getenv("PINE_ADDR"); a != "" {
+		return a
+	}
+	return ":8743"
+}
+
+// baseURL turns a listen address (":8743" or "host:port", with or without a
+// scheme) into a browser-style base URL.
+func baseURL(addr string) string {
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return strings.TrimRight(addr, "/")
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "localhost" + addr
+	}
+	return "http://" + addr
 }
 
 // registerPath connects a local directory as a repo (reusing an existing

@@ -489,7 +489,7 @@
       <div class="example-head">
         <div>
           <h3><span class="example-num">04</span> The TUI</h3>
-          <p>SSH'd into a bastion with no browser in sight? <code>pine tui</code> is the whole product in your terminal.</p>
+          <p>SSH'd into a bastion with no browser in sight? <code>pine tui</code> is the whole product in your terminal. Already running Pine as a service? <code>pine attach</code> drives the live daemon over its API — no second engine on the data dir.</p>
         </div>
         <span class="example-tag">$ pine tui</span>
       </div>
@@ -932,8 +932,9 @@
 <span class="t-prompt">$</span> pine plan ~/ansible site.yml --profile ubuntu-24.04
 <span class="t-prompt">$</span> pine impact ~/ansible roles/nginx/templates/nginx.conf.j2
 
-<span class="t-comment"># or stay in the terminal</span>
-<span class="t-prompt">$</span> pine tui</code></pre>
+<span class="t-comment"># or stay in the terminal — attach to the running daemon over its API</span>
+<span class="t-prompt">$</span> pine tui
+<span class="t-prompt">$</span> pine attach           <span class="t-comment"># drives `pine serve` / systemd / Docker</span></code></pre>
           </div>
         </div>
       </div>
