@@ -83,3 +83,20 @@ func TestRepoFile(t *testing.T) {
 		}
 	})
 }
+
+func TestServicesEndpoint(t *testing.T) {
+	h, repoID := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/repos/"+repoID+"/services", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET services status = %d, want 200", rec.Code)
+	}
+	// The demo homelab declares services (teamcity-agent, docker, …); the report
+	// must auto-pick that inventory and list them even before any check.
+	body := rec.Body.String()
+	for _, want := range []string{`"inventory":"homelab"`, "teamcity-agent", "docker", `"services"`, `"cells"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("services report missing %q in:\n%s", want, body)
+		}
+	}
+}

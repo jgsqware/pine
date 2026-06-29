@@ -14,12 +14,12 @@ prod:
       hosts:
         prod-app:
           ansible_host: 192.168.10.21
-          services: [docker]
+          services: [docker, teamcity-agent]
     prod_vps:
       hosts:
         vps-ovh:
           ansible_host: 51.83.0.10
-          services: [docker]
+          services: [docker, teamcity-agent]
 
 dev:
   hosts:

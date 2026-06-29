@@ -753,7 +753,36 @@
     <div class="section-head reveal">
       <span class="kicker">Operate</span>
       <h2>Day-2 operations, without the 3 a.m. surprises.</h2>
-      <p>Drift detection tells you when reality wandered off. Plan-gated schedules refuse to fire blindly. Light pipelines roll changes out one careful step at a time.</p>
+      <p>Service status shows which daemons are actually up. Drift detection tells you when reality wandered off. Plan-gated schedules refuse to fire blindly. Light pipelines roll changes out one careful step at a time.</p>
+    </div>
+
+    <!-- Service status -->
+    <div class="example-block reveal">
+      <div class="example-head">
+        <div>
+          <h3>Service status</h3>
+          <p>Each host declares the services it runs (<code>services: [teamcity-agent, docker]</code>). Pine harvests their real state with ansible <code>service_facts</code> and draws a hosts&nbsp;×&nbsp;services heatmap — running, stopped, or <em>unknown</em> until checked. No agents to install.</p>
+        </div>
+        <span class="example-tag">service_facts · honest tri-state</span>
+      </div>
+      <div class="panel drift-panel">
+        <div class="drift-scroll">
+          <table class="drift" aria-label="Service status heatmap: services by hosts">
+            <thead><tr><th>service</th><th>tc-agent-1</th><th>tc-agent-2</th><th>prod-app</th><th>prod-db</th></tr></thead>
+            <tbody>
+              <tr><td class="drift-pb">teamcity-agent</td><td><i class="dd d-ok"></i></td><td><i class="dd d-bad"></i></td><td><i class="dd d-ok"></i></td><td><i class="dd d-na"></i></td></tr>
+              <tr><td class="drift-pb">docker</td><td><i class="dd d-ok"></i></td><td><i class="dd d-ok"></i></td><td><i class="dd d-ok"></i></td><td><i class="dd d-ok"></i></td></tr>
+              <tr><td class="drift-pb">postgresql</td><td><i class="dd d-na"></i></td><td><i class="dd d-na"></i></td><td><i class="dd d-na"></i></td><td><i class="dd d-ok"></i></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="drift-foot">
+          <span class="drift-legend"><i class="dd d-ok"></i> running</span>
+          <span class="drift-legend"><i class="dd d-bad"></i> stopped</span>
+          <span class="drift-legend"><i class="dd d-na"></i> not declared</span>
+          <span class="topo-readout">tc-agent-2 × teamcity-agent — stopped · investigate</span>
+        </div>
+      </div>
     </div>
 
     <!-- Drift -->

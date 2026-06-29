@@ -79,6 +79,11 @@ A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
   transitions (`ok → changed`, `ok → failed`), new/removed tasks.
 
 ### Operate
+- **Service status** — heatmap services × hosts for the services each host
+  declares (`services: [teamcity-agent, docker]`), with real running/stopped
+  state harvested via ansible `service_facts` (tri-state, `unknown` until
+  checked; `estimated` without ansible). Status pills also appear on each host
+  in the Inventory.
 - **Drift detection** — heatmap playbooks × hosts built from the latest
   `--check` run of each playbook: *changed under check = reality diverged*.
 - **Plan-gated schedules** — recurring runs that **refuse to fire when the
@@ -194,6 +199,7 @@ public Ansible repositories:
 | `GET /api/repos/{id}/impact?base=…&head=…` | blast radius of a git diff |
 | `GET/POST /api/repos/{id}/facts[/refresh]` | harvested facts |
 | `GET/POST /api/repos/{id}/drift[/check]` | drift heatmap / launch checks |
+| `GET/POST /api/repos/{id}/services[/refresh]` | service-status heatmap / launch a check |
 | `GET /api/repos/{id}/timelapse?inventory=…` | topology history frames |
 | `/api/schedules…` | plan-gated recurring runs (CRUD, approve, run-now) |
 | `/api/pipelines…`, `/api/pipeline-runs…` | chained playbooks, approval gates |
@@ -225,13 +231,13 @@ A static, dependency-free product site lives in [`website/`](website/)
 ## Project layout
 
 ```
-cmd/pine/             CLI entrypoint (serve | tui | scan | plan | impact)
+cmd/pine/             CLI entrypoint (serve | tui | attach | service | scan | plan | impact)
 internal/scanner/     Ansible parser: playbooks, roles, inventories,
                       constructed plugin, tri-state Jinja evaluator
 internal/plan/        plan engine, lineage, hygiene, impact, time-lapse,
                       exact mode, fact profiles
 internal/runner/      git sync, job execution + simulation, facts, drift,
-                      scheduler, pipelines, run diff
+                      service status, scheduler, pipelines, run diff
 internal/server/      REST API, SSE streams, embedded web UI
 internal/store/       JSON persistence (repos, jobs, facts, schedules…)
 internal/tui/         bubbletea terminal UI

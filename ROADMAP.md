@@ -66,3 +66,6 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       for the daemon (auto-restart, optional linger) straight from the CLI
 - [x] ✅ TUI auto-refresh — re-syncs connected repos on load and periodically,
       announcing what changed in the status bar
+- [x] ✅ Service status — hosts × services heatmap from the `services:` var,
+      real running/stopped state via ansible `service_facts` (tri-state, honest
+      `unknown`/`estimated`), plus status pills on inventory hosts

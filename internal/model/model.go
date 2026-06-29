@@ -86,6 +86,24 @@ type Host struct {
 	Vars   map[string]any `json:"vars,omitempty"`
 }
 
+// ServiceState is one service's status on a host, harvested from ansible's
+// service_facts module (or synthesized in simulated mode). State is the
+// honest tri-state running | stopped | unknown; Status is enabled | disabled
+// | unknown (boot enablement).
+type ServiceState struct {
+	Name   string `json:"name"`   // logical name as declared (e.g. teamcity-agent)
+	Unit   string `json:"unit"`   // systemd unit reported (e.g. teamcity-agent.service)
+	State  string `json:"state"`  // running | stopped | unknown
+	Status string `json:"status"` // enabled | disabled | unknown
+}
+
+// Service states.
+const (
+	ServiceRunning = "running"
+	ServiceStopped = "stopped"
+	ServiceUnknown = "unknown"
+)
+
 // ConstructedRule mirrors an ansible.builtin.constructed plugin config so
 // generated groups can be re-evaluated with what-if variables (plan mode).
 type ConstructedRule struct {

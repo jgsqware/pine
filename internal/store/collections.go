@@ -92,6 +92,79 @@ func (s *Store) ListFacts(repoID string) map[string]FactsMeta {
 	return out
 }
 
+// --- harvested service status (per repo, per host) ---
+
+type servicesFile struct {
+	GatheredAt string               `json:"gathered_at"`
+	Services   []model.ServiceState `json:"services"`
+}
+
+func (s *Store) servicesDir(repoID string) string {
+	return filepath.Join(s.dir, "services", repoID)
+}
+
+// SaveHostServices stores harvested service status for one host.
+func (s *Store) SaveHostServices(repoID, host string, svcs []model.ServiceState) error {
+	if !safeName(repoID) || !safeName(host) {
+		return ErrNotFound
+	}
+	if err := os.MkdirAll(s.servicesDir(repoID), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(servicesFile{
+		GatheredAt: time.Now().UTC().Format(time.RFC3339),
+		Services:   svcs,
+	})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.servicesDir(repoID), host+".json"), data, 0o644)
+}
+
+// HostServices loads stored service status for one host (nil when absent),
+// along with the gather timestamp.
+func (s *Store) HostServices(repoID, host string) ([]model.ServiceState, string) {
+	if !safeName(repoID) || !safeName(host) {
+		return nil, ""
+	}
+	data, err := os.ReadFile(filepath.Join(s.servicesDir(repoID), host+".json"))
+	if err != nil {
+		return nil, ""
+	}
+	var f servicesFile
+	if json.Unmarshal(data, &f) != nil {
+		return nil, ""
+	}
+	return f.Services, f.GatheredAt
+}
+
+// ListServices summarizes stored service status per host for a repo (reusing
+// FactsMeta: Keys is the number of services recorded).
+func (s *Store) ListServices(repoID string) map[string]FactsMeta {
+	out := map[string]FactsMeta{}
+	entries, err := os.ReadDir(s.servicesDir(repoID))
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.servicesDir(repoID), e.Name()))
+		if err != nil {
+			continue
+		}
+		var f servicesFile
+		if json.Unmarshal(data, &f) != nil {
+			continue
+		}
+		out[strings.TrimSuffix(e.Name(), ".json")] = FactsMeta{
+			GatheredAt: f.GatheredAt, Keys: len(f.Services),
+		}
+	}
+	return out
+}
+
 // --- generic JSON collections (schedules, pipelines, pipeline runs) ---
 
 func loadJSON[T any](path string) []T {

@@ -206,6 +206,8 @@ func (m *Manager) execute(ctx context.Context, job model.Job, r *run) {
 	switch {
 	case job.Playbook == FactsJobName:
 		failed = m.runGather(ctx, &job, r)
+	case job.Playbook == ServicesJobName:
+		failed = m.runServices(ctx, &job, r)
 	case job.Simulated:
 		failed = m.simulate(ctx, &job, r)
 	default:

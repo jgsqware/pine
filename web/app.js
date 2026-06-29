@@ -380,7 +380,7 @@ function setRepo(id) {
   renderRepoSelector();
   // repo-scoped pages re-render on selection change
   const seg = currentRoute()[0];
-  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "drift", "playbook", "role"].includes(seg)) {
+  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "drift", "services", "playbook", "role"].includes(seg)) {
     if (seg === "playbook" || seg === "role") location.hash = "#/" + (seg === "playbook" ? "playbooks" : "roles");
     else route();
   }
@@ -420,7 +420,7 @@ const PAGE_TITLES = {
   dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
   playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
   topology: "Topology", hygiene: "Hygiene", impact: "Impact",
-  drift: "Drift", schedules: "Schedules", pipelines: "Pipelines",
+  drift: "Drift", services: "Services", schedules: "Schedules", pipelines: "Pipelines",
   jobs: "Jobs", job: "Job", plan: "Plan",
 };
 
@@ -445,6 +445,7 @@ async function route() {
     hygiene: pageHygiene,
     impact: pageImpact,
     drift: pageDrift,
+    services: pageServices,
     schedules: pageSchedules,
     pipelines: pagePipelines,
     jobs: pageJobs,
@@ -460,7 +461,7 @@ async function route() {
 
   const view = $("#view");
   view.innerHTML = "";
-  const page = el("div", { class: "page" + (name === "topology" || name === "drift" ? " wide" : "") });
+  const page = el("div", { class: "page" + (name === "topology" || name === "drift" || name === "services" ? " wide" : "") });
   view.appendChild(page);
   try {
     await handlers[name](page, segs.slice(1));
@@ -1366,14 +1367,25 @@ async function pageInventory(page) {
   if (!repo) return;
 
   page.appendChild(skeletonRows(2, 120));
-  const [scan, facts] = await Promise.all([
+  const [scan, facts, svcRep] = await Promise.all([
     getScan(repo.id),
     api(`/repos/${repo.id}/facts`).catch(() => null), // facts are optional decoration
+    api(`/repos/${repo.id}/services`).catch(() => null), // service status, optional
   ]);
   page.innerHTML = "";
 
   const factHosts = (facts && facts.hosts) || {};
   const factCount = facts ? (facts.count ?? Object.keys(factHosts).length) : 0;
+  // host -> [{name,state,...}] from the services report, for status pills
+  const svcCells = (svcRep && svcRep.cells) || {};
+  const servicesForHost = (host) => {
+    const out = [];
+    for (const svc of (svcRep && svcRep.services) || []) {
+      const cell = (svcCells[svc] || {})[host];
+      if (cell) out.push({ name: svc, ...cell });
+    }
+    return out;
+  };
 
   const inventories = scan.inventories || [];
   if (!inventories.length) {
@@ -1534,6 +1546,17 @@ async function pageInventory(page) {
         class: "chip green",
         title: `${hf.keys ?? 0} fact key${(hf.keys ?? 0) === 1 ? "" : "s"} · gathered ${relTime(hf.gathered_at)}`,
       }, `facts · ${relTime(hf.gathered_at)}`) : null));
+
+    // service status pills (declared services + their running/stopped state)
+    const svcs = servicesForHost(h.name);
+    if (svcs.length) {
+      right.appendChild(el("div", { class: "section-title" }, "Services"));
+      right.appendChild(el("div", { class: "svc-pills" },
+        svcs.map((s) => el("span", {
+          class: `svc-pill svc-${s.state || "unknown"}`,
+          title: `${s.unit || s.name} — ${s.state || "unknown"}${s.status ? " · " + s.status : ""}`,
+        }, el("span", { class: "svc-pill-dot" }), s.name))));
+    }
 
     const vars = h.vars || {};
     const varFilter = el("input", { type: "search", placeholder: "Filter vars…", class: "vars-filter" });
@@ -2842,6 +2865,139 @@ function openDriftCheckModal(repo) {
       toast(e.message, "error");
     }
   };
+}
+
+/* ============================================================
+   4j-1b. Services — status of declared services across hosts
+   ============================================================ */
+
+async function pageServices(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  const refreshBtn = el("button", { class: "btn btn-primary" }, icon("sync"), "Refresh status");
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Services"),
+    el("span", { class: "sub" }, `service status across ${repo.name}`),
+    el("div", { class: "grow" }),
+    refreshBtn));
+
+  const box = el("div");
+  page.appendChild(box);
+  box.appendChild(skeletonRows(3, 80));
+
+  const refresh = async () => {
+    refreshBtn.disabled = true;
+    try {
+      const job = await api(`/repos/${repo.id}/services/refresh`, { method: "POST", body: JSON.stringify({}) });
+      toast(el("span", null, "Checking service status… ", el("a", { href: `#/job/${job.id}` }, "job started")),
+        "success", "Services");
+      setTimeout(route, 1400); // reload once the (fast) job has stored results
+    } catch (e) {
+      toast(e.message, "error", "Service check failed");
+      refreshBtn.disabled = false;
+    }
+  };
+  refreshBtn.onclick = refresh;
+
+  let rep;
+  try {
+    rep = await api(`/repos/${repo.id}/services`);
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Could not load services"),
+      el("p", null, e.message),
+      el("button", { class: "btn", onclick: route }, "Retry")));
+    return;
+  }
+  box.innerHTML = "";
+
+  const services = (rep && rep.services) || [];
+  const hosts = (rep && rep.hosts) || [];
+  const cells = (rep && rep.cells) || {};
+  const sum = (rep && rep.summary) || {};
+
+  if (!services.length) {
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No services declared"),
+      el("p", null, "Declare services on hosts with a services: inventory var (e.g. services: [teamcity-agent, docker]), then run a check — Pine queries their real systemd state, no agents required."),
+      el("button", { class: "btn btn-primary", onclick: refresh }, icon("sync"), "Refresh status")));
+    return;
+  }
+
+  // summary strip
+  const down = sum.hosts_down ?? 0;
+  box.appendChild(el("div", { class: "panel drift-summary" },
+    el("span", { class: "sum-chip" },
+      el("b", null, String(sum.watched ?? services.length)), el("span", null, "services watched")),
+    el("span", { class: "sum-chip " + (down > 0 ? "failed" : "ok") },
+      el("b", null, String(down)), el("span", null, down === 1 ? "host with a service down" : "hosts with a service down")),
+    el("span", { class: "sum-chip changed" },
+      el("b", null, String(sum.running ?? 0)), el("span", null, "running")),
+    rep.inventory ? el("span", { class: "chip", title: "Inventory reported on" }, rep.inventory) : null,
+    rep.simulated ? el("span", { class: "chip", title: "Estimated — synthesized without ansible" }, "estimated") : null,
+    el("div", { class: "grow" }),
+    el("span", { class: "muted small", title: sum.last_checked || "" },
+      sum.last_checked ? `checked ${relTime(sum.last_checked)}` : "never checked")));
+
+  // heatmap cell: green running / red stopped / grey unknown / · not declared
+  const cellFor = (svc, host) => {
+    const cell = (cells[svc] || {})[host];
+    if (!cell) {
+      return el("td", { class: "drift-cell" },
+        el("span", { class: "drift-na", title: `${host} does not declare ${svc}` }, "·"));
+    }
+    const state = cell.state || "unknown";
+    const tip = `${cell.unit || svc} on ${host} — ${state}` + (cell.status ? ` · ${cell.status}` : "");
+    return el("td", { class: "drift-cell" },
+      el("button", {
+        class: `svc-dot svc-${state}`,
+        title: tip,
+        onclick: () => openServiceCellModal(rep, svc, host, cell),
+      }));
+  };
+
+  box.appendChild(el("div", { class: "table-wrap drift-heatmap" },
+    el("table", { class: "data" },
+      el("thead", null, el("tr", null,
+        el("th", null, "Service"),
+        hosts.map((h) => el("th", { class: "drift-host-th mono" }, h)))),
+      el("tbody", null, services.map((svc) => el("tr", null,
+        el("td", null, el("div", { class: "mono", style: { color: "var(--text)" } }, svc)),
+        hosts.map((h) => cellFor(svc, h))))))));
+
+  box.appendChild(el("div", { class: "drift-legend" },
+    el("span", { class: "li" }, el("span", { class: "svc-dot svc-running" }), "running"),
+    el("span", { class: "li" }, el("span", { class: "svc-dot svc-stopped" }), "stopped"),
+    el("span", { class: "li" }, el("span", { class: "svc-dot svc-unknown" }), "unknown"),
+    el("span", { class: "li" }, el("span", { class: "drift-na" }, "·"), "not declared")));
+}
+
+/** Cell click → modal with the unit/state + link to the source job. */
+function openServiceCellModal(rep, svc, host, cell) {
+  const state = cell.state || "unknown";
+  const note = state === "running" ? "This service is running on the host."
+    : state === "stopped" ? "Declared but not running on the host — investigate."
+    : "Not gathered yet — run a service check to learn its state.";
+  openModal({
+    title: `${cell.unit || svc} × ${host}`,
+    body: el("div", null,
+      el("div", { class: "row", style: { marginBottom: "12px", gap: "10px" } },
+        el("span", { class: `svc-chip svc-${state}` }, state),
+        cell.status ? el("span", { class: "chip" }, cell.status) : null,
+        el("span", { class: "muted small", title: rep.summary.last_checked || "" },
+          rep.summary.last_checked ? `checked ${relTime(rep.summary.last_checked)}` : "")),
+      el("p", { class: "muted", style: { margin: 0 } }, note),
+      rep.simulated ? el("p", { class: "muted small" },
+        "Estimated — ansible was not available, so this is synthesized from the inventory. Run against real hosts for true status.") : null),
+    footer: [
+      el("button", { class: "btn", onclick: closeModal }, "Close"),
+      rep.job_id ? el("a", { class: "btn btn-secondary", href: `#/job/${rep.job_id}`, onclick: closeModal },
+        icon("code"), "View source job") : null,
+    ],
+    width: "480px",
+  });
 }
 
 /* ============================================================
@@ -4390,7 +4546,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (gPressed) {
-    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", s: "schedules", l: "pipelines", j: "jobs" };
+    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", v: "services", s: "schedules", l: "pipelines", j: "jobs" };
     if (map[e.key]) { location.hash = "#/" + map[e.key]; e.preventDefault(); }
     gPressed = false;
   } else if (e.key === "n") {

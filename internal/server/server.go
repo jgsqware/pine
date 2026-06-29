@@ -55,6 +55,8 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("POST /api/repos/{id}/facts/refresh", s.refreshFacts)
 	mux.HandleFunc("GET /api/repos/{id}/drift", s.drift)
 	mux.HandleFunc("POST /api/repos/{id}/drift/check", s.driftCheck)
+	mux.HandleFunc("GET /api/repos/{id}/services", s.services)
+	mux.HandleFunc("POST /api/repos/{id}/services/refresh", s.refreshServices)
 	mux.HandleFunc("GET /api/repos/{id}/timelapse", s.timelapse)
 
 	mux.HandleFunc("GET /api/schedules", s.listSchedules)
@@ -743,6 +745,28 @@ func (s *Server) driftCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, jobs)
+}
+
+func (s *Server) services(w http.ResponseWriter, r *http.Request) {
+	out, err := s.Mgr.ServiceStatus(r.PathValue("id"), r.URL.Query().Get("inventory"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) refreshServices(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Inventory string `json:"inventory"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	job, err := s.Mgr.CheckServices(r.PathValue("id"), req.Inventory)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
 }
 
 func (s *Server) timelapse(w http.ResponseWriter, r *http.Request) {
