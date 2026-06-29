@@ -20,6 +20,10 @@ storage, a polished web UI, a full terminal UI, a CLI and a REST API.
 |---|---|
 | ![Drift](docs/screenshots/drift.png) | ![Impact](docs/screenshots/impact.png) |
 
+| Git worktrees | |
+|---|---|
+| ![Worktrees](docs/screenshots/worktrees.png) | |
+
 ## Why Pine?
 
 | | AWX / Tower | Pine |
@@ -52,6 +56,10 @@ storage, a polished web UI, a full terminal UI, a CLI and a REST API.
   history commit by commit.
 - **Task-flow visualization** — plays → roles → tasks with tags,
   conditions, loops, blocks/rescue and notify → handler arrows.
+- **Git worktrees** — list every working tree attached to a connected
+  repo (the main checkout plus any linked worktrees), with branch, HEAD,
+  and locked/prunable flags. In the web UI (**Worktrees**, `g k`), the CLI
+  (`pine worktrees PATH`) and the REST API.
 
 ### Plan before you apply
 A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
@@ -142,10 +150,20 @@ go build -o pine ./cmd/pine
 ./pine service install       # run `pine serve` as a systemd (user) service
 
 # CLI, no server needed
-./pine scan   examples/demo-infra
-./pine plan   examples/demo-infra rolling-update.yml -i inventories/production
-./pine impact examples/demo-infra --base HEAD~1 --head HEAD
+./pine scan    examples/demo-infra
+./pine scan    examples/demo-infra --paths apps/web   # scope discovery in a monorepo
+./pine plan    examples/demo-infra rolling-update.yml -i inventories/production
+./pine lineage examples/demo-infra -i production --host web01 --redact --json
+./pine impact  examples/demo-infra --base HEAD~1 --head HEAD
+./pine worktrees examples/demo-infra                # list the repo's git worktrees
 ```
+
+`pine lineage PATH -i INVENTORY --host HOST` prints the full variable
+precedence chain for one host (role default → group → host, effective value
+last) — the CLI face of the **Variable lineage** insight. `--paths SUBDIR`
+(repeatable / comma-separated, shared with `pine scan`) scopes discovery to a
+project inside a monorepo; `--redact` masks vault blobs and plaintext secrets
+on Pine's side, `--json` emits the raw `LineageResult`.
 
 Connect repositories in the web UI (**Repositories → Add repository**) by
 git URL — Pine clones and keeps a managed working copy — or by local path
@@ -201,6 +219,7 @@ public Ansible repositories:
 | `GET/POST /api/repos/{id}/drift[/check]` | drift heatmap / launch checks |
 | `GET/POST /api/repos/{id}/services[/refresh]` | service-status heatmap / launch a check |
 | `GET /api/repos/{id}/timelapse?inventory=…` | topology history frames |
+| `GET /api/repos/{id}/worktrees` | git worktrees of the repo's working copy |
 | `/api/schedules…` | plan-gated recurring runs (CRUD, approve, run-now) |
 | `/api/pipelines…`, `/api/pipeline-runs…` | chained playbooks, approval gates |
 | `GET/POST /api/jobs`, `GET /api/jobs/{id}/events` (SSE), `…/log`, `…/diff?with=…`, `POST …/cancel` | jobs |

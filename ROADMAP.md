@@ -69,3 +69,6 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ Service status — hosts × services heatmap from the `services:` var,
       real running/stopped state via ansible `service_facts` (tri-state, honest
       `unknown`/`estimated`), plus status pills on inventory hosts
+- [x] ✅ Git worktrees — list the working trees of a connected repo (main +
+      linked, branch/HEAD, locked/prunable flags) in the web UI, the CLI
+      (`pine worktrees`) and the REST API (`GET /api/repos/{id}/worktrees`)

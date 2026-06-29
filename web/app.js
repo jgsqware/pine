@@ -380,7 +380,7 @@ function setRepo(id) {
   renderRepoSelector();
   // repo-scoped pages re-render on selection change
   const seg = currentRoute()[0];
-  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "drift", "services", "playbook", "role"].includes(seg)) {
+  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "drift", "services", "worktrees", "playbook", "role"].includes(seg)) {
     if (seg === "playbook" || seg === "role") location.hash = "#/" + (seg === "playbook" ? "playbooks" : "roles");
     else route();
   }
@@ -420,7 +420,7 @@ const PAGE_TITLES = {
   dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
   playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
   topology: "Topology", hygiene: "Hygiene", impact: "Impact",
-  drift: "Drift", services: "Services", schedules: "Schedules", pipelines: "Pipelines",
+  drift: "Drift", services: "Services", worktrees: "Worktrees", schedules: "Schedules", pipelines: "Pipelines",
   jobs: "Jobs", job: "Job", plan: "Plan",
 };
 
@@ -446,6 +446,7 @@ async function route() {
     impact: pageImpact,
     drift: pageDrift,
     services: pageServices,
+    worktrees: pageWorktrees,
     schedules: pageSchedules,
     pipelines: pagePipelines,
     jobs: pageJobs,
@@ -3001,6 +3002,82 @@ function openServiceCellModal(rep, svc, host, cell) {
 }
 
 /* ============================================================
+   4j-1c. Worktrees — git working trees of the repo's checkout
+   ============================================================ */
+
+function shortSha(sha) {
+  return sha && sha.length > 8 ? sha.slice(0, 8) : (sha || "—");
+}
+
+async function pageWorktrees(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Worktrees"),
+    el("span", { class: "sub" }, `git working trees in ${repo.name}`)));
+
+  const box = el("div");
+  page.appendChild(box);
+  box.appendChild(skeletonRows(3, 72));
+
+  let wt;
+  try {
+    wt = await api(`/repos/${repo.id}/worktrees`);
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Could not load worktrees"),
+      el("p", null, e.message),
+      el("button", { class: "btn", onclick: route }, "Retry")));
+    toast(e.message, "error", "Worktrees failed");
+    return;
+  }
+  box.innerHTML = "";
+
+  if (!wt.is_git) {
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Not a git repository"),
+      el("p", null, `${repo.name} is a plain directory (no .git), so it has no git worktrees. Connect it by git URL, or initialise git in the path, to see worktrees here.`)));
+    return;
+  }
+
+  const trees = wt.worktrees || [];
+  box.appendChild(el("div", { class: "section-title" },
+    el("span", null, icon("branch"), ` ${trees.length} worktree${trees.length === 1 ? "" : "s"}`)));
+
+  if (trees.length === 0) {
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "No worktrees"),
+      el("p", null, "git reported a repository but listed no working trees.")));
+    return;
+  }
+
+  const rows = trees.map((w) => {
+    const ref = w.bare
+      ? el("span", { class: "chip" }, "bare")
+      : w.branch
+        ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, icon("branch"), w.branch)
+        : el("span", { class: "pill st-unknown" }, "detached");
+    const flags = [];
+    if (w.main) flags.push(el("span", { class: "chip green" }, "main"));
+    if (w.locked) flags.push(el("span", { class: "chip warn", title: w.lock_reason || "" }, "locked"));
+    if (w.prunable) flags.push(el("span", { class: "chip warn", title: w.prunable_reason || "" }, "prunable"));
+    return el("tr", null,
+      el("td", null, ref),
+      el("td", null, el("span", { class: "mono", style: { color: "var(--text)" } }, shortSha(w.head))),
+      el("td", null, el("span", { class: "mono", title: w.path }, w.path)),
+      el("td", null, flags.length ? flags : el("span", { class: "muted" }, "—")));
+  });
+
+  box.appendChild(el("div", { class: "table-wrap" },
+    el("table", { class: "data" },
+      el("thead", null, el("tr", null,
+        ["Branch", "HEAD", "Path", ""].map((h) => el("th", null, h)))),
+      el("tbody", null, rows))));
+}
+
+/* ============================================================
    4j-2. Schedules — recurring, optionally plan-gated runs
    ============================================================ */
 
@@ -4546,7 +4623,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (gPressed) {
-    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", v: "services", s: "schedules", l: "pipelines", j: "jobs" };
+    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", v: "services", k: "worktrees", s: "schedules", l: "pipelines", j: "jobs" };
     if (map[e.key]) { location.hash = "#/" + map[e.key]; e.preventDefault(); }
     gPressed = false;
   } else if (e.key === "n") {

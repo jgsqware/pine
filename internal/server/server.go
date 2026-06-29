@@ -58,6 +58,7 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("GET /api/repos/{id}/services", s.services)
 	mux.HandleFunc("POST /api/repos/{id}/services/refresh", s.refreshServices)
 	mux.HandleFunc("GET /api/repos/{id}/timelapse", s.timelapse)
+	mux.HandleFunc("GET /api/repos/{id}/worktrees", s.worktrees)
 
 	mux.HandleFunc("GET /api/schedules", s.listSchedules)
 	mux.HandleFunc("POST /api/schedules", s.createSchedule)
@@ -780,6 +781,21 @@ func (s *Server) timelapse(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 	out, err := plan.Timelapse(s.Mgr.Store.RepoWorkdir(&repo), r.URL.Query().Get("inventory"), limit)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// worktrees lists the git worktrees attached to a repo's working copy.
+func (s *Server) worktrees(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	out, err := plan.Worktrees(s.Mgr.Store.RepoWorkdir(&repo))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

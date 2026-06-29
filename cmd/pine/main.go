@@ -36,9 +36,12 @@ Usage:
   pine tui   [PATH] [--data DIR] [--demo]           Start the terminal UI (PATH opens that repo)
   pine attach [--addr :8743]                        Attach the terminal UI to a running daemon
   pine service install|status|uninstall             Run Pine as a systemd (user) service
-  pine scan  PATH                                   Scan an Ansible repo and print JSON
+  pine scan  PATH [--paths SUBDIR]                  Scan an Ansible repo and print JSON
+  pine lineage PATH -i INV (--host H|--all-hosts)   Resolved vars + provenance per host (--json, --redact)
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
+  pine lineage PATH -i INV --host HOST [flags]      Variable precedence chain for a host
   pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
+  pine worktrees PATH [--json]                      List the repo's git worktrees
   pine version                                      Print version
 
 Plan flags:
@@ -88,8 +91,12 @@ func main() {
 		cmdScan(os.Args[2:])
 	case "plan":
 		cmdPlan(os.Args[2:])
+	case "lineage":
+		cmdLineage(os.Args[2:])
 	case "impact":
 		cmdImpact(os.Args[2:])
+	case "worktrees":
+		cmdWorktrees(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("pine", version)
 	case "help", "--help", "-h":
@@ -389,18 +396,120 @@ func registerPath(mgr *runner.Manager, path string) (string, error) {
 	return repo.ID, nil
 }
 
+// scanPathList is a repeatable / comma-separated --paths flag. It maps to
+// scanner.Scan's variadic scanPaths, scoping discovery to subdirectories of
+// a monorepo (one project / env at a time).
+type scanPathList []string
+
+func (p *scanPathList) String() string { return strings.Join(*p, ",") }
+func (p *scanPathList) Set(s string) error {
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			*p = append(*p, part)
+		}
+	}
+	return nil
+}
+
 func cmdScan(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: pine scan PATH")
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	var paths scanPathList
+	fs.Var(&paths, "paths", "restrict scan to subdir(s) of PATH (repeatable / comma-separated)")
+	_ = fs.Bool("json", true, "print scan JSON (always on)")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine scan PATH [--paths SUBDIR]")
 		os.Exit(2)
 	}
-	res, err := scanner.Scan(args[0])
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PATH
+
+	res, err := scanner.Scan(root, paths...)
 	if err != nil {
 		log.Fatal(err)
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(res)
+}
+
+func cmdLineage(args []string) {
+	fs := flag.NewFlagSet("lineage", flag.ExitOnError)
+	inv := fs.String("i", "", "inventory name or path")
+	host := fs.String("host", "", "host to resolve variables for")
+	allHosts := fs.Bool("all-hosts", false, "resolve every host in the inventory (one scan; emits a JSON array)")
+	var paths scanPathList
+	fs.Var(&paths, "paths", "restrict scan to subdir(s) of PATH (repeatable / comma-separated)")
+	redact := fs.Bool("redact", false, "mask vault blobs and password-like values")
+	asJSON := fs.Bool("json", false, "print raw lineage JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine lineage PATH -i INVENTORY (--host HOST | --all-hosts) [--paths SUBDIR] [--redact] [--json]")
+		os.Exit(2)
+	}
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PATH
+	if *host == "" && !*allHosts {
+		fmt.Fprintln(os.Stderr, "lineage: --host or --all-hosts is required")
+		os.Exit(2)
+	}
+
+	res, err := scanner.Scan(root, paths...)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if *allHosts {
+		lins, err := plan.LineageAll(res, *inv)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if *redact {
+			for _, l := range lins {
+				l.Redact()
+			}
+		}
+		if *asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(lins)
+			return
+		}
+		for _, l := range lins {
+			printLineage(l)
+		}
+		return
+	}
+
+	lin, err := plan.Lineage(res, *inv, *host)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *redact {
+		lin.Redact()
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(lin)
+		return
+	}
+	printLineage(lin)
+}
+
+func printLineage(lin *plan.LineageResult) {
+	fmt.Printf("%sLINEAGE%s host=%s  inventory=%s  %s%d vars%s\n",
+		cBold, cOff, lin.Host, lin.Inventory, cGray, len(lin.Vars), cOff)
+	for _, v := range lin.Vars {
+		fmt.Printf("\n  %s%s%s = %v\n", cBold, v.Key, cOff, v.Value)
+		for i, e := range v.Chain {
+			eff := ""
+			if i == len(v.Chain)-1 {
+				eff = cGreen + "  (effective)" + cOff
+			}
+			fmt.Printf("      %s%-12s %-16s%s = %v%s\n", cGray, e.Scope, e.Name, cOff, e.Value, eff)
+		}
+	}
 }
 
 // extraVars collects repeatable -e key=value flags.
@@ -541,6 +650,72 @@ func printPlan(out *plan.Result) {
 		for _, mv := range s.MissingVars {
 			fmt.Printf("  %s (%d verdicts)\n", mv.Name, mv.Count)
 		}
+	}
+}
+
+func cmdWorktrees(args []string) {
+	fs := flag.NewFlagSet("worktrees", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print raw worktrees JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine worktrees PATH [--json]")
+		os.Exit(2)
+	}
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PATH
+
+	out, err := plan.Worktrees(root)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return
+	}
+	if !out.IsGit {
+		fmt.Printf("%s%s%s is not a git repository — no worktrees\n", cGray, out.Root, cOff)
+		return
+	}
+	fmt.Printf("%sWORKTREES%s %s%s%s  %s%d tree(s)%s\n",
+		cBold, cOff, cGray, out.Root, cOff, cGray, len(out.Worktrees), cOff)
+	for _, w := range out.Worktrees {
+		ref := w.Branch
+		if ref == "" {
+			ref = "(detached)"
+		}
+		marker, color := " ", cGreen
+		if w.Main {
+			marker = "★"
+		}
+		head := w.Head
+		if len(head) > 8 {
+			head = head[:8]
+		}
+		fmt.Printf("  %s%s%s %-24s %s%-10s %s%s", color, marker, cOff, ref, cGray, head, w.Path, cOff)
+		var flags []string
+		if w.Bare {
+			flags = append(flags, "bare")
+		}
+		if w.Locked {
+			f := "locked"
+			if w.LockReason != "" {
+				f += ": " + w.LockReason
+			}
+			flags = append(flags, f)
+		}
+		if w.Prunable {
+			f := "prunable"
+			if w.PrunableReason != "" {
+				f += ": " + w.PrunableReason
+			}
+			flags = append(flags, f)
+		}
+		if len(flags) > 0 {
+			fmt.Printf("  %s[%s]%s", cAmber, strings.Join(flags, ", "), cOff)
+		}
+		fmt.Println()
 	}
 }
 

@@ -3,6 +3,7 @@ package plan
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jgsqware/pine/internal/model"
 	"github.com/jgsqware/pine/internal/scanner"
@@ -28,6 +29,71 @@ type LineageResult struct {
 	Host      string       `json:"host"`
 	Inventory string       `json:"inventory"`
 	Vars      []VarLineage `json:"vars"`
+}
+
+// RedactedMark replaces secret material when a LineageResult is redacted.
+const RedactedMark = "***REDACTED***"
+
+// Redact masks sensitive material in place: vault-encrypted blobs and
+// plaintext scalars under a password-like variable name. The chain
+// structure — scopes, layer names, precedence order — is preserved so
+// "where does this come from?" still answers, while the secret value never
+// leaves Pine. It reuses the hygiene secret heuristic (secretKeyRe +
+// looksLikeSecretValue) so toggles like server_tokens: "off" and numeric
+// policy knobs are not mistaken for secrets. Defense-in-depth: callers may
+// keep masking on their side too.
+func (r *LineageResult) Redact() {
+	for i := range r.Vars {
+		v := &r.Vars[i]
+		keySecret := secretKeyRe.MatchString(v.Key)
+		if sensitiveValue(keySecret, v.Value) {
+			v.Value = RedactedMark
+		}
+		for j := range v.Chain {
+			if sensitiveValue(keySecret, v.Chain[j].Value) {
+				v.Chain[j].Value = RedactedMark
+			}
+		}
+	}
+}
+
+// sensitiveValue reports whether v should be masked: any ansible-vault blob,
+// or — when the variable name is password-like — a plaintext scalar that
+// still reads as a secret (so on/off toggles and numbers stay visible).
+func sensitiveValue(keySecret bool, v any) bool {
+	if isVaultValue(v) {
+		return true
+	}
+	if !keySecret {
+		return false
+	}
+	s, ok := v.(string)
+	return ok && looksLikeSecretValue(s)
+}
+
+// isVaultValue reports whether v is an ansible-vault encrypted scalar.
+func isVaultValue(v any) bool {
+	s, ok := v.(string)
+	return ok && strings.Contains(s, "$ANSIBLE_VAULT")
+}
+
+// LineageAll resolves the variable lineage for every host of an inventory in a
+// single scan pass (the scan is done once by the caller). Useful for tools that
+// want every target's effective config at once instead of one process per host.
+func LineageAll(res *model.ScanResult, inventory string) ([]*LineageResult, error) {
+	inv := pickInventory(res, inventory)
+	if inv == nil {
+		return nil, fmt.Errorf("inventory not found: %s", inventory)
+	}
+	out := make([]*LineageResult, 0, len(inv.Hosts))
+	for i := range inv.Hosts {
+		lin, err := Lineage(res, inventory, inv.Hosts[i].Name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, lin)
+	}
+	return out, nil
 }
 
 // Lineage computes, for every variable visible to host, the ordered chain

@@ -244,6 +244,11 @@
         <p>Recursive playbook <em>and</em> role discovery anywhere in the repo. Inventories detected by content — <code>.yml</code>, <code>.yaml</code>, <code>.ini</code> or no extension at all.</p>
       </article>
       <article class="card reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M8.4 7.2 15.6 8.4M8 17l8-6"/></svg></div>
+        <h3>Git worktrees</h3>
+        <p>See every working tree attached to a connected repo — branch, HEAD, the main checkout and any linked worktrees, with locked and prunable flags. In the web UI, the CLI (<code>pine worktrees</code>) and the REST API.</p>
+      </article>
+      <article class="card reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><circle cx="12" cy="13" r="2"/><path d="M12 7.5V11M10.8 14.6 6.3 17.2M13.2 14.6l4.5 2.6"/></svg></div>
         <h3>Topology &amp; task-flow</h3>
         <p>Inventories as an explorable live graph — with a time-lapse over its git history — and every playbook as plays → roles → tasks → handlers.</p>
@@ -1039,6 +1044,26 @@
   <span class="t-key">"playbooks"</span>: [<span class="t-str">"webservers.yml"</span>, <span class="t-str">"rolling-update.yml"</span>],
   <span class="t-key">"hosts"</span>: <span class="t-num">14</span>,
   <span class="t-key">"handlers"</span>: [<span class="t-str">"nginx : Reload nginx"</span>]
+}</code></pre>
+      </div>
+      <div class="codeblock api-block">
+        <div class="api-method"><span class="method method-get">GET</span> <code>/api/repos/acme-infra/worktrees</code></div>
+        <pre><code>{
+  <span class="t-key">"is_git"</span>: <span class="t-bool">true</span>,
+  <span class="t-key">"worktrees"</span>: [
+    {
+      <span class="t-key">"path"</span>: <span class="t-str">"/var/lib/pine/repos/acme-infra"</span>,
+      <span class="t-key">"branch"</span>: <span class="t-str">"main"</span>,
+      <span class="t-key">"head"</span>: <span class="t-str">"ab05b745"</span>,
+      <span class="t-key">"main"</span>: <span class="t-bool">true</span>
+    },
+    {
+      <span class="t-key">"path"</span>: <span class="t-str">"/var/lib/pine/repos/acme-infra-hotfix"</span>,
+      <span class="t-key">"branch"</span>: <span class="t-str">"hotfix/tls"</span>,
+      <span class="t-key">"head"</span>: <span class="t-str">"9f3c1d20"</span>,
+      <span class="t-key">"locked"</span>: <span class="t-bool">true</span>
+    }
+  ]
 }</code></pre>
       </div>
     </div>

@@ -52,6 +52,68 @@ func TestLineage(t *testing.T) {
 	}
 }
 
+func TestLineageRedact(t *testing.T) {
+	lin := &LineageResult{
+		Host:      "web01",
+		Inventory: "production",
+		Vars: []VarLineage{
+			{Key: "app_port", Value: 8080, Chain: []LineageEntry{
+				{Scope: "role_default", Name: "common", Value: 80},
+				{Scope: "group", Name: "web", Value: 8080},
+			}},
+			{Key: "db_password", Value: "hunter2", Chain: []LineageEntry{
+				{Scope: "group", Name: "db", Value: "hunter2"},
+			}},
+			{Key: "tls_key", Value: "$ANSIBLE_VAULT;1.1;AES256\n3438...", Chain: []LineageEntry{
+				{Scope: "host", Name: "web01", Value: "$ANSIBLE_VAULT;1.1;AES256\n3438..."},
+			}},
+		},
+	}
+	lin.Redact()
+
+	// non-secret values survive untouched
+	if lin.Vars[0].Value != 8080 || lin.Vars[0].Chain[0].Value != 80 {
+		t.Errorf("non-secret var was redacted: %+v", lin.Vars[0])
+	}
+	// password-like key is masked, value gone
+	if lin.Vars[1].Value != RedactedMark || lin.Vars[1].Chain[0].Value != RedactedMark {
+		t.Errorf("password not redacted: %+v", lin.Vars[1])
+	}
+	// vault blob masked even though tls_key doesn't match the secret-key regex
+	if lin.Vars[2].Value != RedactedMark || lin.Vars[2].Chain[0].Value != RedactedMark {
+		t.Errorf("vault blob not redacted: %+v", lin.Vars[2])
+	}
+}
+
+func TestLineageAll(t *testing.T) {
+	res, _ := demoScan(t)
+	const inv = "staging"
+
+	all, err := LineageAll(res, inv)
+	if err != nil {
+		t.Fatalf("LineageAll: %v", err)
+	}
+	if len(all) != 3 { // staging inventory has 3 hosts
+		t.Fatalf("LineageAll returned %d results, want 3", len(all))
+	}
+	// each batched result must equal the single-host resolution for that host.
+	for _, l := range all {
+		single, err := Lineage(res, inv, l.Host)
+		if err != nil {
+			t.Fatalf("Lineage(%s): %v", l.Host, err)
+		}
+		if len(single.Vars) != len(l.Vars) {
+			t.Errorf("host %s: batched %d vars, single %d", l.Host, len(l.Vars), len(single.Vars))
+		}
+	}
+
+	// no inventories at all → error (pickInventory falls back to the first
+	// inventory for an unknown *name*, so the error path is the empty repo).
+	if _, err := LineageAll(&model.ScanResult{}, inv); err == nil {
+		t.Error("LineageAll with no inventories should error")
+	}
+}
+
 func TestHygieneOnDemo(t *testing.T) {
 	res, root := demoScan(t)
 	out := Hygiene(res, root)
