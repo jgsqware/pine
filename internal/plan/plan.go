@@ -300,6 +300,13 @@ func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
 			}
 		}
 	}
+	// include_vars loaded by the play's tasks (following inlined import_tasks),
+	// so task names/when conditions that use them resolve in the plan too.
+	for _, iv := range collectIncludeVars(&play) {
+		if vars := scanner.LoadVarsFile(filepath.Join(c.root, iv)); len(vars) > 0 {
+			fileVars = append(fileVars, vars)
+		}
+	}
 	hostByName := map[string]*model.Host{}
 	if c.inv != nil {
 		for i := range c.inv.Hosts {
@@ -335,8 +342,8 @@ func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
 	return pp
 }
 
-// flatten walks tasks (recursing into blocks, inheriting their when) and
-// appends a TaskPlan per leaf task.
+// flatten walks tasks (recursing into blocks and statically-imported task files,
+// inheriting their when) and appends a TaskPlan per leaf task.
 func (c *computer) flatten(pp *PlayPlan, play model.Play, section, role, inheritedWhen string, tasks []model.Task, hosts []string, eff map[string]map[string]any, rescue bool) {
 	for _, t := range tasks {
 		when := combineWhen(inheritedWhen, t.When)
@@ -344,6 +351,12 @@ func (c *computer) flatten(pp *PlayPlan, play model.Play, section, role, inherit
 			c.flatten(pp, play, section, role, when, t.Block, hosts, eff, rescue)
 			c.flatten(pp, play, section, role, when, t.Rescue, hosts, eff, true)
 			c.flatten(pp, play, section, role, when, t.Always, hosts, eff, rescue)
+			continue
+		}
+		// import_tasks is static: expand its tasks inline instead of showing the
+		// import as a single opaque step.
+		if len(t.Imported) > 0 {
+			c.flatten(pp, play, section, role, when, t.Imported, hosts, eff, rescue)
 			continue
 		}
 		pp.Tasks = append(pp.Tasks, c.task(play, section, role, when, t, hosts, eff, rescue))
