@@ -5290,8 +5290,50 @@ async function openRunModal(prefill = {}) {
   const repoSel = el("select");
   const pbSel = el("select");
   const invSel = el("select");
-  const limitIn = el("input", { type: "text", placeholder: "e.g. web01,db* (optional)" });
+  const hostSel = el("select", { title: "Pick a single host to test against (sets --limit)" });
+  const limitIn = el("input", { type: "text", placeholder: "or a pattern, e.g. web01,db*" });
   const tagsIn = el("input", { type: "text", placeholder: "e.g. config,deploy (optional)" });
+  let scanInvs = [];
+  // fill the host picker from the selected inventory. When a playbook is chosen
+  // we use the resolve endpoint, which flags the hosts the playbook targets — so
+  // they're grouped first, like the "resolve as" picker.
+  const syncHostSel = () => {
+    hostSel.value = [...hostSel.options].some((o) => o.value && o.value === limitIn.value.trim()) ? limitIn.value.trim() : "";
+  };
+  const fillHosts = async () => {
+    const invVal = invSel.value, pb = pbSel.value;
+    hostSel.innerHTML = ""; hostSel.appendChild(el("option", { value: "" }, "Loading hosts…")); hostSel.disabled = true;
+    let hosts = [];
+    if (pb && invVal) {
+      try {
+        const q = new URLSearchParams({ playbook: pb, inventory: invVal });
+        const rr = await api(`/repos/${repoSel.value}/resolve?${q.toString()}`);
+        const invObj = scanInvs.find((i) => (i.path || i.name) === invVal);
+        const invName = invObj ? invObj.name : invVal;
+        const inv = (rr.inventories || []).find((i) => i.name === invName) || (rr.inventories || [])[0];
+        hosts = (inv && inv.hosts) || []; // {name, targeted, varies}, already targeted-first
+      } catch { /* fall back to scan hosts below */ }
+    }
+    if (!hosts.length) {
+      const invObj = scanInvs.find((i) => (i.path || i.name) === invVal) || scanInvs.find((i) => i.name === invVal);
+      hosts = ((invObj && invObj.hosts) || []).map((h) => ({ name: h.name, targeted: false }));
+    }
+    hostSel.innerHTML = "";
+    hostSel.appendChild(el("option", { value: "" }, hosts.length ? "— all targeted hosts —" : "— no inventory hosts —"));
+    const targeted = hosts.filter((h) => h.targeted), others = hosts.filter((h) => !h.targeted);
+    const addGroup = (label, list) => {
+      if (!list.length) return;
+      const og = el("optgroup", { label });
+      list.forEach((h) => og.appendChild(el("option", { value: h.name }, h.name)));
+      hostSel.appendChild(og);
+    };
+    if (targeted.length) { addGroup("targeted by this playbook", targeted); addGroup("other hosts", others); }
+    else others.forEach((h) => hostSel.appendChild(el("option", { value: h.name }, h.name)));
+    hostSel.disabled = !hosts.length;
+    syncHostSel();
+  };
+  hostSel.onchange = () => { if (hostSel.value) limitIn.value = hostSel.value; else if ([...hostSel.options].some((o) => o.value === limitIn.value.trim())) limitIn.value = ""; };
+  limitIn.addEventListener("input", () => syncHostSel());
   const checkBox = el("input", { type: "checkbox" });
   // plan mode: estimated (static, instant) vs exact (ansible --check)
   let planMode = "estimated";
@@ -5328,6 +5370,7 @@ async function openRunModal(prefill = {}) {
       pbSel.innerHTML = ""; invSel.innerHTML = "";
       const pbs = scan.playbooks || [];
       const invs = scan.inventories || [];
+      scanInvs = invs;
       if (!pbs.length) pbSel.appendChild(el("option", { value: "" }, "No playbooks found"));
       for (const p of pbs) pbSel.appendChild(el("option", { value: p.path }, `${p.name || p.path}  (${p.path})`));
       if (!invs.length) invSel.appendChild(el("option", { value: "" }, "No inventories found"));
@@ -5340,6 +5383,7 @@ async function openRunModal(prefill = {}) {
       pbSel.disabled = !pbs.length;
       invSel.disabled = !invs.length;
       runBtn.disabled = planBtn.disabled = !pbs.length;
+      fillHosts();
     } catch (e) {
       pbSel.innerHTML = ""; invSel.innerHTML = "";
       pbSel.appendChild(el("option", { value: "" }, "Scan failed"));
@@ -5348,6 +5392,8 @@ async function openRunModal(prefill = {}) {
     }
   };
   repoSel.addEventListener("change", () => { varsEd.setRepo(repoSel.value); fillScanOptions(); });
+  invSel.addEventListener("change", fillHosts);
+  pbSel.addEventListener("change", fillHosts);
 
   runBtn.onclick = async () => {
     if (!pbSel.value) { toast("Pick a playbook to run", "error"); return; }
@@ -5411,9 +5457,10 @@ async function openRunModal(prefill = {}) {
     el("div", { class: "field" }, el("label", null, "Playbook"), pbSel),
     el("div", { class: "field" }, el("label", null, "Inventory"), invSel,
       el("span", { class: "hint" }, "Inventory the play targets.")),
-    el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" } },
-      el("div", { class: "field" }, el("label", null, "Limit"), limitIn),
-      el("div", { class: "field" }, el("label", null, "Tags"), tagsIn)),
+    el("div", { class: "field" }, el("label", null, "Limit to host"),
+      el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" } }, hostSel, limitIn),
+      el("span", { class: "hint" }, "Pick a host to test against, or type a pattern (web01,db*). Empty = all targeted hosts.")),
+    el("div", { class: "field" }, el("label", null, "Tags"), tagsIn),
     el("label", { class: "check-row" }, checkBox,
       el("span", null, "Check mode ", el("span", { class: "muted" }, "(dry run, no changes applied)"))),
     el("div", { class: "field", style: { margin: "14px 0 0" } },
