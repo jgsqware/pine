@@ -65,6 +65,8 @@ type Counts struct {
 type TaskPlan struct {
 	Name      string                 `json:"name"`
 	RawName   string                 `json:"raw_name,omitempty"`
+	Args      string                 `json:"args,omitempty"`     // module args, with {{ vars }} resolved where possible
+	RawArgs   string                 `json:"raw_args,omitempty"` // original args, set only when interpolation changed them
 	Module    string                 `json:"module"`
 	Role      string                 `json:"role,omitempty"`
 	Section   string                 `json:"section"`
@@ -391,6 +393,14 @@ func (c *computer) task(play model.Play, section, role, when string, t model.Tas
 	}
 	if name, known, _ := scanner.Interpolate(t.Name, repVars); known {
 		tp.Name = name
+	}
+	// resolve module args too (e.g. a docker_image name), keeping the raw form
+	// when interpolation actually changed something.
+	if t.Args != "" {
+		tp.Args = t.Args
+		if a, _, _ := scanner.Interpolate(t.Args, repVars); a != t.Args {
+			tp.RawArgs, tp.Args = t.Args, a
+		}
 	}
 
 	// loop size

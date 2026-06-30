@@ -3,6 +3,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,11 +30,32 @@ type Server struct {
 	Mgr *runner.Manager
 }
 
+// Version and BuildTime are stamped by main at build time (ldflags) and shown
+// in the UI footer + /api/version, so you can tell which build is actually
+// loaded (a stale value means the browser served cached assets).
+var (
+	Version   = "dev"
+	BuildTime = ""
+)
+
+// buildLabel renders the footer/version string, e.g. "8baf98c · 2026-06-30 11:57 UTC".
+func buildLabel() string {
+	if BuildTime == "" {
+		return Version
+	}
+	bt := BuildTime
+	if t, err := time.Parse(time.RFC3339, BuildTime); err == nil {
+		bt = t.UTC().Format("2006-01-02 15:04 MST")
+	}
+	return Version + " · " + bt
+}
+
 // New builds the HTTP handler.
 func New(mgr *runner.Manager) http.Handler {
 	s := &Server{Mgr: mgr}
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /api/version", s.version)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/repos", s.listRepos)
 	mux.HandleFunc("POST /api/repos", s.addRepo)
@@ -59,6 +82,7 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("POST /api/repos/{id}/services/refresh", s.refreshServices)
 	mux.HandleFunc("GET /api/repos/{id}/timelapse", s.timelapse)
 	mux.HandleFunc("GET /api/repos/{id}/worktrees", s.worktrees)
+	mux.HandleFunc("GET /api/repos/{id}/resolve", s.resolve)
 
 	mux.HandleFunc("GET /api/schedules", s.listSchedules)
 	mux.HandleFunc("POST /api/schedules", s.createSchedule)
@@ -115,6 +139,14 @@ func errCode(err error) int {
 }
 
 // --- stats ---
+
+func (s *Server) version(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"version":    Version,
+		"build_time": BuildTime,
+		"label":      buildLabel(),
+	})
+}
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	repos := s.Mgr.Store.ListRepos()
@@ -594,6 +626,11 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		}
 		path = "index.html"
 	}
+	// Stamp the deployed build into index.html so it's visible in the footer
+	// even when app.js is cached (the build label changes every build).
+	if path == "index.html" {
+		data = []byte(strings.Replace(string(data), "__PINE_BUILD__", buildLabel(), 1))
+	}
 	switch {
 	case strings.HasSuffix(path, ".html"):
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -603,6 +640,18 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	case strings.HasSuffix(path, ".svg"):
 		w.Header().Set("Content-Type", "image/svg+xml")
+	}
+	// Assets are embedded at build time: tag them by content and require
+	// revalidation. After an upgrade the bytes (and ETag) change, so browsers
+	// fetch the new file on the next load instead of serving a stale cache;
+	// when unchanged they get a cheap 304.
+	sum := sha256.Sum256(data)
+	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
 	}
 	_, _ = w.Write(data)
 }
@@ -620,6 +669,30 @@ func (s *Server) lineage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// resolve answers "what do this playbook's {{ vars }} resolve to?" — host
+// agnostically by default, or against ?inventory=&host= when given. Secrets are
+// redacted before the values ever leave Pine.
+func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	res, err := s.Mgr.Scan(repo.ID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	out, err := plan.Resolve(res, s.Mgr.Store.RepoWorkdir(&repo),
+		r.URL.Query().Get("playbook"), r.URL.Query().Get("inventory"), r.URL.Query().Get("host"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	out.Redact()
 	writeJSON(w, http.StatusOK, out)
 }
 

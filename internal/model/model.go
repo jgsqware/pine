@@ -11,13 +11,20 @@ type Task struct {
 	Tags        []string `json:"tags,omitempty"`
 	When        string   `json:"when,omitempty"`
 	Loop        bool     `json:"loop,omitempty"`
-	LoopExpr    string   `json:"loop_expr,omitempty"`  // raw loop expression, for plan-time resolution
-	LoopItems   int      `json:"loop_items,omitempty"` // literal list size known at scan time
-	Listen      string   `json:"listen,omitempty"`     // handler listen topic
+	LoopExpr    string   `json:"loop_expr,omitempty"`    // raw loop expression, for plan-time resolution
+	LoopItems   int      `json:"loop_items,omitempty"`   // literal list size known at scan time
+	LoopValues  []any    `json:"loop_values,omitempty"`  // literal loop items (capped), shown instead of {{ item }}
+	RoleRef     string   `json:"role_ref,omitempty"`     // role name for include_role/import_role tasks
+	IncludeVars string   `json:"include_vars,omitempty"` // repo-relative path of a static include_vars file (resolved at scan time)
+	Listen      string   `json:"listen,omitempty"`       // handler listen topic
 	Notify      []string `json:"notify,omitempty"`
 	Block       []Task   `json:"block,omitempty"`
 	Rescue      []Task   `json:"rescue,omitempty"`
 	Always      []Task   `json:"always,omitempty"`
+	// Imported holds the tasks pulled in from a static `import_tasks: file`
+	// (resolved at scan time, since import_tasks is processed statically by
+	// Ansible). Empty for dynamic include_tasks or unresolvable/Jinja paths.
+	Imported []Task `json:"imported,omitempty"`
 }
 
 // PromptVar is one vars_prompt entry on a play.

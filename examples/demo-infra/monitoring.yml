@@ -22,8 +22,34 @@
   gather_facts: true
   vars_files:
     - vars/secrets.yml
+  vars:
+    alloy_version: "1.5.1"
+    alloy_receivers:
+      - otlp
+      - prometheus
+      - loki
 
   pre_tasks:
+    - name: Pull the Grafana Alloy agent image from the local registry
+      community.docker.docker_image:
+        name: "{{ docker_local_registry }}/grafana/alloy:{{ alloy_version }}"
+        source: pull
+      tags: [monitoring, alloy]
+
+    - name: Render an Alloy config for each enabled receiver
+      ansible.builtin.template:
+        src: "alloy/{{ item }}.river.j2"
+        dest: "{{ monitoring_base_dir }}/alloy/{{ item }}.river"
+      loop: "{{ alloy_receivers }}"
+
+    # Note the typo — monitoring_dir (should be monitoring_base_dir) is defined
+    # nowhere, so the concatenated {{monitoring_dir}}/data must be flagged red.
+    - name: Ensure the Alloy data directory exists
+      ansible.builtin.file:
+        path: "{{monitoring_dir}}/data"
+        state: directory
+      tags: [monitoring, alloy]
+
     - name: Create the monitoring base directory
       ansible.builtin.file:
         path: "{{ monitoring_base_dir }}"

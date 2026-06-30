@@ -185,6 +185,16 @@ func Lineage(res *model.ScanResult, inventory, hostName string) (*LineageResult,
 		add("host", host.Name, host.Vars)
 	}
 
+	// role vars/main.yml sit high in Ansible's precedence (above host/group
+	// vars), so they are added last — they win the chain.
+	for _, rn := range roleNames {
+		for i := range res.Roles {
+			if res.Roles[i].Name == rn && len(res.Roles[i].Vars) > 0 {
+				add("role_vars", rn, res.Roles[i].Vars)
+			}
+		}
+	}
+
 	out := &LineageResult{Host: hostName, Inventory: inv.Name, Vars: []VarLineage{}}
 	var keys []string
 	for k := range chains {

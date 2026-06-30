@@ -181,6 +181,8 @@ func parsePlaybook(root, file string) (model.Playbook, bool) {
 
 	rel, _ := filepath.Rel(root, file)
 	pb := model.Playbook{Path: rel, Name: strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))}
+	abs, _ := filepath.Abs(file)
+	ctx := importCtx{root: root, baseDir: filepath.Dir(file), seen: map[string]bool{abs: true}}
 	for _, entry := range doc {
 		if imp := importTarget(entry); imp != "" {
 			name := toStr(entry["name"])
@@ -194,7 +196,7 @@ func parsePlaybook(root, file string) (model.Playbook, bool) {
 			})
 			continue
 		}
-		pb.Plays = append(pb.Plays, parsePlay(entry))
+		pb.Plays = append(pb.Plays, parsePlayCtx(entry, ctx))
 	}
 	if len(pb.Plays) > 0 && pb.Plays[0].Name != "" && pb.Plays[0].Import == "" {
 		pb.Name = pb.Plays[0].Name
@@ -213,7 +215,9 @@ func importTarget(entry map[string]any) string {
 	return ""
 }
 
-func parsePlay(m map[string]any) model.Play {
+func parsePlay(m map[string]any) model.Play { return parsePlayCtx(m, importCtx{}) }
+
+func parsePlayCtx(m map[string]any, ctx importCtx) model.Play {
 	p := model.Play{
 		Name:      toStr(m["name"]),
 		Hosts:     toStr(m["hosts"]),
@@ -259,15 +263,18 @@ func parsePlay(m map[string]any) model.Play {
 			}
 		}
 	}
-	p.PreTasks = parseTaskList(m["pre_tasks"])
-	p.Tasks = parseTaskList(m["tasks"])
-	p.PostTasks = parseTaskList(m["post_tasks"])
-	p.Handlers = parseTaskList(m["handlers"])
+	p.PreTasks = parseTaskListCtx(m["pre_tasks"], ctx)
+	p.Tasks = parseTaskListCtx(m["tasks"], ctx)
+	p.PostTasks = parseTaskListCtx(m["post_tasks"], ctx)
+	p.Handlers = parseTaskListCtx(m["handlers"], ctx)
 	return p
 }
 
-// ParseTaskList exposes task parsing for role task files.
-func parseTaskList(v any) []model.Task {
+// parseTaskList exposes task parsing for role task files (no import context,
+// so import_tasks files are not inlined for plain role tasks).
+func parseTaskList(v any) []model.Task { return parseTaskListCtx(v, importCtx{}) }
+
+func parseTaskListCtx(v any, ctx importCtx) []model.Task {
 	list, ok := v.([]any)
 	if !ok {
 		return nil
@@ -278,12 +285,12 @@ func parseTaskList(v any) []model.Task {
 		if !ok {
 			continue
 		}
-		out = append(out, parseTask(m))
+		out = append(out, parseTaskCtx(m, ctx))
 	}
 	return out
 }
 
-func parseTask(m map[string]any) model.Task {
+func parseTaskCtx(m map[string]any, ctx importCtx) model.Task {
 	t := model.Task{
 		Name:   toStr(m["name"]),
 		Tags:   toStrSlice(m["tags"]),
@@ -307,13 +314,14 @@ func parseTask(m map[string]any) model.Task {
 			t.LoopExpr = lv
 		case []any:
 			t.LoopItems = len(lv)
+			t.LoopValues = capLoopValues(lv)
 		}
 	}
 	if blk, ok := m["block"]; ok {
 		t.Module = "block"
-		t.Block = parseTaskList(blk)
-		t.Rescue = parseTaskList(m["rescue"])
-		t.Always = parseTaskList(m["always"])
+		t.Block = parseTaskListCtx(blk, ctx)
+		t.Rescue = parseTaskListCtx(m["rescue"], ctx)
+		t.Always = parseTaskListCtx(m["always"], ctx)
 		return t
 	}
 	for k := range m {
@@ -323,6 +331,7 @@ func parseTask(m map[string]any) model.Task {
 		t.Module = k
 		t.Args = summarizeArgs(m[k])
 		t.IncludePath = includePath(k, m[k])
+		t.RoleRef = roleRef(k, m[k])
 		break
 	}
 	if t.Module == "" {
@@ -331,7 +340,157 @@ func parseTask(m map[string]any) model.Task {
 	if t.Name == "" {
 		t.Name = t.Module
 	}
+	// import_tasks is static: pull the referenced file's tasks into the tree so
+	// the playbook visualization shows them inline.
+	t.Imported = resolveImportTasks(ctx, t.Module, t.IncludePath)
+	// include_vars: resolve the file now (the base dir is known here, even when
+	// the task came in via import_tasks) so the resolver can load it later.
+	t.IncludeVars = resolveIncludeVarsPath(ctx, t.Module, t.IncludePath)
 	return t
+}
+
+// resolveIncludeVarsPath resolves a static `include_vars: file` to a repo-root
+// relative path, mirroring Ansible's search (the task file's dir, its vars/
+// subdir, then the repo root). Empty for non-include_vars, Jinja paths, or when
+// the file can't be found.
+func resolveIncludeVarsPath(ctx importCtx, module, incl string) string {
+	if ctx.baseDir == "" || incl == "" || strings.Contains(incl, "{{") {
+		return ""
+	}
+	m := strings.TrimPrefix(module, "ansible.builtin.")
+	m = strings.TrimPrefix(m, "ansible.legacy.")
+	if m != "include_vars" {
+		return ""
+	}
+	clean := strings.TrimPrefix(incl, "./")
+	for _, c := range []string{
+		filepath.Join(ctx.baseDir, clean),
+		filepath.Join(ctx.baseDir, "vars", clean),
+		filepath.Join(ctx.root, clean),
+	} {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			if ctx.root != "" {
+				if rel, err := filepath.Rel(ctx.root, c); err == nil {
+					return rel
+				}
+			}
+			return c
+		}
+	}
+	return ""
+}
+
+// roleRef returns the role named by an include_role/import_role task, so the
+// resolver can fold that role's defaults and vars into a play even when the
+// role is pulled in as a task rather than listed under `roles:`. Templated
+// (Jinja) names are skipped — they aren't known statically.
+func roleRef(module string, v any) string {
+	m := strings.TrimPrefix(module, "ansible.builtin.")
+	m = strings.TrimPrefix(m, "ansible.legacy.")
+	if m != "include_role" && m != "import_role" {
+		return ""
+	}
+	dict, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := dict["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "{{") {
+		return ""
+	}
+	return name
+}
+
+// maxLoopValues caps how many literal loop items are kept for display, so a
+// huge inline list doesn't bloat the scan.
+const maxLoopValues = 25
+
+// capLoopValues keeps up to maxLoopValues literal loop items for "show the
+// items, not {{ item }}" rendering. Non-scalar items are kept as-is (the UI
+// renders a short form).
+func capLoopValues(lv []any) []any {
+	if len(lv) <= maxLoopValues {
+		return lv
+	}
+	return lv[:maxLoopValues]
+}
+
+// maxImportDepth bounds how deep nested import_tasks chains are followed, a
+// backstop against pathological or cyclic imports (cycles are also caught by
+// importCtx.seen).
+const maxImportDepth = 12
+
+// importCtx carries what's needed to resolve a static `import_tasks: file`
+// during parsing: the repo root and the directory of the file currently being
+// parsed (imports resolve relative to it), plus a depth counter and the set of
+// files already inlined on this branch to stop cycles.
+type importCtx struct {
+	root    string
+	baseDir string
+	depth   int
+	seen    map[string]bool
+}
+
+// resolveImportTasks reads and parses the file behind a static import_tasks
+// task, returning its tasks (recursively, so nested imports inline too). It
+// returns nil for dynamic include_tasks, Jinja paths, missing files, or when
+// there is no parse context (e.g. role task files).
+func resolveImportTasks(ctx importCtx, module, incl string) []model.Task {
+	if ctx.baseDir == "" || incl == "" || ctx.depth >= maxImportDepth {
+		return nil
+	}
+	m := strings.TrimPrefix(module, "ansible.builtin.")
+	m = strings.TrimPrefix(m, "ansible.legacy.")
+	if m != "import_tasks" {
+		return nil
+	}
+	if strings.Contains(incl, "{{") {
+		return nil // path computed at runtime — can't resolve statically
+	}
+	file := resolveIncludeFile(ctx, incl)
+	if file == "" {
+		return nil
+	}
+	abs, _ := filepath.Abs(file)
+	if ctx.seen[abs] {
+		return nil // cycle
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+	var doc []any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(ctx.seen)+1)
+	for k := range ctx.seen {
+		seen[k] = true
+	}
+	seen[abs] = true
+	child := importCtx{root: ctx.root, baseDir: filepath.Dir(file), depth: ctx.depth + 1, seen: seen}
+	return parseTaskListCtx(doc, child)
+}
+
+// resolveIncludeFile finds an import_tasks target on disk, mirroring how
+// Ansible resolves a relative path: against the importing file's directory
+// (and its tasks/ subdir), falling back to a repo-root-relative path.
+func resolveIncludeFile(ctx importCtx, incl string) string {
+	clean := strings.TrimPrefix(incl, "./")
+	cands := []string{
+		filepath.Join(ctx.baseDir, clean),
+		filepath.Join(ctx.baseDir, "tasks", clean),
+	}
+	if ctx.root != "" {
+		cands = append(cands, filepath.Join(ctx.root, clean))
+	}
+	for _, c := range cands {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	return ""
 }
 
 // includePath returns the file referenced by an include_/import_ task module

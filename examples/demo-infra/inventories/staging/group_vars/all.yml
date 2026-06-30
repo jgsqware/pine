@@ -4,6 +4,9 @@ acme_domain: staging.acme-corp.example
 acme_admin_email: ops+staging@acme-corp.example
 acme_timezone: Etc/UTC
 
+# Staging pulls images through its own registry mirror.
+docker_local_registry: registry.staging.acme-corp.example
+
 # Smaller resource footprints in staging.
 pg_max_connections: 50
 pg_shared_buffers: 128MB

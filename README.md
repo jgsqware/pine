@@ -45,6 +45,10 @@ storage, a polished web UI, a full terminal UI, a CLI and a REST API.
   (nested `playbooks/<env>/<app>/` and per-project `roles/` layouts just
   work); per-repo **scan paths** override discovery when needed — the UI
   prompts you when a synced repo has zero playbooks.
+- **Grouped playbook browser** — playbooks are listed as compact rows
+  **grouped by project** (their directory) with a live filter that matches
+  on name, path, host pattern or tag; click a host/tag chip to filter by it,
+  so you can find a playbook by where it lives or what it targets.
 - **Constructed inventories** — split sources (`inventory/00-hosts.yml` +
   `99-constructed.yml`) are merged like `-i inventory/`, and the
   `ansible.builtin.constructed` plugin is emulated (`groups:` Jinja
@@ -55,10 +59,35 @@ storage, a polished web UI, a full terminal UI, a CLI and a REST API.
   groups) and a **time-lapse** player that replays your inventory's git
   history commit by commit.
 - **Task-flow visualization** — plays → roles → tasks with tags,
-  conditions, loops, blocks/rescue and notify → handler arrows.
-- **Git worktrees** — list every working tree attached to a connected
-  repo (the main checkout plus any linked worktrees), with branch, HEAD,
-  and locked/prunable flags. In the web UI (**Worktrees**, `g k`), the CLI
+  conditions, loops, blocks/rescue and notify → handler arrows. Static
+  `import_tasks` are **followed and inlined** — the referenced file's tasks
+  appear in place (recursively), so the flow is the whole picture; dynamic
+  `include_tasks` stay a clickable reference.
+- **Inline variable resolution** — `{{ vars }}` in task names and args are
+  resolved right in the task-flow (e.g. `{{ docker_local_registry }}/grafana/alloy:{{ alloy_version }}`
+  → `registry.acme-corp.example/grafana/alloy:1.5.1`). Resolves host-agnostically
+  by default (the constants: role defaults **and `vars/main.yml`** — including
+  roles pulled in via `include_role`/`import_role` — plus `group_vars/all`,
+  `vars_files` (incl. `{{ playbook_dir }}`-relative paths), play vars and
+  `vars_prompt` defaults); a **“resolve as” host picker** adapts to a specific
+  host's precedence. Click any variable for its **lineage** (which layer it comes
+  from); inside a loop, `{{ item }}` shows the **possible items** instead of the
+  placeholder. Unresolved vars are honestly triaged: **runtime/magic** (facts,
+  `groups`, …), **defined elsewhere** (pick a host to resolve), or **defined
+  nowhere** — flagged red, the clear signal for a typo or a missing
+  `--extra-vars`/`set_fact`. Secrets are redacted. A collapsible **Variables
+  pane** lists *every* variable the playbook references — resolved ones with
+  their full lineage, plus unresolved ones tagged runtime / elsewhere /
+  **defined-nowhere** (with a count up top) — and Plan mode resolves task args
+  too, not just the name.
+- **Syntax-highlighted source preview** — the "View YAML" / raw-file pane
+  highlights YAML and INI (keys, strings, numbers, booleans, comments, and
+  `{{ jinja }}`), no build step or CDN.
+- **Git worktrees** — every working tree attached to a connected repo (the
+  main checkout plus any linked worktrees) is listed **under its repo on the
+  Repositories page**, with branch, HEAD, and locked/prunable flags. **Switch**
+  to a worktree to open that branch's checkout as the active repo (Pine
+  registers the worktree path as its own repo). Also via the CLI
   (`pine worktrees PATH`) and the REST API.
 
 ### Plan before you apply
@@ -103,7 +132,10 @@ A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
 ### Insights
 - **Variable lineage** — "where does this value come from?": the full
   precedence chain per host × variable (role default → group → host),
-  overridden layers struck through.
+  overridden layers struck through. With `--playbook`, resolves a **playbook's
+  effective variables** — expanding `import_tasks`/`import_playbook` and applying
+  `include_vars` in Ansible order (so per-service config like a `dedicated.yaml`
+  shows up), `{{ }}` resolved where possible and left as-is otherwise.
 - **Hygiene report** — unused roles, never-notified handlers (listen- and
   templated-notify-aware), dead variables, untargeted hosts, **plaintext
   secret detection**, vault usage, tidiness score.
@@ -154,6 +186,8 @@ go build -o pine ./cmd/pine
 ./pine scan    examples/demo-infra --paths apps/web   # scope discovery in a monorepo
 ./pine plan    examples/demo-infra rolling-update.yml -i inventories/production
 ./pine lineage examples/demo-infra -i production --host web01 --redact --json
+./pine lineage examples/demo-infra --playbook webservers.yml \
+               -i inventories/production --all-hosts --redact --json   # effective playbook vars (include_vars expanded)
 ./pine impact  examples/demo-infra --base HEAD~1 --head HEAD
 ./pine worktrees examples/demo-infra                # list the repo's git worktrees
 ```
@@ -204,6 +238,7 @@ public Ansible repositories:
 
 | Method & path | Purpose |
 |---|---|
+| `GET /api/version` | deployed version + build time (also shown in the UI footer) |
 | `GET /api/stats` | dashboard counters + recent jobs |
 | `GET/POST /api/repos`, `PATCH/DELETE /api/repos/{id}` | manage repositories (`scan_paths` included) |
 | `POST /api/repos/{id}/sync` | pull + re-scan |
@@ -213,6 +248,7 @@ public Ansible repositories:
 | `GET /api/fact-profiles` | built-in fact presets |
 | `POST /api/repos/{id}/inventory-preview` | what-if constructed groups |
 | `GET /api/repos/{id}/lineage?inventory=…&host=…` | variable precedence chains |
+| `GET /api/repos/{id}/resolve?playbook=…[&inventory=…&host=…]` | a playbook's effective vars + lineage for inline `{{ }}` resolution |
 | `GET /api/repos/{id}/hygiene` | dead-code + secrets report |
 | `GET /api/repos/{id}/impact?base=…&head=…` | blast radius of a git diff |
 | `GET/POST /api/repos/{id}/facts[/refresh]` | harvested facts |

@@ -70,5 +70,40 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       real running/stopped state via ansible `service_facts` (tri-state, honest
       `unknown`/`estimated`), plus status pills on inventory hosts
 - [x] ✅ Git worktrees — list the working trees of a connected repo (main +
-      linked, branch/HEAD, locked/prunable flags) in the web UI, the CLI
-      (`pine worktrees`) and the REST API (`GET /api/repos/{id}/worktrees`)
+      linked, branch/HEAD, locked/prunable flags) under each repo on the
+      Repositories page, with one-click **switch** to open a worktree's branch
+      as the active repo; also the CLI (`pine worktrees`) and the REST API
+      (`GET /api/repos/{id}/worktrees`)
+- [x] ✅ Grouped playbook browser — playbooks listed as compact rows grouped
+      by project (directory), with a live filter over name/path/host/tag and
+      click-to-filter host & tag chips (replaces the old tile grid)
+- [x] ✅ Inline `import_tasks` — static `import_tasks` are resolved at scan time
+      (recursively, with cycle protection) and pulled into the playbook task-flow
+      visualization in place; dynamic `include_tasks` stay a clickable reference
+- [x] ✅ `pine lineage --playbook` — resolve a playbook's effective variables per
+      host (expanding `import_tasks`/`import_playbook` and applying `include_vars`
+      in Ansible order), in the same JSON/lineage shape with `include_vars`
+      provenance; surfaces per-service config (e.g. `dedicated.yaml`) that plain
+      inventory lineage misses. The web resolver picks up `include_vars` too.
+- [x] ✅ Inline variable resolution — `{{ vars }}` in task names/args are resolved
+      in the task-flow (and Plan args), host-agnostically by default with a
+      "resolve as" host picker; each variable links to its lineage, unresolved
+      vars stay raw, secrets are redacted (`GET /api/repos/{id}/resolve`).
+      Covers role `vars/main.yml`, `include_role`/`import_role` roles (not just
+      role defaults + the `roles:` list), `vars_prompt` defaults, and
+      `{{ playbook_dir }}`-templated `vars_files`; nested values are expanded
+      (`{{ monitoring_dir }}/alloy` → the composed path, facts left intact);
+      `{{ item }}` in a loop shows the
+      possible items instead of the placeholder. Unresolved vars are triaged
+      runtime / defined-elsewhere / **defined-nowhere** (red); each play box has a
+      **Variables panel docked beside its tasks** listing every variable it uses
+      (resolved + unresolved, names coloured by state, with a colour legend, a
+      "defined nowhere" count and an **All / Used-here filter**) with lineage; the
+      panel is **resizable** (drag handle) and docked beside the tasks; the
+      "resolve as" host picker (hosts the playbook **targets** via its `hosts:`
+      pattern are grouped first; hosts with variable variation flagged); notify
+      chips are **click-to-scroll** to their handler
+      **highlights hosts that override a variable the playbook uses**
+- [x] ✅ Syntax-highlighted source preview — the raw-file / "View YAML" pane
+      highlights YAML and INI (keys, strings, numbers, booleans, comments,
+      `{{ jinja }}`) with a tiny dependency-free tokenizer (no build, no CDN)

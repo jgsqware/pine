@@ -27,6 +27,9 @@ import (
 
 var version = "0.1.0"
 
+// buildTime is stamped at build time via -ldflags (RFC3339). Empty in `go run`.
+var buildTime = ""
+
 func usage() {
 	fmt.Fprintf(os.Stderr, `Pine %s - the Ansible control plane that doesn't need a control plane
 
@@ -38,8 +41,8 @@ Usage:
   pine service install|status|uninstall             Run Pine as a systemd (user) service
   pine scan  PATH [--paths SUBDIR]                  Scan an Ansible repo and print JSON
   pine lineage PATH -i INV (--host H|--all-hosts)   Resolved vars + provenance per host (--json, --redact)
+  pine lineage PATH --playbook PB -i INV [flags]    + a playbook's effective vars (expands import_tasks/include_vars)
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
-  pine lineage PATH -i INV --host HOST [flags]      Variable precedence chain for a host
   pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
   pine worktrees PATH [--json]                      List the repo's git worktrees
   pine version                                      Print version
@@ -74,6 +77,9 @@ func defaultDataDir() string {
 }
 
 func main() {
+	// surface the build stamp to the HTTP layer (footer + /api/version)
+	server.Version = version
+	server.BuildTime = buildTime
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -98,7 +104,11 @@ func main() {
 	case "worktrees":
 		cmdWorktrees(os.Args[2:])
 	case "version", "--version", "-v":
-		fmt.Println("pine", version)
+		if buildTime != "" {
+			fmt.Printf("pine %s (built %s)\n", version, buildTime)
+		} else {
+			fmt.Println("pine", version)
+		}
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -438,13 +448,14 @@ func cmdLineage(args []string) {
 	inv := fs.String("i", "", "inventory name or path")
 	host := fs.String("host", "", "host to resolve variables for")
 	allHosts := fs.Bool("all-hosts", false, "resolve every host in the inventory (one scan; emits a JSON array)")
+	playbook := fs.String("playbook", "", "resolve a playbook's effective vars (expands import_tasks + include_vars), not just inventory precedence")
 	var paths scanPathList
 	fs.Var(&paths, "paths", "restrict scan to subdir(s) of PATH (repeatable / comma-separated)")
 	redact := fs.Bool("redact", false, "mask vault blobs and password-like values")
 	asJSON := fs.Bool("json", false, "print raw lineage JSON")
 	_ = fs.Parse(args)
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: pine lineage PATH -i INVENTORY (--host HOST | --all-hosts) [--paths SUBDIR] [--redact] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: pine lineage PATH -i INVENTORY (--host HOST | --all-hosts) [--playbook PB] [--paths SUBDIR] [--redact] [--json]")
 		os.Exit(2)
 	}
 	root := fs.Arg(0)
@@ -457,6 +468,45 @@ func cmdLineage(args []string) {
 	res, err := scanner.Scan(root, paths...)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// playbook mode: resolve the playbook's effective vars (include_vars +
+	// import_tasks expanded), emitted in the same per-host lineage shape.
+	if *playbook != "" {
+		emit := func(lins []*plan.LineageResult) {
+			if *redact {
+				for _, l := range lins {
+					l.Redact()
+				}
+			}
+			if *asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				if *allHosts {
+					_ = enc.Encode(lins)
+				} else {
+					_ = enc.Encode(lins[0])
+				}
+				return
+			}
+			for _, l := range lins {
+				printLineage(l)
+			}
+		}
+		if *allHosts {
+			lins, err := plan.ResolveLineageAll(res, root, *playbook, *inv)
+			if err != nil {
+				log.Fatal(err)
+			}
+			emit(lins)
+		} else {
+			lin, err := plan.ResolveLineage(res, root, *playbook, *inv, *host)
+			if err != nil {
+				log.Fatal(err)
+			}
+			emit([]*plan.LineageResult{lin})
+		}
+		return
 	}
 
 	if *allHosts {

@@ -246,12 +246,12 @@
       <article class="card reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M8.4 7.2 15.6 8.4M8 17l8-6"/></svg></div>
         <h3>Git worktrees</h3>
-        <p>See every working tree attached to a connected repo — branch, HEAD, the main checkout and any linked worktrees, with locked and prunable flags. In the web UI, the CLI (<code>pine worktrees</code>) and the REST API.</p>
+        <p>Every working tree attached to a connected repo — branch, HEAD, the main checkout and any linked worktrees, with locked and prunable flags — is listed right under its repo. <strong>Switch</strong> to a worktree to work against that branch's checkout in one click. In the web UI, the CLI (<code>pine worktrees</code>) and the REST API.</p>
       </article>
       <article class="card reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><circle cx="12" cy="13" r="2"/><path d="M12 7.5V11M10.8 14.6 6.3 17.2M13.2 14.6l4.5 2.6"/></svg></div>
         <h3>Topology &amp; task-flow</h3>
-        <p>Inventories as an explorable live graph — with a time-lapse over its git history — and every playbook as plays → roles → tasks → handlers.</p>
+        <p>Inventories as an explorable live graph — with a time-lapse over its git history — and every playbook as plays → roles → tasks → handlers. Static <code>import_tasks</code> are followed and inlined, and <code>{{ vars }}</code> resolve in place (<code>{{ docker_local_registry }}/grafana/alloy:{{ alloy_version }}</code> → the real image, including role <code>vars/main.yml</code> and included roles) — click any variable for its lineage, or open the collapsible Variables pane to see them all. In a loop, <code>{{ item }}</code> shows the possible items, and a variable defined nowhere is flagged red so typos and missing <code>--extra-vars</code> stand out.</p>
       </article>
       <article class="card reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M7 4.5 18.5 12 7 19.5Z"/></svg></div>

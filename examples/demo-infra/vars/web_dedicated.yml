@@ -1,0 +1,11 @@
+---
+# Per-service config loaded by webservers.yml via include_vars. Pine resolves
+# it (and its {{ }} against group/play vars) into the effective variable set —
+# this is the kind of config that distinguishes one service from another and
+# isn't in the inventory. Try:
+#   pine lineage examples/demo-infra --playbook webservers.yml \
+#     -i inventories/production --all-hosts --redact --json
+web_app_name: acme-shop
+web_doc_root: "/srv/www/{{ web_app_name }}"
+web_health_url: "http://localhost{{ healthcheck_path }}"
+web_tls_cert: "/etc/acme/tls/{{ acme_domain }}.pem"

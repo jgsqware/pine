@@ -1,6 +1,7 @@
 [tools]
 go = "1.24"
 glow = "latest"
+lazydocker = "latest"
 
 [env]
 # Where the Pine server is published by docker-compose (host:container 8743).
@@ -44,9 +45,31 @@ run = "mise run open"
 description = "go install the pine binary with the version stamped from git"
 run = '''
 version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+buildtime="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 bindir="$(go env GOBIN)"
 [ -n "$bindir" ] || bindir="$(go env GOPATH)/bin"
-echo "installing pine $version -> $bindir"
-go install -ldflags "-X main.version=$version" ./cmd/pine
+echo "installing pine $version ($buildtime) -> $bindir"
+go install -ldflags "-X main.version=$version -X main.buildTime=$buildtime" ./cmd/pine
 echo "done: run 'pine version' (ensure $bindir is on PATH)"
+'''
+
+[tasks.ship]
+description = "Install the binary and restart the running systemd user service onto the new version"
+depends = ["install"]
+run = '''
+unit="pine.service"
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl not found — binary installed, but there is no service to restart"
+  exit 0
+fi
+if ! systemctl --user cat "$unit" >/dev/null 2>&1; then
+  echo "$unit is not installed — run 'pine service install' first to set it up, then 'mise run ship' to upgrade it"
+  exit 1
+fi
+# ExecStart points at the binary that `install` just overwrote, so a restart
+# brings the service up on the freshly built version.
+echo "restarting $unit onto the new binary"
+systemctl --user restart "$unit"
+systemctl --user --no-pager --lines=0 status "$unit" || true
+echo "✓ service restarted — running $(pine version 2>/dev/null || echo 'pine (version unknown)')"
 '''

@@ -115,6 +115,7 @@ const ICONS = {
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>',
   stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h14"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
   role: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>',
   tree: '<svg viewBox="0 0 24 24"><path d="M12 1 L16.5 8.5 H7.5 Z" fill="#4ade80"/><path d="M12 5.5 L18 14.5 H6 Z" fill="#34c46a"/><path d="M12 10.5 L20 20.5 H4 Z" fill="#22a356"/><rect x="10.9" y="20" width="2.2" height="3.2" rx="0.6" fill="#8a5a3b"/></svg>',
@@ -260,6 +261,77 @@ function includeCandidates(basePath, file) {
  * a list of paths tried in order — the first that exists is shown. This lets a
  * caller pass alternates (main.yml/main.yaml, a hosts dir's likely files).
  */
+/* ---- lightweight syntax highlighting for the code preview (no deps) ---- */
+
+// wrap {{ … }} / {% … %} jinja in an already-HTML-escaped string.
+function hlJinja(escaped) {
+  return escaped.replace(/(\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\})/g, '<span class="tok-jinja">$1</span>');
+}
+
+// highlight a YAML scalar value (raw, unescaped); preserves surrounding spaces.
+function hlYamlValue(raw) {
+  if (raw === "") return "";
+  const body = raw.trimStart();
+  const lead = raw.slice(0, raw.length - body.length);
+  const t = body.trimEnd();
+  const trail = body.slice(t.length);
+  let cls = null;
+  if (/^(['"]).*\1$/.test(t) || /^['"]/.test(t)) cls = "tok-str";
+  else if (/^(true|false|yes|no|on|off|null|~|none)$/i.test(t)) cls = "tok-bool";
+  else if (/^-?\d[\d_]*(\.\d+)?$/.test(t)) cls = "tok-num";
+  let inner = hlJinja(esc(t));
+  if (cls) inner = `<span class="${cls}">${inner}</span>`;
+  return esc(lead) + inner + esc(trail);
+}
+
+function highlightYamlLine(line) {
+  const indent = line.match(/^(\s*)/)[1];
+  let rest = line.slice(indent.length);
+  if (rest === "") return "";
+  if (rest.startsWith("#")) return esc(indent) + `<span class="tok-comment">${esc(rest)}</span>`;
+  if (rest === "---" || rest === "..." || rest.startsWith("--- ")) return esc(indent) + `<span class="tok-doc">${esc(rest)}</span>`;
+  let out = esc(indent);
+  const dash = rest.match(/^(-\s+)/);
+  if (dash) { out += `<span class="tok-punct">${esc(dash[1])}</span>`; rest = rest.slice(dash[1].length); }
+  else if (rest === "-") return out + `<span class="tok-punct">-</span>`;
+  // split off an inline " # comment" (naive: ignores # inside quotes)
+  let comment = "";
+  const ci = rest.search(/\s#/);
+  if (ci >= 0) { comment = rest.slice(ci); rest = rest.slice(0, ci); }
+  const kv = rest.match(/^([^\s:#][^:]*?)(:)(\s.*|$)/);
+  if (kv) out += `<span class="tok-key">${esc(kv[1])}</span><span class="tok-punct">:</span>` + hlYamlValue(kv[3]);
+  else out += hlYamlValue(rest);
+  if (comment) out += `<span class="tok-comment">${esc(comment)}</span>`;
+  return out;
+}
+
+function highlightIniLine(line) {
+  const t = line.trim();
+  if (t === "") return "";
+  if (t.startsWith("#") || t.startsWith(";")) return `<span class="tok-comment">${esc(line)}</span>`;
+  if (/^\[.*\]$/.test(t)) return `<span class="tok-key">${esc(line)}</span>`;
+  // host line with key=value vars; keep the host token plain, colour the vars
+  return hlJinja(esc(line)).replace(/([\w.\-]+)(=)(&quot;[^&]*&quot;|&#39;[^&]*&#39;|\S+)/g,
+    (m, k, eq, v) => `<span class="tok-attr">${k}</span><span class="tok-punct">${eq}</span><span class="tok-str">${v}</span>`);
+}
+
+function detectCodeLang(path, text) {
+  const p = (path || "").toLowerCase();
+  if (p.endsWith(".yml") || p.endsWith(".yaml")) return "yaml";
+  if (p.endsWith(".ini") || p.endsWith(".cfg")) return "ini";
+  const first = text.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith(";"));
+  if (first && (/^\[.+\]$/.test(first) || /^\S+\s*=\s*\S/.test(first))) return "ini";
+  return "yaml"; // previews are overwhelmingly YAML
+}
+
+// highlightCode returns HTML (escaped + token spans) for the preview pane.
+function highlightCode(text, path) {
+  const lang = detectCodeLang(path, text);
+  const fn = lang === "yaml" ? highlightYamlLine : lang === "ini" ? highlightIniLine : null;
+  if (!fn) return esc(text);
+  return text.split("\n").map(fn).join("\n");
+}
+
 async function openRawFileModal(repoId, candidates, title) {
   const paths = Array.isArray(candidates) ? candidates : [candidates];
   const { body: bodyEl } = openModal({
@@ -293,7 +365,7 @@ async function openRawFileModal(repoId, candidates, title) {
     el("div", { class: "grow" }),
     copyBtn,
     el("a", { class: "btn btn-sm", href: rawFileURL(repoId, usedPath), target: "_blank", rel: "noopener" }, icon("download"), "Open")));
-  bodyEl.appendChild(el("pre", { class: "code-view" }, el("code", null, text)));
+  bodyEl.appendChild(el("pre", { class: "code-view" }, el("code", { html: highlightCode(text, usedPath) })));
 }
 
 /* ---- skeletons ---- */
@@ -380,7 +452,7 @@ function setRepo(id) {
   renderRepoSelector();
   // repo-scoped pages re-render on selection change
   const seg = currentRoute()[0];
-  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "drift", "services", "worktrees", "playbook", "role"].includes(seg)) {
+  if (["playbooks", "roles", "inventory", "topology", "hygiene", "impact", "drift", "services", "playbook", "role"].includes(seg)) {
     if (seg === "playbook" || seg === "role") location.hash = "#/" + (seg === "playbook" ? "playbooks" : "roles");
     else route();
   }
@@ -420,7 +492,7 @@ const PAGE_TITLES = {
   dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
   playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
   topology: "Topology", hygiene: "Hygiene", impact: "Impact",
-  drift: "Drift", services: "Services", worktrees: "Worktrees", schedules: "Schedules", pipelines: "Pipelines",
+  drift: "Drift", services: "Services", schedules: "Schedules", pipelines: "Pipelines",
   jobs: "Jobs", job: "Job", plan: "Plan",
 };
 
@@ -446,7 +518,6 @@ async function route() {
     impact: pageImpact,
     drift: pageDrift,
     services: pageServices,
-    worktrees: pageWorktrees,
     schedules: pageSchedules,
     pipelines: pagePipelines,
     jobs: pageJobs,
@@ -629,6 +700,7 @@ function drawRepoCards(listBox, refresh) {
             try {
               await api(`/repos/${repo.id}/sync`, { method: "POST" });
               State.scanCache.delete(repo.id);
+              worktreeCache.delete(repo.id);
               toast(`Syncing ${repo.name}…`, "success", "Sync started");
               refresh();
             } catch (err) { toast(err.message, "error"); refresh(); }
@@ -653,6 +725,100 @@ function drawRepoCards(listBox, refresh) {
           },
         }, icon("trash"), "Delete")));
     listBox.appendChild(card);
+    appendRepoWorktrees(card, repo, refresh); // async; fills in once loaded
+  }
+}
+
+// shortSha trims a commit hash for compact display.
+function shortSha(sha) {
+  return sha && sha.length > 8 ? sha.slice(0, 8) : (sha || "—");
+}
+
+// worktreeCache memoizes GET /repos/{id}/worktrees per repo so the repos
+// page's status polling doesn't refetch worktrees on every redraw.
+const worktreeCache = new Map();
+
+// appendRepoWorktrees lazily loads a repo's git worktrees and, when there is
+// more than the main checkout, renders a switchable list inside its card so
+// you can jump to a branch's working tree without leaving Repositories.
+async function appendRepoWorktrees(card, repo, refresh) {
+  if (repo.status !== "ready") return;
+  let wt = worktreeCache.get(repo.id);
+  try {
+    if (!wt) {
+      wt = await api(`/repos/${repo.id}/worktrees`);
+      worktreeCache.set(repo.id, wt);
+    }
+  } catch { return; } // worktrees are a bonus — never break a card over them
+  if (!wt.is_git) return;
+  const trees = wt.worktrees || [];
+  if (trees.length < 2) return;          // nothing to switch between
+  if (!card.isConnected) return;         // card got replaced mid-load
+
+  const list = el("div", { class: "wt-list" });
+  for (const w of trees) {
+    const ref = w.bare
+      ? el("span", { class: "chip" }, "bare")
+      : w.branch
+        ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, icon("branch"), w.branch)
+        : el("span", { class: "chip" }, "detached");
+
+    const existing = State.repos.find((r) => r.path && r.path === w.path);
+    const active = w.main ? repo.id === State.repoId : existing && existing.id === State.repoId;
+    let action;
+    if (active) action = el("span", { class: "chip green" }, icon("check"), "active");
+    else if (w.main) action = el("button", {
+      class: "btn btn-sm", title: `Switch to ${repo.name}`,
+      onclick: () => { setRepo(repo.id); toast(`Switched to ${repo.name}`, "success", "Worktree"); location.hash = "#/playbooks"; },
+    }, "Switch");
+    else action = el("button", {
+      class: "btn btn-sm btn-secondary", title: existing ? `Switch to ${existing.name}` : "Open this worktree as a repository",
+      onclick: (e) => switchToWorktree(repo, w, e.currentTarget, refresh),
+    }, icon("folder"), existing ? "Switch" : "Open");
+
+    list.appendChild(el("div", { class: "wt-row" },
+      ref,
+      el("span", { class: "mono wt-sha" }, shortSha(w.head)),
+      el("span", { class: "mono wt-path", title: w.path }, w.main ? "main checkout" : w.path),
+      w.locked ? el("span", { class: "chip warn", title: w.lock_reason || "" }, "locked") : null,
+      w.prunable ? el("span", { class: "chip warn", title: w.prunable_reason || "" }, "prunable") : null,
+      el("div", { class: "grow" }),
+      action));
+  }
+
+  const section = el("div", { class: "wt-section" },
+    el("div", { class: "wt-head" }, el("span", { class: "wt-ic", html: ICONS.branch }), `${trees.length} worktrees`),
+    list);
+  const actions = card.querySelector(".actions");
+  if (actions) card.insertBefore(section, actions);
+  else card.appendChild(section);
+}
+
+// switchToWorktree makes a worktree the active repo: reuse a repo already
+// registered at that path, otherwise register the worktree path as a new
+// path-based repo (inheriting the parent's scan paths) and select it.
+async function switchToWorktree(parent, w, btn, refresh) {
+  const existing = State.repos.find((r) => r.path && r.path === w.path);
+  const label = w.branch || shortSha(w.head);
+  if (existing) {
+    setRepo(existing.id);
+    toast(`Switched to ${existing.name}`, "success", "Worktree");
+    location.hash = "#/playbooks";
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const created = await api("/repos", {
+      method: "POST",
+      body: JSON.stringify({ name: `${parent.name} @ ${label}`, path: w.path, scan_paths: parent.scan_paths || [] }),
+    });
+    await loadRepos(true);           // so the repo selector knows the new repo
+    setRepo(created.id);
+    toast(`Opened worktree ${label} as a repository`, "success", "Switched to worktree");
+    location.hash = "#/playbooks";
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    toast(e.message, "error");
   }
 }
 
@@ -785,25 +951,31 @@ function openAddRepoModal() {
 function encodePath(p) { return p.split("/").map(encodeURIComponent).join("/"); }
 function decodeSegs(segs) { return segs.map(decodeURIComponent).join("/"); }
 
+/** Project bucket for a playbook: the directory it lives in ("" = repo root). */
+function playbookProject(path) {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
+
 async function pagePlaybooks(page) {
   const repo = await requireRepo(page);
   if (!repo) return;
 
-  page.appendChild(el("div", { class: "page-head" },
+  const head = el("div", { class: "page-head" },
     el("h1", null, "Playbooks"),
     el("span", { class: "sub" }, `in ${repo.name}`),
     el("div", { class: "grow" }),
-    el("button", { class: "btn btn-primary", onclick: () => openRunModal({ repoId: repo.id }) }, icon("play"), "Run playbook")));
+    el("button", { class: "btn btn-primary", onclick: () => openRunModal({ repoId: repo.id }) }, icon("play"), "Run playbook"));
+  page.appendChild(head);
 
-  const box = el("div", { class: "grid cols-3" });
+  const box = el("div");
   page.appendChild(box);
-  box.appendChild(skeletonRows(2, 130));
+  box.appendChild(skeletonRows(2, 60));
 
   const scan = await getScan(repo.id);
   box.innerHTML = "";
   const playbooks = scan.playbooks || [];
   if (!playbooks.length) {
-    box.style.display = "block";
     box.appendChild(el("div", { class: "empty" },
       el("h3", null, "No playbooks found"),
       el("p", null, repo.scan_paths && repo.scan_paths.length
@@ -815,38 +987,140 @@ async function pagePlaybooks(page) {
     return;
   }
 
-  for (const pb of playbooks) {
+  // Build a searchable view-model per playbook once; render reuses it on filter.
+  const items = playbooks.map((pb) => {
     const plays = pb.plays || [];
-    const hostPatterns = [...new Set(plays.map((p) => p.hosts).filter(Boolean))];
+    const hosts = [...new Set(plays.map((p) => p.hosts).filter(Boolean))];
     const tags = [...new Set(plays.flatMap((p) => [
       ...(p.tags || []),
       ...((p.tasks || []).flatMap((t) => t.tags || [])),
-    ]))].slice(0, 8);
+    ]))];
+    const project = playbookProject(pb.path);
+    const haystack = [pb.name || "", pb.path, project, ...hosts, ...tags].join(" ").toLowerCase();
+    return { pb, plays, hosts, tags, project, haystack };
+  });
+  const projectCount = new Set(items.map((it) => it.project)).size;
+
+  const filter = el("input", {
+    type: "search", class: "pb-filter",
+    placeholder: "Filter by name, path, host or tag…",
+  });
+  const summary = el("span", { class: "muted small" });
+  const toggleAllBtn = el("button", { class: "btn btn-sm", onclick: () => toggleAll() });
+  const toolbar = el("div", { class: "pb-toolbar" },
+    el("span", { class: "pb-search-ic", html: ICONS.search }),
+    filter,
+    el("div", { class: "grow" }),
+    summary,
+    toggleAllBtn);
+  box.appendChild(toolbar);
+
+  const list = el("div", { class: "pb-list" });
+  box.appendChild(list);
+
+  // Collapsed projects persist across re-renders within this page visit.
+  const collapsed = new Set();
+  // Project keys shown by the current filter — kept fresh by render() so the
+  // collapse-all button only ever toggles what's actually on screen.
+  let visibleProjects = [];
+
+  const toggleAll = () => {
+    const allCollapsed = visibleProjects.length > 0 && visibleProjects.every((p) => collapsed.has(p));
+    if (allCollapsed) visibleProjects.forEach((p) => collapsed.delete(p));
+    else visibleProjects.forEach((p) => collapsed.add(p));
+    render();
+  };
+  const applyFilter = (term) => { filter.value = term; render(); filter.focus(); };
+
+  const chip = (text, cls, title) => el("span", {
+    class: "chip pb-chip-link" + (cls ? " " + cls : ""), title: title || `Filter by ${text}`,
+    onclick: (e) => { e.stopPropagation(); applyFilter(text); },
+  }, text);
+
+  const playbookRow = (it) => {
+    const { pb, plays, hosts, tags } = it;
     const href = `#/playbook/${repo.id}/${encodePath(pb.path)}`;
-    const card = el("div", { class: "card pb-card clickable", onclick: () => (location.hash = href) },
-      el("div", { class: "top" },
-        el("div", { style: { flex: 1, minWidth: 0 } },
-          el("div", { class: "name" }, pb.name || pb.path),
-          el("div", { class: "path" }, pb.path)),
-        el("div", { class: "row", style: { gap: "6px" } },
-          el("button", {
-            class: "btn btn-sm btn-ghost", title: "Preview raw YAML",
-            onclick: (e) => { e.stopPropagation(); openRawFileModal(repo.id, pb.path, pb.path); },
-          }, icon("code")),
-          el("button", {
-            class: "btn btn-sm btn-secondary", title: "Plan — estimate what this playbook would do, without running it",
-            onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path, plan: true }); },
-          }, icon("clipboard"), "Plan"),
-          el("button", {
-            class: "btn btn-sm btn-primary",
-            onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path }); },
-          }, icon("play"), "Run"))),
-      el("div", { class: "meta-row" },
+    const base = pb.path.includes("/") ? pb.path.slice(pb.path.lastIndexOf("/") + 1) : pb.path;
+    return el("div", { class: "pb-row clickable", onclick: () => (location.hash = href) },
+      el("div", { class: "pb-row-main" },
+        el("div", { class: "pb-row-name" }, pb.name || base),
+        el("div", { class: "pb-row-path mono" }, pb.path)),
+      el("div", { class: "pb-row-chips" },
         el("span", { class: "chip" }, `${plays.length} play${plays.length === 1 ? "" : "s"}`),
-        hostPatterns.slice(0, 4).map((h) => el("span", { class: "chip", style: { color: "var(--secondary)" } }, h)),
-        tags.map((t) => el("span", { class: "chip tag" }, t))));
-    box.appendChild(card);
-  }
+        hosts.slice(0, 4).map((h) => chip(h, "pb-host", `Filter by host ${h}`)),
+        hosts.length > 4 ? el("span", { class: "chip" }, `+${hosts.length - 4}`) : null,
+        tags.slice(0, 6).map((t) => chip(t, "tag", `Filter by tag ${t}`)),
+        tags.length > 6 ? el("span", { class: "chip tag" }, `+${tags.length - 6}`) : null),
+      el("div", { class: "pb-row-acts" },
+        el("button", {
+          class: "btn btn-sm btn-ghost", title: "Preview raw YAML",
+          onclick: (e) => { e.stopPropagation(); openRawFileModal(repo.id, pb.path, pb.path); },
+        }, icon("code")),
+        el("button", {
+          class: "btn btn-sm btn-secondary", title: "Plan — estimate what this playbook would do, without running it",
+          onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path, plan: true }); },
+        }, icon("clipboard"), "Plan"),
+        el("button", {
+          class: "btn btn-sm btn-primary",
+          onclick: (e) => { e.stopPropagation(); openRunModal({ repoId: repo.id, playbook: pb.path }); },
+        }, icon("play"), "Run")));
+  };
+
+  const render = () => {
+    const terms = filter.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const matched = items.filter((it) => terms.every((t) => it.haystack.includes(t)));
+
+    summary.textContent = terms.length
+      ? `${matched.length} of ${items.length} playbook${items.length === 1 ? "" : "s"}`
+      : `${items.length} playbook${items.length === 1 ? "" : "s"} · ${projectCount} project${projectCount === 1 ? "" : "s"}`;
+
+    list.innerHTML = "";
+    if (!matched.length) {
+      list.appendChild(el("div", { class: "empty" },
+        el("h3", null, "No playbooks match"),
+        el("p", null, `Nothing matches “${filter.value.trim()}”.`),
+        el("button", { class: "btn", onclick: () => applyFilter("") }, "Clear filter")));
+      return;
+    }
+
+    // group → sorted, repo root first then alphabetical by directory
+    const groups = new Map();
+    for (const it of matched) {
+      if (!groups.has(it.project)) groups.set(it.project, []);
+      groups.get(it.project).push(it);
+    }
+    const ordered = [...groups.entries()].sort((a, b) => {
+      if (a[0] === "") return -1;
+      if (b[0] === "") return 1;
+      return a[0].localeCompare(b[0]);
+    });
+
+    visibleProjects = ordered.map(([project]) => project);
+    const allCollapsed = visibleProjects.length > 0 && visibleProjects.every((p) => collapsed.has(p));
+    toggleAllBtn.innerHTML = "";
+    toggleAllBtn.append(icon(allCollapsed ? "plus" : "minus"), allCollapsed ? "Expand all" : "Collapse all");
+    toggleAllBtn.disabled = visibleProjects.length === 0;
+
+    for (const [project, group] of ordered) {
+      group.sort((a, b) => (a.pb.name || a.pb.path).localeCompare(b.pb.name || b.pb.path));
+      const isCollapsed = collapsed.has(project);
+      const label = project || "repository root";
+      const head = el("div", { class: "pb-group-head", onclick: () => {
+        if (collapsed.has(project)) collapsed.delete(project); else collapsed.add(project);
+        render();
+      } },
+        el("span", { class: "pb-caret" + (isCollapsed ? " collapsed" : "") }, "▾"),
+        el("span", { class: "pb-folder-ic", html: ICONS.folder }),
+        el("span", { class: "pb-group-name" + (project ? " mono" : "") }, label),
+        el("span", { class: "chip pb-group-count" }, String(group.length)));
+      const rows = el("div", { class: "pb-rows" });
+      if (!isCollapsed) group.forEach((it) => rows.appendChild(playbookRow(it)));
+      list.appendChild(el("div", { class: "pb-group" }, head, rows));
+    }
+  };
+
+  filter.addEventListener("input", render);
+  render();
 }
 
 /* ============================================================
@@ -872,6 +1146,468 @@ function shortModule(mod) {
   if (!mod) return "task";
   const parts = mod.split(".");
   return parts.length > 2 ? parts.slice(-1)[0] : mod;
+}
+
+/* ---- variable resolution in the task-flow (uses /repos/{id}/resolve) ---- */
+
+const VAR_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/;
+const LEAD_IDENT_RE = /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*/;
+
+function lookupVarPath(vars, path) {
+  let cur = vars;
+  for (const part of path.split(".")) {
+    if (cur && typeof cur === "object" && !Array.isArray(cur) && part in cur) cur = cur[part];
+    else return undefined;
+  }
+  return cur;
+}
+
+function isScalarVal(v) { return v === null || typeof v !== "object"; }
+
+function fmtVarValue(v) {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return `[${v.length} item${v.length === 1 ? "" : "s"}]`;
+  if (typeof v === "object") return "{…}";
+  return String(v);
+}
+
+// Split a string into literal + {{ … }} tokens, resolving simple var paths
+// against `vars`. Filters/expressions stay unresolved (honest: shown raw).
+function templateTokens(str, vars) {
+  const tokens = [];
+  let rest = str;
+  for (;;) {
+    const start = rest.indexOf("{{");
+    if (start < 0) { if (rest) tokens.push({ text: rest }); break; }
+    if (start > 0) tokens.push({ text: rest.slice(0, start) });
+    const end = rest.indexOf("}}", start);
+    if (end < 0) { tokens.push({ text: rest.slice(start) }); break; }
+    const inner = rest.slice(start + 2, end).trim();
+    const raw = rest.slice(start, end + 2);
+    const m = inner.match(LEAD_IDENT_RE);
+    const name = m ? m[0] : inner;
+    let value, known = false;
+    if (VAR_PATH_RE.test(inner) && vars) {
+      const v = lookupVarPath(vars, inner);
+      if (v !== undefined && isScalarVal(v)) { value = v; known = true; }
+    }
+    tokens.push({ varToken: true, raw, inner, name, value, known });
+    rest = rest.slice(end + 2);
+  }
+  return tokens;
+}
+
+// itemLabel renders one loop item for display: scalars as-is, dicts by their
+// most identifying key.
+function itemLabel(it) {
+  if (it === null || typeof it !== "object") return String(it);
+  return String(it.name ?? it.key ?? it.path ?? it.role ?? it.dest ?? "{…}");
+}
+
+// resolveItemToken turns an `item` / `item.field` reference into the set of
+// concrete values it takes across the loop's items.
+function resolveItemToken(inner, items) {
+  const sub = inner.split(".").slice(1);
+  const out = [];
+  for (const it of items) {
+    if (!sub.length) { out.push(itemLabel(it)); continue; }
+    let v = it;
+    for (const p of sub) { if (v && typeof v === "object" && p in v) v = v[p]; else { v = undefined; break; } }
+    if (v !== undefined && isScalarVal(v)) out.push(String(v));
+  }
+  return out;
+}
+
+// interpolateStr substitutes simple {{ var }} references from `vars` (scalars),
+// recursively, leaving anything unresolvable (facts, expressions) intact.
+function interpolateStr(str, vars, depth) {
+  if (!str || typeof str !== "string" || !str.includes("{{") || (depth || 0) > 10) return str;
+  const out = str.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g, (m, name) => {
+    const v = lookupVarPath(vars, name);
+    return v !== undefined && isScalarVal(v) ? String(v) : m;
+  });
+  return out === str ? out : interpolateStr(out, vars, (depth || 0) + 1);
+}
+
+// loopItemsFor returns a task's concrete loop items (literal items captured at
+// scan time, or a loop variable resolved against the current vars), with any
+// {{ var }} inside the items expanded too.
+function loopItemsFor(task, ctx) {
+  let items = null;
+  if (Array.isArray(task.loop_values) && task.loop_values.length) {
+    items = task.loop_values;
+  } else {
+    const expr = (task.loop_expr || "").trim();
+    const m = expr.match(/^\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}$/);
+    const name = m ? m[1] : (/^[A-Za-z_][A-Za-z0-9_.]*$/.test(expr) ? expr : null);
+    if (!name || !ctx || !ctx.vars) return null;
+    const v = lookupVarPath(ctx.vars, name);
+    items = Array.isArray(v) ? v : null;
+  }
+  if (items && ctx && ctx.vars) {
+    items = items.map((it) => (typeof it === "string" ? interpolateStr(it, ctx.vars, 0) : it));
+  }
+  return items;
+}
+
+// renderTemplated returns a node for `str` with {{ vars }} shown as their
+// resolved value (raw on hover) or, when unresolved, the raw {{ … }} — every
+// variable is a chip that opens its lineage. Inside a loop, {{ item }} shows
+// the possible items. Falls back to plain text with no resolution context.
+function renderTemplated(str, ctx, cls) {
+  if (str == null) return document.createTextNode("");
+  const canResolve = ctx && (ctx.vars || (ctx.loopItems && ctx.loopItems.length));
+  if (!str.includes("{{") || !canResolve) return document.createTextNode(str);
+  const span = el("span", cls ? { class: cls } : null);
+  for (const tok of templateTokens(str, ctx.vars || {})) {
+    if (tok.text != null) { span.appendChild(document.createTextNode(tok.text)); continue; }
+    // {{ item }} / {{ item.field }} inside a loop → a compact placeholder chip
+    // (keeps paths readable); the concrete values are listed in the loop line.
+    if (ctx.loopItems && ctx.loopItems.length && /^item(\..+)?$/.test(tok.inner)) {
+      const vals = [...new Set(resolveItemToken(tok.inner, ctx.loopItems))];
+      span.appendChild(el("span", {
+        class: "var-tok var-loop",
+        title: vals.length
+          ? `${tok.raw} — loops over ${ctx.loopItems.length} item${ctx.loopItems.length === 1 ? "" : "s"}:\n${vals.join("\n")}`
+          : tok.raw,
+      }, tok.inner));
+      continue;
+    }
+    if (tok.known) {
+      span.appendChild(el("span", {
+        class: "var-tok var-known",
+        title: `${tok.raw} = ${fmtVarValue(tok.value)}\n(click for lineage)`,
+        onclick: (e) => { e.stopPropagation(); openVarPopover(e.currentTarget, tok.name, ctx, "known"); },
+      }, fmtVarValue(tok.value)));
+      continue;
+    }
+    const klass = classifyVar(tok.name, ctx);
+    span.appendChild(el("span", {
+      class: "var-tok var-" + klass,
+      title: `${tok.raw} — ${VAR_STATE_TITLE[klass]}\n(click for lineage)`,
+      onclick: (e) => { e.stopPropagation(); openVarPopover(e.currentTarget, tok.name, ctx, klass); },
+    }, tok.raw));
+  }
+  return span;
+}
+
+// renderLoopItems lists the concrete items a looped task iterates over — one
+// per line, each highlighted like a variable value (so a remaining {{ fact }}
+// shows as a runtime token, resolved parts as plain text).
+function renderLoopItems(items, ctx) {
+  const box = el("div", { class: "t-loop-items" },
+    el("div", { class: "tli-head" },
+      el("span", { class: "tli-label", html: ICONS.loop }),
+      el("span", { class: "tli-count" }, `loops over ${items.length} item${items.length === 1 ? "" : "s"}`)));
+  const list = el("div", { class: "tli-list" });
+  const seen = new Set();
+  for (const it of items) {
+    const label = typeof it === "string" ? it : itemLabel(it);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    if (seen.size > 12) break;
+    list.appendChild(el("div", { class: "tli-line" },
+      el("span", { class: "tli-bullet" }, "•"),
+      typeof it === "string" && it.includes("{{")
+        ? renderTemplated(it, ctx)
+        : document.createTextNode(label)));
+  }
+  if (items.length > seen.size) list.appendChild(el("div", { class: "tli-more muted small" }, `+${items.length - seen.size} more`));
+  box.appendChild(list);
+  return box;
+}
+
+/* ---- per-play variables panel (docked beside the task flow) ---- */
+
+// the variables a single play's tasks reference (base identifiers).
+function playReferencedNames(play) {
+  const set = new Set();
+  collectTaskRefs(play.pre_tasks, set);
+  collectTaskRefs(play.tasks, set);
+  collectTaskRefs(play.post_tasks, set);
+  collectTaskRefs(play.handlers, set);
+  return set;
+}
+
+// one play's resolved vars (value + lineage) plus its referenced-but-unresolved
+// vars, each tagged runtime / elsewhere / undefined — same states as the flow.
+function aggregatePlayVars(playVars, knownSet, play) {
+  const map = new Map();
+  const vars = (playVars && playVars.vars) || {};
+  const lineage = (playVars && playVars.lineage) || {};
+  for (const k of Object.keys(vars)) {
+    map.set(k, { name: k, value: vars[k], chain: lineage[k] || [], state: "known" });
+  }
+  for (const name of playReferencedNames(play)) {
+    const base = name.split(".")[0];
+    if (map.has(name) || map.has(base)) continue;
+    const state = isRuntimeVar(name) ? "runtime" : (knownSet.has(name) || knownSet.has(base) ? "elsewhere" : "undefined");
+    map.set(name, { name, value: undefined, chain: [], state });
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// the colour key, matching the variable-token colours used in the task flow.
+const VAR_LEGEND = [
+  ["known", "resolved"], ["runtime", "runtime"], ["elsewhere", "elsewhere"],
+  ["undefined", "nowhere"], ["loop", "loop item"],
+];
+function varColorLegend() {
+  return el("div", { class: "var-legend" },
+    VAR_LEGEND.map(([s, l]) => el("span", { class: "vl-item" }, el("span", { class: "vl-dot var-" + s }), l)));
+}
+
+// one variable row: resolved ones expand to their lineage; others show a state chip.
+function renderVarRow(v) {
+  const row = el("div", { class: "vp-item vp-" + (v.state || "known") });
+  if (v.state === "known") {
+    const effScope = v.chain.length ? v.chain[v.chain.length - 1].scope : "";
+    const chainBox = el("div", { class: "vp-item-chain" });
+    v.chain.forEach((e, i) => chainBox.appendChild(el("div", { class: "var-pop-row" + (i === v.chain.length - 1 ? " eff" : "") },
+      el("span", { class: "vp-scope" }, VAR_SCOPE_LABELS[e.scope] || e.scope),
+      el("span", { class: "vp-name mono", title: e.name }, e.name),
+      el("span", { class: "vp-val mono" }, fmtVarValue(e.value)))));
+    row.append(
+      el("div", { class: "vp-item-head", onclick: () => row.classList.toggle("open") },
+        el("span", { class: "vp-item-name mono" }, v.name),
+        el("span", { class: "vp-item-val mono", title: fmtVarValue(v.value) }, fmtVarValue(v.value)),
+        effScope ? el("span", { class: "vp-item-src" }, VAR_SCOPE_LABELS[effScope] || effScope) : null),
+      chainBox);
+  } else {
+    row.append(el("div", { class: "vp-item-head vp-noexpand", title: VAR_STATE_TITLE[v.state] },
+      el("span", { class: "vp-item-name mono" }, v.name),
+      el("span", { class: "chip var-state-chip var-" + v.state }, v.state)));
+  }
+  return row;
+}
+
+// the variables panel width lives in a CSS var on :root so all panels resize
+// together; persisted so it survives reloads/re-renders.
+const PV_WIDTH_MIN = 240, PV_WIDTH_MAX = 720;
+function applySavedPvWidth() {
+  const w = parseInt(localStorage.getItem("pine.pvWidth") || "", 10);
+  if (w >= PV_WIDTH_MIN && w <= PV_WIDTH_MAX) {
+    document.documentElement.style.setProperty("--pv-width", w + "px");
+  }
+}
+function currentPvWidth() {
+  const v = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--pv-width"), 10);
+  return v || 320;
+}
+// attachPvResize wires a left-edge handle: drag left to widen, right to narrow.
+function attachPvResize(handle) {
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const startX = e.clientX, startW = currentPvWidth();
+    document.body.classList.add("pv-resizing");
+    let pending = false;
+    const redrawArrows = () => {
+      pending = false;
+      document.querySelectorAll(".play-section").forEach(drawNotifyArrows);
+    };
+    const onMove = (ev) => {
+      const w = Math.max(PV_WIDTH_MIN, Math.min(PV_WIDTH_MAX, startW + (startX - ev.clientX)));
+      document.documentElement.style.setProperty("--pv-width", w + "px");
+      // the body width changed → the notify arrows must be redrawn (throttled)
+      if (!pending) { pending = true; requestAnimationFrame(redrawArrows); }
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("pv-resizing");
+      requestAnimationFrame(redrawArrows);
+      try { localStorage.setItem("pine.pvWidth", String(currentPvWidth())); } catch { /* ignore */ }
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+// buildPlayVarsPanel renders the variables panel that sits beside a play's tasks.
+function buildPlayVarsPanel(play, playVars, resolveState) {
+  const known = new Set((resolveState && resolveState.known) || []);
+  const vars = aggregatePlayVars(playVars, known, play);
+  markUsedVars(vars, play); // sets v.used = referenced by this play (transitively)
+  const usedCount = vars.filter((v) => v.used).length;
+  const scope = resolveState && resolveState.mode === "host" ? `host: ${resolveState.host}` : "constants (no host)";
+  const nUndef = vars.filter((v) => v.state === "undefined").length;
+
+  let onlyUsed = false;
+  const filter = el("input", { type: "search", class: "vars-pane-filter", placeholder: "Filter variables…" });
+  const list = el("div", { class: "vars-pane-list" });
+  const allBtn = el("button", { class: "vp-seg-btn active", onclick: () => setUsed(false) }, `All ${vars.length}`);
+  const usedBtn = el("button", { class: "vp-seg-btn", title: "only variables this playbook references", onclick: () => setUsed(true) }, `Used here ${usedCount}`);
+  const seg = el("div", { class: "vp-seg" }, allBtn, usedBtn);
+  const setUsed = (v) => { onlyUsed = v; allBtn.classList.toggle("active", !v); usedBtn.classList.toggle("active", v); draw(); };
+
+  const handle = el("div", { class: "pv-resize", title: "Drag to resize" });
+  attachPvResize(handle);
+  const panel = el("aside", { class: "play-vars" },
+    handle,
+    el("div", { class: "vars-pane-head" },
+      el("div", null, el("b", null, "Variables"),
+        el("div", { class: "muted small" }, scope),
+        nUndef ? el("div", { class: "vars-pane-undef" }, `${nUndef} defined nowhere`) : null)),
+    varColorLegend(), seg, filter, list);
+  const draw = () => {
+    const q = filter.value.trim().toLowerCase();
+    const shown = vars.filter((v) => (!onlyUsed || v.used) && (!q || v.name.toLowerCase().includes(q)));
+    list.innerHTML = "";
+    if (!shown.length) {
+      list.appendChild(el("div", { class: "muted small", style: { padding: "10px" } },
+        vars.length ? "No variables match." : "This play references no variables."));
+      return;
+    }
+    shown.forEach((v) => list.appendChild(renderVarRow(v)));
+  };
+  filter.addEventListener("input", draw);
+  draw();
+  return panel;
+}
+
+// markUsedVars flags the variables a play actually references — directly in its
+// tasks, plus the ones those reference through their (authored) values — so the
+// panel can filter to "used here" only.
+function markUsedVars(vars, play) {
+  const byBase = new Map();
+  for (const v of vars) byBase.set(v.name.split(".")[0], v);
+  const used = new Set();
+  const queue = [...playReferencedNames(play)];
+  while (queue.length) {
+    const base = queue.pop().split(".")[0];
+    if (used.has(base)) continue;
+    used.add(base);
+    const v = byBase.get(base);
+    const authored = v && v.chain && v.chain.length ? v.chain[v.chain.length - 1].value : undefined;
+    if (typeof authored === "string") extractRefNames(authored).forEach((r) => queue.push(r));
+  }
+  for (const v of vars) v.used = used.has(v.name.split(".")[0]);
+}
+
+const VAR_SCOPE_LABELS = {
+  role_default: "role default", role_vars: "role vars", group: "group vars",
+  host: "host vars", vars_file: "vars file", play_vars: "play vars",
+  vars_prompt: "vars_prompt",
+};
+
+// Magic/runtime variables Ansible provides at run time — Pine can't resolve
+// them statically, but they are NOT "undefined" either.
+const RUNTIME_VARS = new Set([
+  "inventory_hostname", "inventory_hostname_short", "inventory_dir", "inventory_file",
+  "hostvars", "groups", "group_names", "play_hosts", "ansible_play_hosts",
+  "ansible_play_batch", "ansible_play_hosts_all", "playbook_dir", "role_name", "role_path",
+  "role_names", "ansible_role_names", "omit", "ansible_check_mode", "ansible_version",
+  "ansible_facts", "item", "ansible_loop", "ansible_loop_var", "ansible_index_var",
+]);
+
+function isRuntimeVar(name) {
+  const base = name.split(".")[0];
+  return RUNTIME_VARS.has(base) || base.startsWith("ansible_") || base === "item";
+}
+
+// classifyVar buckets an unresolved variable: a runtime/magic var, one defined
+// elsewhere in the project (just not in this scope), or one defined NOWHERE.
+function classifyVar(name, ctx) {
+  if (isRuntimeVar(name)) return "runtime";
+  const base = name.split(".")[0];
+  if (ctx.known && (ctx.known.has(name) || ctx.known.has(base))) return "elsewhere";
+  return "undefined";
+}
+
+const VAR_STATE_TITLE = {
+  runtime: "runtime variable (provided by Ansible at run time)",
+  elsewhere: "defined in the project, but not in this scope",
+  undefined: "not defined anywhere Pine can see",
+};
+
+// extractRefNames pulls the base variable names referenced by {{ … }} blocks in
+// a string (the leading identifier path of each), skipping loop `item`.
+function extractRefNames(str) {
+  const out = [];
+  if (!str || !str.includes("{{")) return out;
+  let rest = str;
+  for (;;) {
+    const s = rest.indexOf("{{");
+    if (s < 0) break;
+    const e = rest.indexOf("}}", s);
+    if (e < 0) break;
+    const m = rest.slice(s + 2, e).trim().match(LEAD_IDENT_RE);
+    if (m) { const base = m[0].split(".")[0]; if (base !== "item") out.push(base); }
+    rest = rest.slice(e + 2);
+  }
+  return out;
+}
+
+// collectTaskRefs walks tasks (and their blocks/inlined imports) gathering every
+// variable referenced in names, args and loop expressions.
+function collectTaskRefs(tasks, set) {
+  for (const t of tasks || []) {
+    extractRefNames(t.name).forEach((n) => set.add(n));
+    extractRefNames(t.args).forEach((n) => set.add(n));
+    extractRefNames(t.loop_expr).forEach((n) => set.add(n));
+    (t.loop_values || []).forEach((it) => { if (typeof it === "string") extractRefNames(it).forEach((n) => set.add(n)); });
+    collectTaskRefs(t.block, set);
+    collectTaskRefs(t.rescue, set);
+    collectTaskRefs(t.always, set);
+    collectTaskRefs(t.imported, set);
+  }
+}
+
+let activeVarPopover = null;
+function closeVarPopover() {
+  if (!activeVarPopover) return;
+  activeVarPopover.remove();
+  activeVarPopover = null;
+  document.removeEventListener("mousedown", onVarPopoverDocClick, true);
+  document.removeEventListener("keydown", onVarPopoverKey, true);
+}
+function onVarPopoverDocClick(e) { if (activeVarPopover && !activeVarPopover.contains(e.target)) closeVarPopover(); }
+function onVarPopoverKey(e) { if (e.key === "Escape") closeVarPopover(); }
+
+// openVarPopover shows where a variable's value comes from — the precedence
+// chain from the resolve endpoint, with the effective (winning) layer marked.
+// klass ("known"|"runtime"|"elsewhere"|"undefined") tailors the empty state.
+function openVarPopover(anchor, name, ctx, klass) {
+  closeVarPopover();
+  const chain = (ctx.lineage && ctx.lineage[name]) || [];
+  const k = klass || (chain.length ? "known" : "undefined");
+  const body = el("div", { class: "var-pop" },
+    el("div", { class: "var-pop-head" },
+      el("span", { class: "mono vp-key" }, name),
+      el("span", { class: "chip var-state-chip var-" + k, title: "variable state" },
+        k === "known" ? (ctx.mode === "host" ? `host: ${ctx.host}` : "constants")
+          : k === "runtime" ? "runtime / magic"
+          : k === "elsewhere" ? "defined elsewhere"
+          : "defined nowhere")));
+  if (!chain.length) {
+    let msg;
+    if (k === "runtime") {
+      msg = "A runtime/magic variable — facts, inventory_hostname, groups, hostvars, item… are provided by Ansible while it runs, so Pine can't resolve them statically.";
+    } else if (k === "elsewhere") {
+      msg = "Defined somewhere in this project, but not in the current scope — most likely a host or group var. Pick a host above to resolve it.";
+    } else {
+      msg = "Defined nowhere Pine can see — not in any role defaults/vars, group_vars, host_vars, vars_files or play vars (no host var either). It's set at runtime (set_fact / include_vars / register), passed via --extra-vars or the environment, or it's a typo.";
+    }
+    body.appendChild(el("div", { class: "var-pop-empty var-" + k }, msg));
+  } else {
+    const list = el("div", { class: "var-pop-chain" });
+    chain.forEach((e, i) => list.appendChild(el("div", { class: "var-pop-row" + (i === chain.length - 1 ? " eff" : "") },
+      el("span", { class: "vp-scope" }, VAR_SCOPE_LABELS[e.scope] || e.scope),
+      el("span", { class: "vp-name mono", title: e.name }, e.name),
+      el("span", { class: "vp-val mono" }, fmtVarValue(e.value)))));
+    body.appendChild(list);
+  }
+  const pop = el("div", { class: "var-popover" }, body);
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.scrollX + r.left, window.scrollX + window.innerWidth - pop.offsetWidth - 12));
+  pop.style.top = `${window.scrollY + r.bottom + 6}px`;
+  pop.style.left = `${left}px`;
+  activeVarPopover = pop;
+  setTimeout(() => {
+    document.addEventListener("mousedown", onVarPopoverDocClick, true);
+    document.addEventListener("keydown", onVarPopoverKey, true);
+  }, 0);
 }
 
 let taskUid = 0;
@@ -907,6 +1643,32 @@ function renderTaskNode(task, opts = {}) {
     return group;
   }
 
+  // import_tasks resolved at scan time: pull the referenced file's tasks in,
+  // rendered as a labelled group so the flow follows the import inline.
+  if (task.imported && task.imported.length) {
+    const group = el("div", { class: "block-group import-group" });
+    const label = el("div", { class: "block-label" },
+      el("span", { class: "module mod-flow", title: task.module || "" }, shortModule(task.module)));
+    const file = task.include_path;
+    if (file && !file.includes("{{") && opts.repoId) {
+      label.appendChild(el("a", {
+        class: "import-file mono t-args-link", title: "Open " + file,
+        onclick: (e) => { e.stopPropagation(); openRawFileModal(opts.repoId, includeCandidates(opts.basePath, file), file); },
+      }, icon("code"), el("span", null, file)));
+    } else if (file) {
+      label.appendChild(el("span", { class: "import-file mono" }, file));
+    }
+    if (task.name && task.name !== task.module) {
+      label.appendChild(el("span", { class: "import-title" }, task.name));
+    }
+    if (task.when) label.appendChild(whenChip(task.when));
+    (task.tags || []).forEach((t) => label.appendChild(el("span", { class: "chip tag" }, t)));
+    label.appendChild(el("span", { class: "chip import-count" }, `${task.imported.length} task${task.imported.length === 1 ? "" : "s"}`));
+    group.appendChild(label);
+    group.appendChild(taskColumn(task.imported, opts));
+    return group;
+  }
+
   const cat = moduleCategory(task.module);
   const node = el("div", { class: "task-node" + (opts.handler ? " handler-node" : "") });
   node.dataset.uid = String(++taskUid);
@@ -915,8 +1677,15 @@ function renderTaskNode(task, opts = {}) {
 
   node.appendChild(el("span", { class: `module mod-${cat}`, title: task.module || "" }, shortModule(task.module)));
 
+  // Inside a loop, resolve {{ item }} to the concrete items for this task.
+  const loopItems = task.loop ? loopItemsFor(task, opts) : null;
+  const tctx = (loopItems && loopItems.length) ? { ...opts, loopItems } : opts;
+
   const main = el("div", { class: "t-main" });
-  main.appendChild(el("div", { class: "t-name" + (task.name ? "" : " unnamed") }, task.name || "(unnamed task)"));
+  const nameNode = task.name && task.name.includes("{{")
+    ? renderTemplated(task.name, tctx)
+    : document.createTextNode(task.name || "(unnamed task)");
+  main.appendChild(el("div", { class: "t-name" + (task.name ? "" : " unnamed") }, nameNode));
   if (task.args) {
     // A static include/import path is clickable: it opens the referenced file.
     const linkable = task.include_path && !task.include_path.includes("{{") && opts.repoId;
@@ -929,13 +1698,17 @@ function renderTaskNode(task, opts = {}) {
         },
       }, icon("code"), el("span", null, task.args)));
     } else {
-      main.appendChild(el("div", { class: "t-args mono", title: task.args }, task.args));
+      main.appendChild(el("div", { class: "t-args mono", title: task.args }, renderTemplated(task.args, tctx)));
     }
   }
+  if (loopItems && loopItems.length) main.appendChild(renderLoopItems(loopItems, tctx));
   const chips = el("div", { class: "t-chips" });
   (task.tags || []).forEach((t) => chips.appendChild(el("span", { class: "chip tag" }, t)));
   if (task.when) chips.appendChild(whenChip(task.when));
-  (task.notify || []).forEach((n) => chips.appendChild(el("span", { class: "chip notify-chip", title: `notifies handler “${n}”` }, icon("bell"), n)));
+  (task.notify || []).forEach((n) => chips.appendChild(el("span", {
+    class: "chip notify-chip notify-link", title: `notifies handler “${n}” — click to scroll to it`,
+    onclick: (e) => { e.stopPropagation(); scrollToHandler(e.currentTarget, n); },
+  }, icon("bell"), n)));
   if (chips.childNodes.length) main.appendChild(chips);
   node.appendChild(main);
 
@@ -947,6 +1720,18 @@ function renderTaskNode(task, opts = {}) {
 
 function whenChip(expr) {
   return el("span", { class: "chip when-chip", title: `when: ${expr}` }, "when");
+}
+
+// scrollToHandler jumps from a task's notify chip to the matching handler node
+// within the same play and flashes it.
+function scrollToHandler(anchor, name) {
+  const section = anchor.closest(".play-section");
+  if (!section) return;
+  const target = [...section.querySelectorAll("[data-handler-name]")].find((h) => h.dataset.handlerName === name);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.add("flash-handler");
+  setTimeout(() => target.classList.remove("flash-handler"), 1300);
 }
 
 function taskColumn(tasks, opts = {}) {
@@ -978,12 +1763,15 @@ async function pagePlaybookDetail(page, segs) {
   }
 
   $("#topbar-title").textContent = pb.name || pb.path;
+  applySavedPvWidth();
+  const headControls = el("div", { class: "resolve-controls" });
   page.appendChild(el("div", { class: "page-head" },
     el("a", { href: "#/playbooks", class: "btn btn-ghost btn-sm" }, "← Playbooks"),
     el("div", null,
       el("h1", null, pb.name || pb.path),
       el("div", { class: "muted mono small" }, `${repo.name} / ${pb.path}`)),
     el("div", { class: "grow" }),
+    headControls,
     el("button", { class: "btn", onclick: () => openRawFileModal(repoId, pb.path, pb.path) },
       icon("code"), "View YAML"),
     el("button", {
@@ -994,26 +1782,132 @@ async function pagePlaybookDetail(page, segs) {
       icon("play"), "Run playbook")));
 
   const sections = [];
-  (pb.plays || []).forEach((play, idx) => {
-    const section = renderPlaySection(play, idx, repoId, pb.path);
-    sections.push(section);
-    page.appendChild(section);
-  });
+  const playsBox = el("div");
+  page.appendChild(playsBox);
   if (!(pb.plays || []).length) {
-    page.appendChild(el("div", { class: "empty" }, el("h3", null, "Empty playbook"), el("p", null, "No plays were parsed from this file.")));
+    playsBox.appendChild(el("div", { class: "empty" }, el("h3", null, "Empty playbook"), el("p", null, "No plays were parsed from this file.")));
   }
 
-  // draw notify → handler arrows once layout settles
+  // Resolve {{ vars }} so the flow shows real values. Default: host-agnostic
+  // ("constants"); a host can be picked to resolve host-specific vars too.
+  let resolveState = null;
   const redraw = () => sections.forEach(drawNotifyArrows);
-  requestAnimationFrame(() => requestAnimationFrame(redraw));
+  const renderPlays = () => {
+    closeVarPopover();
+    sections.length = 0;
+    playsBox.innerHTML = "";
+    (pb.plays || []).forEach((play, idx) => {
+      const section = renderPlaySection(play, idx, repoId, pb.path, resolveState);
+      sections.push(section);
+      playsBox.appendChild(section);
+    });
+    requestAnimationFrame(() => requestAnimationFrame(redraw));
+  };
+  renderPlays();
+  onCleanup(closeVarPopover);
+
+  // Variables now live in a panel docked beside each play's tasks; this button
+  // just toggles their visibility across all plays.
+  let varsHidden = false;
+  const toggleVarsPanels = () => { varsHidden = !varsHidden; playsBox.classList.toggle("vars-hidden", varsHidden); };
+
+  const loadResolve = async (inventory, host) => {
+    try {
+      const q = new URLSearchParams({ playbook: pb.path });
+      if (inventory) q.set("inventory", inventory);
+      if (host) q.set("host", host);
+      resolveState = await api(`/repos/${repoId}/resolve?${q.toString()}`);
+    } catch { resolveState = null; }
+    buildHeadControls();
+    renderPlays();
+  };
+
+  // total distinct variables across plays, for the toggle button's count.
+  const aggregateVars = () => {
+    const known = resolveState && resolveState.known ? new Set(resolveState.known) : new Set();
+    const map = new Map();
+    for (const pv of (resolveState && resolveState.plays) || []) {
+      for (const k of Object.keys(pv.vars || {})) {
+        if (!map.has(k)) map.set(k, { name: k, value: pv.vars[k], chain: (pv.lineage || {})[k] || [], state: "known" });
+      }
+    }
+    for (const play of pb.plays || []) {
+      for (const name of playReferencedNames(play)) {
+        const base = name.split(".")[0];
+        if (map.has(name) || map.has(base)) continue;
+        const state = isRuntimeVar(name) ? "runtime" : (known.has(name) || known.has(base) ? "elsewhere" : "undefined");
+        map.set(name, { name, value: undefined, chain: [], state });
+      }
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  function buildHeadControls() {
+    const items = [];
+    if (resolveState && (resolveState.inventories || []).length) {
+      const SEP = ""; // delimiter for inventory + host option values
+      const sel = el("select", { class: "resolve-as", title: "Resolve variables as…" });
+      sel.appendChild(el("option", { value: "" }, "Constants (no host)"));
+      const mkOpt = (inv, h) => {
+        const name = typeof h === "string" ? h : h.name;
+        const varies = typeof h === "object" && h.varies;
+        // ● marks hosts whose resolution differs from the constants (host/group vars)
+        return el("option", {
+          value: `${inv.name}${SEP}${name}`,
+          class: varies ? "opt-varies" : null,
+          title: varies ? "has host/group-specific variables" : "no host-specific variables",
+        }, varies ? `● ${name}` : name);
+      };
+      for (const inv of resolveState.inventories) {
+        if (!inv.hosts || !inv.hosts.length) continue;
+        const label = inv.name || "inventory";
+        // hosts the playbook actually targets come first, in their own group
+        const targeted = inv.hosts.filter((h) => typeof h === "object" && h.targeted);
+        const others = inv.hosts.filter((h) => !(typeof h === "object" && h.targeted));
+        if (targeted.length) {
+          const og = el("optgroup", { label: `${label} · targeted by this playbook` });
+          targeted.forEach((h) => og.appendChild(mkOpt(inv, h)));
+          sel.appendChild(og);
+        }
+        if (others.length) {
+          const og = el("optgroup", { label: targeted.length ? `${label} · other hosts` : label });
+          others.forEach((h) => og.appendChild(mkOpt(inv, h)));
+          sel.appendChild(og);
+        }
+      }
+      sel.value = resolveState.mode === "host" ? `${resolveState.inventory}${SEP}${resolveState.host}` : "";
+      sel.onchange = () => { const [inv, host] = sel.value.split(SEP); loadResolve(host ? inv : "", host || ""); };
+      items.push(el("div", { class: "resolve-picker", title: "Resolve variables as…" },
+        icon("host"), el("span", { class: "muted small" }, "resolve as"), sel));
+    }
+    if (resolveState) {
+      const n = aggregateVars().length;
+      items.push(el("button", {
+        class: "btn btn-sm", title: "Show/hide the variables panels beside each play",
+        onclick: toggleVarsPanels,
+      }, icon("code"), `Variables ${n}`));
+    }
+    headControls.replaceChildren(...items);
+  }
+
+  loadResolve("", "");
+
   window.addEventListener("resize", redraw);
   onCleanup(() => window.removeEventListener("resize", redraw));
 }
 
-function renderPlaySection(play, idx, repoId, basePath) {
+function renderPlaySection(play, idx, repoId, basePath, resolveState) {
   // basePath = playbook dir, used to resolve clickable include/import files.
   const dir = basePath && basePath.includes("/") ? basePath.slice(0, basePath.lastIndexOf("/")) : "";
-  const ctx = { repoId, basePath: dir };
+  const pv = resolveState && resolveState.plays ? resolveState.plays[idx] : null;
+  const ctx = {
+    repoId, basePath: dir,
+    vars: pv ? pv.vars : null,
+    lineage: pv ? pv.lineage : null,
+    mode: resolveState ? resolveState.mode : "machine",
+    host: resolveState ? resolveState.host : "",
+    known: resolveState && resolveState.known ? new Set(resolveState.known) : null,
+  };
   const prompts = play.vars_prompt || [];
   const head = el("div", { class: "play-head" },
     el("span", { class: "play-name" }, play.name || `Play ${idx + 1}`),
@@ -1054,7 +1948,10 @@ function renderPlaySection(play, idx, repoId, basePath) {
   if (body.children.length === 1) {
     body.appendChild(el("div", { class: "muted small" }, "Nothing to show for this play."));
   }
-  return el("div", { class: "play-section" }, head, body);
+  // dock the play's variables panel beside the task flow
+  const playVars = resolveState && resolveState.plays ? resolveState.plays[idx] : null;
+  const panel = resolveState && !play.import ? buildPlayVarsPanel(play, playVars, resolveState) : null;
+  return el("div", { class: "play-section" }, head, el("div", { class: "play-layout" }, body, panel));
 }
 
 /** Curved SVG lines from tasks with notify → matching handler nodes within a play section. */
@@ -3002,82 +3899,6 @@ function openServiceCellModal(rep, svc, host, cell) {
 }
 
 /* ============================================================
-   4j-1c. Worktrees — git working trees of the repo's checkout
-   ============================================================ */
-
-function shortSha(sha) {
-  return sha && sha.length > 8 ? sha.slice(0, 8) : (sha || "—");
-}
-
-async function pageWorktrees(page) {
-  const repo = await requireRepo(page);
-  if (!repo) return;
-
-  page.appendChild(el("div", { class: "page-head" },
-    el("h1", null, "Worktrees"),
-    el("span", { class: "sub" }, `git working trees in ${repo.name}`)));
-
-  const box = el("div");
-  page.appendChild(box);
-  box.appendChild(skeletonRows(3, 72));
-
-  let wt;
-  try {
-    wt = await api(`/repos/${repo.id}/worktrees`);
-  } catch (e) {
-    box.innerHTML = "";
-    box.appendChild(el("div", { class: "empty" },
-      el("h3", null, "Could not load worktrees"),
-      el("p", null, e.message),
-      el("button", { class: "btn", onclick: route }, "Retry")));
-    toast(e.message, "error", "Worktrees failed");
-    return;
-  }
-  box.innerHTML = "";
-
-  if (!wt.is_git) {
-    box.appendChild(el("div", { class: "empty" },
-      el("h3", null, "Not a git repository"),
-      el("p", null, `${repo.name} is a plain directory (no .git), so it has no git worktrees. Connect it by git URL, or initialise git in the path, to see worktrees here.`)));
-    return;
-  }
-
-  const trees = wt.worktrees || [];
-  box.appendChild(el("div", { class: "section-title" },
-    el("span", null, icon("branch"), ` ${trees.length} worktree${trees.length === 1 ? "" : "s"}`)));
-
-  if (trees.length === 0) {
-    box.appendChild(el("div", { class: "empty" },
-      el("h3", null, "No worktrees"),
-      el("p", null, "git reported a repository but listed no working trees.")));
-    return;
-  }
-
-  const rows = trees.map((w) => {
-    const ref = w.bare
-      ? el("span", { class: "chip" }, "bare")
-      : w.branch
-        ? el("span", { class: "chip", style: { color: "var(--secondary)" } }, icon("branch"), w.branch)
-        : el("span", { class: "pill st-unknown" }, "detached");
-    const flags = [];
-    if (w.main) flags.push(el("span", { class: "chip green" }, "main"));
-    if (w.locked) flags.push(el("span", { class: "chip warn", title: w.lock_reason || "" }, "locked"));
-    if (w.prunable) flags.push(el("span", { class: "chip warn", title: w.prunable_reason || "" }, "prunable"));
-    return el("tr", null,
-      el("td", null, ref),
-      el("td", null, el("span", { class: "mono", style: { color: "var(--text)" } }, shortSha(w.head))),
-      el("td", null, el("span", { class: "mono", title: w.path }, w.path)),
-      el("td", null, flags.length ? flags : el("span", { class: "muted" }, "—")));
-  });
-
-  box.appendChild(el("div", { class: "table-wrap" },
-    el("table", { class: "data" },
-      el("thead", null, el("tr", null,
-        ["Branch", "HEAD", "Path", ""].map((h) => el("th", null, h)))),
-      el("tbody", null, rows))));
-}
-
-/* ============================================================
    4j-2. Schedules — recurring, optionally plan-gated runs
    ============================================================ */
 
@@ -4399,6 +5220,10 @@ function renderPlanTaskRow(task, focusMissingVar, totalMs) {
           class: "chip loop-chip",
           title: task.loop_items === -1 ? "Loop of unknown size" : `Loop over ${task.loop_items} item${task.loop_items === 1 ? "" : "s"}`,
         }, task.loop_items === -1 ? "loop ?" : `×${task.loop_items}`) : null),
+      task.args ? el("div", {
+        class: "pt-args mono" + (task.raw_args ? " templated" : ""),
+        title: task.raw_args ? `raw: ${task.raw_args}` : null,
+      }, task.args) : null,
       chips.childNodes.length ? chips : null,
       task.check_note ? el("div", { class: "pt-checknote" }, task.check_note) : null),
     el("div", { class: "pt-verdict" },
@@ -4623,7 +5448,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (gPressed) {
-    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", v: "services", k: "worktrees", s: "schedules", l: "pipelines", j: "jobs" };
+    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", v: "services", s: "schedules", l: "pipelines", j: "jobs" };
     if (map[e.key]) { location.hash = "#/" + map[e.key]; e.preventDefault(); }
     gPressed = false;
   } else if (e.key === "n") {

@@ -9,6 +9,10 @@
     healthcheck_path: /healthz
 
   pre_tasks:
+    - name: Load the web tier's per-service config
+      ansible.builtin.include_vars: vars/web_dedicated.yml
+      tags: [always]
+
     - name: Verify connectivity to the web tier
       ansible.builtin.ping:
       tags: [always]
@@ -27,6 +31,10 @@
       tags: [nginx, config, services]
 
   tasks:
+    - name: Provision the web tier's TLS material
+      ansible.builtin.import_tasks: tasks/tls_certs.yml
+      tags: [config, tls]
+
     - name: Deploy the Acme shop application code
       ansible.builtin.include_role:
         name: app_deploy

@@ -6,6 +6,9 @@ acme_domain: acme-corp.example
 acme_admin_email: ops@acme-corp.example
 acme_timezone: Etc/UTC
 
+# Private registry every host pulls container images through.
+docker_local_registry: registry.acme-corp.example
+
 # --- Common packages installed on every node -------------------------------
 common_packages:
   - vim
