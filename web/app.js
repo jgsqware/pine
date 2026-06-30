@@ -257,6 +257,27 @@ function includeCandidates(basePath, file) {
 }
 
 /**
+ * Candidate repo-relative locations for a `src:` file referenced by a
+ * template/copy/file-style module. Ansible looks in templates/ (template) or
+ * files/ (copy etc.) relative to the role or playbook, so we try those next to
+ * the task's dir and its parent; the preview opens the first that exists.
+ */
+function srcFileCandidates(basePath, src, module) {
+  const clean = src.replace(/^\.\//, "").replace(/^\{\{\s*role_path\s*\}\}\//, "");
+  const parts = (basePath || "").split("/").filter(Boolean);
+  const dir = parts.join("/");
+  const parent = parts.slice(0, -1).join("/");
+  const join = (...p) => p.filter((x) => x !== "" && x != null).join("/");
+  const sub = /template/.test(module || "") ? "templates" : "files";
+  const set = new Set([
+    join(dir, sub, clean), join(dir, clean),
+    join(parent, sub, clean), join(parent, clean),
+    join(sub, clean), clean,
+  ]);
+  return [...set].filter(Boolean);
+}
+
+/**
  * Preview the real source file behind a parsed view. `candidates` is a path or
  * a list of paths tried in order — the first that exists is shown. This lets a
  * caller pass alternates (main.yml/main.yaml, a hosts dir's likely files).
@@ -1614,6 +1635,27 @@ function openVarPopover(anchor, name, ctx, klass) {
 
 let taskUid = 0;
 
+// Render a task's args (with templated-var highlighting). For modules that read
+// a local repo file/template, add a clickable "open" affordance — resolving a
+// {{ templated }} src against the current vars so it points at the real file.
+function renderArgsNode(task, tctx, opts) {
+  const args = task.args;
+  const node = el("div", { class: "t-args mono", title: args }, renderTemplated(args, tctx));
+  const localSrc = /(^|\.)(template|copy|unarchive|assemble|script)$/.test(task.module || "");
+  // capture the whole src value (may be `{{ var }}` with spaces) up to the next "key:" pair
+  const m = /\bsrc:\s*(.+?)(?=,\s*[A-Za-z_][\w]*:\s|$)/.exec(args);
+  if (opts.repoId && localSrc && m) {
+    const resolved = interpolateStr(m[1].trim(), (tctx && tctx.vars) || {}, 0);
+    if (resolved && !resolved.includes("{{")) {
+      node.appendChild(el("a", {
+        class: "file-link", title: "Open " + resolved,
+        onclick: (e) => { e.stopPropagation(); openRawFileModal(opts.repoId, srcFileCandidates(opts.basePath, resolved, task.module), resolved); },
+      }, icon("code"), el("span", null, "open")));
+    }
+  }
+  return node;
+}
+
 function renderTaskNode(task, opts = {}) {
   // blocks render as bordered groups
   const hasBlock = (task.block && task.block.length) || (task.rescue && task.rescue.length) || (task.always && task.always.length);
@@ -1700,7 +1742,7 @@ function renderTaskNode(task, opts = {}) {
         },
       }, icon("code"), el("span", null, task.args)));
     } else {
-      main.appendChild(el("div", { class: "t-args mono", title: task.args }, renderTemplated(task.args, tctx)));
+      main.appendChild(renderArgsNode(task, tctx, opts));
     }
   }
   if (loopItems && loopItems.length) main.appendChild(renderLoopItems(loopItems, tctx));

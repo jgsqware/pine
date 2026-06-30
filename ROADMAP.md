@@ -107,3 +107,9 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ Syntax-highlighted source preview — the raw-file / "View YAML" pane
       highlights YAML and INI (keys, strings, numbers, booleans, comments,
       `{{ jinja }}`) with a tiny dependency-free tokenizer (no build, no CDN)
+- [x] ✅ Click-to-open source files — a task that reads a local file/template
+      (`template`/`copy`/`unarchive`/`assemble`/`script`) gets an **open** link
+      on its `src:`; a `{{ templated }}` src is resolved against the current vars
+      first, so it points at the real file (tried in templates/ or files/), shown
+      in the highlighted preview. `import_tasks`/`include_*` paths were already
+      clickable
