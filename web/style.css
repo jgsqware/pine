@@ -639,10 +639,14 @@ table.data .mono { color: var(--muted); }
    panel — otherwise a tall variables list stretches the body and the notify
    arrows, drawn for that height, break when the list is filtered. */
 .play-layout { display: flex; align-items: flex-start; }
-.play-layout .play-body { flex: 1 1 auto; min-width: 0; overflow-x: auto; }
+/* the task flow takes the width it needs (content + room for handler arrows);
+   the variables panel fills all the remaining space. The drag handle adjusts
+   --flow-w to rebalance. */
+.play-layout .play-body { flex: 0 1 auto; width: var(--flow-w, max-content); min-width: 0; max-width: 80%; overflow-x: auto; }
+.play-layout .play-body.has-arrows { padding-right: 175px; }
 .play-vars {
   position: relative;
-  flex: 0 0 var(--pv-width, 320px); width: var(--pv-width, 320px);
+  flex: 1 1 auto; min-width: 300px;
   max-height: 80vh;
   border-left: 1px solid var(--border);
   background: var(--bg);

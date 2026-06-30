@@ -1381,24 +1381,24 @@ function renderVarRow(v) {
   return row;
 }
 
-// the variables panel width lives in a CSS var on :root so all panels resize
-// together; persisted so it survives reloads/re-renders.
-const PV_WIDTH_MIN = 240, PV_WIDTH_MAX = 720;
-function applySavedPvWidth() {
-  const w = parseInt(localStorage.getItem("pine.pvWidth") || "", 10);
-  if (w >= PV_WIDTH_MIN && w <= PV_WIDTH_MAX) {
-    document.documentElement.style.setProperty("--pv-width", w + "px");
+// The variables panel fills the space left of the task flow; the drag handle
+// adjusts the FLOW (task) width instead — drag right for more task room, left to
+// give the panel more. Stored in --flow-w on :root, persisted across renders.
+const FLOW_W_MIN = 360, FLOW_W_MAX = 1200;
+function applySavedFlowWidth() {
+  const w = parseInt(localStorage.getItem("pine.flowWidth") || "", 10);
+  if (w >= FLOW_W_MIN && w <= FLOW_W_MAX) {
+    document.documentElement.style.setProperty("--flow-w", w + "px");
   }
 }
-function currentPvWidth() {
-  const v = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--pv-width"), 10);
-  return v || 320;
-}
-// attachPvResize wires a left-edge handle: drag left to widen, right to narrow.
+// attachPvResize wires the handle on the panel's left edge: it resizes the task
+// flow (and thus how much is left for the panel).
 function attachPvResize(handle) {
   handle.addEventListener("mousedown", (e) => {
     e.preventDefault();
-    const startX = e.clientX, startW = currentPvWidth();
+    const body = handle.closest(".play-layout") && handle.closest(".play-layout").querySelector(".play-body");
+    const startX = e.clientX;
+    const startW = body ? body.getBoundingClientRect().width : 700;
     document.body.classList.add("pv-resizing");
     let pending = false;
     const redrawArrows = () => {
@@ -1406,8 +1406,8 @@ function attachPvResize(handle) {
       document.querySelectorAll(".play-section").forEach(drawNotifyArrows);
     };
     const onMove = (ev) => {
-      const w = Math.max(PV_WIDTH_MIN, Math.min(PV_WIDTH_MAX, startW + (startX - ev.clientX)));
-      document.documentElement.style.setProperty("--pv-width", w + "px");
+      const w = Math.max(FLOW_W_MIN, Math.min(FLOW_W_MAX, startW + (ev.clientX - startX)));
+      document.documentElement.style.setProperty("--flow-w", w + "px");
       // the body width changed → the notify arrows must be redrawn (throttled)
       if (!pending) { pending = true; requestAnimationFrame(redrawArrows); }
     };
@@ -1416,7 +1416,8 @@ function attachPvResize(handle) {
       document.removeEventListener("mouseup", onUp);
       document.body.classList.remove("pv-resizing");
       requestAnimationFrame(redrawArrows);
-      try { localStorage.setItem("pine.pvWidth", String(currentPvWidth())); } catch { /* ignore */ }
+      const cur = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--flow-w"), 10);
+      if (cur) { try { localStorage.setItem("pine.flowWidth", String(cur)); } catch { /* ignore */ } }
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -1432,11 +1433,12 @@ function buildPlayVarsPanel(play, playVars, resolveState) {
   const scope = resolveState && resolveState.mode === "host" ? `host: ${resolveState.host}` : "constants (no host)";
   const nUndef = vars.filter((v) => v.state === "undefined").length;
 
-  let onlyUsed = false;
+  // default to "Used here" — the variables this playbook actually uses
+  let onlyUsed = usedCount > 0;
   const filter = el("input", { type: "search", class: "vars-pane-filter", placeholder: "Filter variables…" });
   const list = el("div", { class: "vars-pane-list" });
-  const allBtn = el("button", { class: "vp-seg-btn active", onclick: () => setUsed(false) }, `All ${vars.length}`);
-  const usedBtn = el("button", { class: "vp-seg-btn", title: "only variables this playbook references", onclick: () => setUsed(true) }, `Used here ${usedCount}`);
+  const allBtn = el("button", { class: "vp-seg-btn" + (onlyUsed ? "" : " active"), onclick: () => setUsed(false) }, `All ${vars.length}`);
+  const usedBtn = el("button", { class: "vp-seg-btn" + (onlyUsed ? " active" : ""), title: "only variables this playbook references", onclick: () => setUsed(true) }, `Used here ${usedCount}`);
   const seg = el("div", { class: "vp-seg" }, allBtn, usedBtn);
   const setUsed = (v) => { onlyUsed = v; allBtn.classList.toggle("active", !v); usedBtn.classList.toggle("active", v); draw(); };
 
@@ -1763,7 +1765,7 @@ async function pagePlaybookDetail(page, segs) {
   }
 
   $("#topbar-title").textContent = pb.name || pb.path;
-  applySavedPvWidth();
+  applySavedFlowWidth();
   const headControls = el("div", { class: "resolve-controls" });
   page.appendChild(el("div", { class: "page-head" },
     el("a", { href: "#/playbooks", class: "btn btn-ghost btn-sm" }, "← Playbooks"),
@@ -1947,6 +1949,10 @@ function renderPlaySection(play, idx, repoId, basePath, resolveState) {
 
   if (body.children.length === 1) {
     body.appendChild(el("div", { class: "muted small" }, "Nothing to show for this play."));
+  }
+  // reserve right-side room for notify→handler arrows when the play has handlers
+  if (body.querySelector("[data-handler-name]") && body.querySelector("[data-notify]")) {
+    body.classList.add("has-arrows");
   }
   // dock the play's variables panel beside the task flow
   const playVars = resolveState && resolveState.plays ? resolveState.plays[idx] : null;
