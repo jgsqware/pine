@@ -129,6 +129,11 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       / accept-new / disabled) applied to runs and exact plans via
       `ANSIBLE_HOST_KEY_CHECKING` / `ANSIBLE_SSH_EXTRA_ARGS`, so SSH password auth
       against hosts not yet in known_hosts can be unblocked explicitly.
+- [x] ✅ Job output polish — task `msg` outputs (debug, failures) are extracted
+      from the run log into a **Messages panel** above it (host + task context,
+      coloured by ok/changed/failed, multi-line preserved); the PLAY RECAP host
+      line is **colour-coded** per counter (ok green, changed amber, failed/
+      unreachable red, zeros dimmed). Job detail also has a **Re-run** button.
 - [x] ✅ Click-to-open source files — a task that reads a local file/template
       (`template`/`copy`/`unarchive`/`assemble`/`script`) gets an **open** link
       on its `src:`; a `{{ templated }}` src is resolved against the current vars

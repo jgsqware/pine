@@ -4693,6 +4693,55 @@ async function pageJobs(page) {
 
 const TERMINAL_STATUSES = new Set(["success", "failed", "canceled"]);
 
+// extractMessages pulls task `msg` values out of the run log (from the
+// `=> { … }` result blocks, single- or multi-line pretty-printed JSON), so they
+// can be surfaced in a Messages panel. Returns [{task, host, status, msg}].
+function extractMessages(text) {
+  const out = [];
+  const lines = text.split("\n");
+  let task = "";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const tm = line.match(/^(?:TASK|RUNNING HANDLER|HANDLER) \[(.+?)\]/);
+    if (tm) { task = tm[1]; continue; }
+    const rm = line.match(/^(ok|changed|failed|fatal|unreachable):\s*\[([^\]]+)\][^=]*=>\s*(\{.*)$/i);
+    if (!rm) continue;
+    let status = rm[1].toLowerCase();
+    if (status === "fatal") status = "failed";
+    // accumulate lines until the JSON parses (handles pretty-printed blocks)
+    let acc = rm[3], obj = null, j = i;
+    for (let tries = 0; tries < 500 && j < lines.length; tries++) {
+      try { obj = JSON.parse(acc); break; } catch { /* need more lines */ }
+      j++;
+      acc += "\n" + (lines[j] || "");
+    }
+    i = j;
+    if (obj && obj.msg != null && obj.msg !== "") {
+      const msg = Array.isArray(obj.msg) ? obj.msg.join("\n") : String(obj.msg);
+      out.push({ task, host: rm[2], status, msg });
+    }
+  }
+  return out;
+}
+
+// renderRecapLine colours a PLAY RECAP host line ("host : ok=1 changed=0 …"),
+// each counter by meaning; returns null for non-recap lines.
+function renderRecapLine(line) {
+  if (!/^\S+\s*:\s+ok=\d+/.test(line)) return null;
+  const m = line.match(/^(\S+)\s*:\s*(.*)$/);
+  if (!m) return null;
+  const cls = { ok: "rc-ok", changed: "rc-changed", unreachable: "rc-bad", failed: "rc-bad", skipped: "rc-skip", rescued: "rc-changed", ignored: "rc-skip" };
+  const node = el("span", { class: "recap-line" }, el("b", { class: "rc-host" }, m[1]), document.createTextNode(" : "));
+  for (const p of m[2].split(/\s+/).filter(Boolean)) {
+    const kv = p.match(/^(\w+)=(\d+)$/);
+    node.appendChild(kv
+      ? el("span", { class: "rc " + (kv[2] === "0" ? "rc-zero" : (cls[kv[1]] || "")) }, p)
+      : document.createTextNode(p));
+    node.appendChild(document.createTextNode("  "));
+  }
+  return node;
+}
+
 function logLineClass(line) {
   if (line.startsWith("PLAY RECAP")) return "ll-recap";
   if (line.startsWith("PLAY ")) return "ll-play";
@@ -4781,6 +4830,30 @@ async function pageJobDetail(page, segs) {
 
   const logBox = el("div", { class: "job-log" });
   logSection.appendChild(logBox);
+
+  // Messages panel: task `msg` outputs surfaced above the raw log
+  let logText = "";
+  const msgBox = el("div", { class: "panel job-messages", style: { display: "none", marginBottom: "4px" } });
+  const renderMessages = () => {
+    const msgs = extractMessages(logText);
+    msgBox.innerHTML = "";
+    if (!msgs.length) { msgBox.style.display = "none"; return; }
+    msgBox.style.display = "";
+    msgBox.appendChild(el("div", { class: "jm-head" }, icon("clipboard"),
+      el("span", null, `Messages (${msgs.length})`)));
+    for (const m of msgs) {
+      msgBox.appendChild(el("div", { class: "jm-row jm-" + m.status },
+        el("span", { class: "jm-host mono" }, m.host),
+        m.task ? el("span", { class: "jm-task" }, m.task) : null,
+        el("span", { class: "jm-msg" }, m.msg)));
+    }
+  };
+  let msgTimer = 0;
+  const scheduleMessages = () => {
+    if (msgTimer) return;
+    msgTimer = setTimeout(() => { msgTimer = 0; renderMessages(); }, 400);
+  };
+  page.appendChild(msgBox);
   page.appendChild(logSection);
   const diffSection = el("div", { style: { display: "none" } });
   page.appendChild(diffSection);
@@ -4814,10 +4887,13 @@ async function pageJobDetail(page, segs) {
 
   const scrollLog = () => { if (autoscroll) logBox.scrollTop = logBox.scrollHeight; };
   const appendLine = (line) => {
-    const div = el("div", { class: "ll " + logLineClass(line) }, line);
+    logText += line + "\n";
+    const recap = renderRecapLine(line);
+    const div = el("div", { class: "ll " + logLineClass(line) }, recap || line);
     if (cursor.parentNode) logBox.insertBefore(div, cursor);
     else logBox.appendChild(div);
     scrollLog();
+    scheduleMessages();
   };
 
   if (TERMINAL_STATUSES.has(job.status)) {
@@ -4834,6 +4910,7 @@ async function pageJobDetail(page, segs) {
     } catch {
       logBox.appendChild(el("div", { class: "ll ll-failed" }, "Failed to load log."));
     }
+    renderMessages();
     logBox.scrollTop = 0;
   } else {
     // live: stream via SSE (server replays from the start of the run)
@@ -4848,6 +4925,7 @@ async function pageJobDetail(page, segs) {
         if (TERMINAL_STATUSES.has(job.status)) {
           es.close();
           cursor.remove();
+          renderMessages();
           toast(`Job ${job.status}: ${job.playbook}`, job.status === "success" ? "success" : "error",
             job.status === "success" ? "Job finished" : "Job " + job.status);
         }
