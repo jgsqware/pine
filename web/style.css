@@ -508,7 +508,8 @@ table.data .mono { color: var(--muted); }
 .repo-card .counts .c { display: flex; flex-direction: column; }
 .repo-card .counts .c b { font-size: 15px; font-variant-numeric: tabular-nums; }
 .repo-card .counts .c span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.repo-card .actions { display: flex; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: auto; }
+.repo-card .actions { display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: auto; }
+.repo-card .actions .act-danger { margin-left: auto; }
 .repo-card .err { color: var(--danger); font-size: 12px; background: var(--danger-dim); border-radius: 6px; padding: 6px 10px; font-family: var(--mono); }
 
 .repo-card .wt-section { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
