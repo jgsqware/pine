@@ -770,6 +770,9 @@ body.pv-resizing { cursor: col-resize; user-select: none; }
   font-size: 11px; vertical-align: baseline;
 }
 .task-node a.file-link:hover { color: #67e8f9; border-bottom-color: #67e8f9; }
+/* vars_prompt rows in the run/plan modal */
+.prompt-row { display: grid; grid-template-columns: 200px 1fr; gap: 10px; align-items: center; margin-top: 6px; }
+.prompt-row > label { color: var(--secondary); }
 .task-node a.file-link .icon-wrap { flex: none; }
 .task-node a.file-link .icon-wrap svg { width: 11px; height: 11px; }
 .task-node a.t-args-link .icon-wrap { flex: none; }

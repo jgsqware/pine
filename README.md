@@ -244,7 +244,7 @@ public Ansible repositories:
 | `POST /api/repos/{id}/sync` | pull + re-scan |
 | `GET /api/repos/{id}/scan` | full scan result |
 | `GET /api/repos/{id}/topology?inventory=…` | inventory graph |
-| `POST /api/plans` | compute a plan (vars, host_vars, fact_profile, mode) |
+| `POST /api/plans` | compute a plan (vars, host_vars, fact_profile, mode, vault_password) |
 | `GET /api/fact-profiles` | built-in fact presets |
 | `POST /api/repos/{id}/inventory-preview` | what-if constructed groups |
 | `GET /api/repos/{id}/lineage?inventory=…&host=…` | variable precedence chains |

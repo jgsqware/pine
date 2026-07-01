@@ -165,6 +165,17 @@ func (r *varResolver) effective(host *model.Host, play *model.Play, roleDefaults
 			merge(fv)
 		}
 		merge(play.Vars)
+		// vars_prompt: a prompted variable IS defined at runtime. Fall back to its
+		// default so it resolves in the plan; a user-supplied answer (userVars,
+		// merged below) overrides it.
+		for _, pr := range play.VarsPrompt {
+			if pr.Name == "" {
+				continue
+			}
+			if _, ok := eff[pr.Name]; !ok && pr.Default != "" {
+				eff[pr.Name] = pr.Default
+			}
+		}
 	}
 
 	mergeUser(r.userVars)

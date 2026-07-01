@@ -27,6 +27,10 @@ type Request struct {
 	HostVars    map[string]map[string]any `json:"host_vars"`
 	FactProfile string                    `json:"fact_profile"`
 
+	// VaultPassword, when set, lets the planner decrypt ansible-vault values via
+	// the ansible-vault CLI. Used transiently for this plan only — never stored.
+	VaultPassword string `json:"vault_password,omitempty"`
+
 	// Mode selects the engine: "" / "estimated" (static) or "exact"
 	// (ansible-playbook --check with a JSON callback).
 	Mode string `json:"mode"`
@@ -114,6 +118,11 @@ type Summary struct {
 	Skip        int          `json:"skip"`
 	Unknown     int          `json:"unknown"`
 	MissingVars []MissingVar `json:"missing_vars"`
+	// VaultVars lists vault-encrypted variables the playbook uses. VaultNote is
+	// set when decryption was requested but couldn't run (e.g. ansible-vault
+	// missing or wrong password).
+	VaultVars []string `json:"vault_vars,omitempty"`
+	VaultNote string   `json:"vault_note,omitempty"`
 }
 
 // Result is a computed plan.
@@ -153,17 +162,22 @@ func Compute(res *model.ScanResult, root string, repo model.Repo, req Request) (
 	profile := ProfileByID(req.FactProfile)
 
 	c := &computer{
-		res:      res,
-		root:     root,
-		req:      req,
-		inv:      inv,
-		resolver: newVarResolverWithFacts(inv, profile, req.Vars, req.HostVars, req.HostFacts),
-		missing:  map[string]int{},
-		roles:    map[string]*model.Role{},
+		res:       res,
+		root:      root,
+		req:       req,
+		inv:       inv,
+		resolver:  newVarResolverWithFacts(inv, profile, req.Vars, req.HostVars, req.HostFacts),
+		missing:   map[string]int{},
+		roles:     map[string]*model.Role{},
+		vaultVars: map[string]bool{},
 	}
 	for i := range res.Roles {
 		c.roles[res.Roles[i].Name] = &res.Roles[i]
 	}
+	// optional vault decryption (transient; password never stored)
+	vd, cleanup, verr := newVaultDecryptor(req.VaultPassword)
+	defer cleanup()
+	c.vault = vd
 
 	out := &Result{
 		Mode:        "estimated",
@@ -209,17 +223,26 @@ func Compute(res *model.ScanResult, root string, repo model.Repo, req Request) (
 	if out.Summary.MissingVars == nil {
 		out.Summary.MissingVars = []MissingVar{}
 	}
+	for name := range c.vaultVars {
+		out.Summary.VaultVars = append(out.Summary.VaultVars, name)
+	}
+	sort.Strings(out.Summary.VaultVars)
+	if req.VaultPassword != "" && verr != nil {
+		out.Summary.VaultNote = "could not decrypt: ansible-vault unavailable (" + verr.Error() + ")"
+	}
 	return out, nil
 }
 
 type computer struct {
-	res      *model.ScanResult
-	root     string
-	req      Request
-	inv      *model.Inventory
-	resolver *varResolver
-	missing  map[string]int
-	roles    map[string]*model.Role
+	res       *model.ScanResult
+	root      string
+	req       Request
+	inv       *model.Inventory
+	resolver  *varResolver
+	missing   map[string]int
+	roles     map[string]*model.Role
+	vault     *vaultDecryptor
+	vaultVars map[string]bool // vault-encrypted vars seen in scope
 }
 
 func (c *computer) playbook(pb *model.Playbook, out *Result, depth int) {
@@ -316,6 +339,20 @@ func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
 	eff := map[string]map[string]any{}
 	for _, h := range hosts {
 		eff[h] = c.resolver.effective(hostByName[h], &play, roleDefaults, fileVars)
+		for k, v := range eff[h] {
+			if s, ok := v.(string); ok && isVaultValue(s) {
+				c.vaultVars[k] = true
+			}
+		}
+		decryptVaultVars(eff[h], c.vault) // decrypt vault values when a password was given
+		// mask any still-encrypted vault values so the raw $ANSIBLE_VAULT blob
+		// never leaks into a resolved task name/arg.
+		for k, v := range eff[h] {
+			if s, ok := v.(string); ok && isVaultValue(s) {
+				eff[h][k] = vaultMask
+			}
+		}
+		expandNestedVars(eff[h]) // resolve var→var references so names/args fully template
 	}
 
 	// tasks in execution order
@@ -403,6 +440,7 @@ func (c *computer) task(play model.Play, section, role, when string, t model.Tas
 		repVars = eff[hosts[0]]
 	} else {
 		repVars = c.resolver.effective(nil, &play, nil, nil)
+		expandNestedVars(repVars)
 	}
 	if name, known, _ := scanner.Interpolate(t.Name, repVars); known {
 		tp.Name = name

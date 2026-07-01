@@ -49,6 +49,9 @@ type ResolveResult struct {
 	// host_vars, this playbook's play vars & vars_files). It lets the UI tell
 	// "defined elsewhere, just not in this scope" apart from "defined nowhere".
 	Known []string `json:"known"`
+	// VaultVars names the variables whose value is ansible-vault encrypted, so
+	// the UI can prompt for a vault password to decrypt them in a plan.
+	VaultVars []string `json:"vault_vars,omitempty"`
 }
 
 // Resolve computes per-play effective variables for one playbook. With no host
@@ -200,6 +203,18 @@ func Resolve(res *model.ScanResult, root, playbookPath, inventory, host string) 
 		out.Plays = append(out.Plays, pv)
 	}
 	out.Known = knownVarNames(res, root, pb)
+	// flag vault-encrypted vars (before any redaction) so the UI can offer to
+	// decrypt them with a vault password in a plan.
+	seen := map[string]bool{}
+	for _, pv := range out.Plays {
+		for k, v := range pv.Vars {
+			if isVaultValue(v) && !seen[k] {
+				seen[k] = true
+				out.VaultVars = append(out.VaultVars, k)
+			}
+		}
+	}
+	sort.Strings(out.VaultVars)
 	return out, nil
 }
 

@@ -5128,6 +5128,25 @@ async function pagePlan(page) {
       class: "sum-chip", title: "estimated duration, from average task timings of previous runs",
     }, el("b", null, `≈ ${fmtDuration(result.estimated_duration_ms)}`), el("span", null, "est.")) : null));
 
+  // vault panel: decrypt vault-encrypted vars with a password, then re-plan
+  const vaultVars = s.vault_vars || [];
+  if (vaultVars.length || s.vault_note) {
+    const vpw = el("input", { type: "password", placeholder: "ansible-vault password", autocomplete: "off" });
+    const vbtn = el("button", { class: "btn btn-primary" }, icon("shield"), "Decrypt & re-plan");
+    vbtn.onclick = () => {
+      if (!vpw.value) { toast("Enter the vault password", "error"); return; }
+      runPlan({ ...request, vault_password: vpw.value }, vbtn);
+    };
+    vpw.addEventListener("keydown", (e) => { if (e.key === "Enter") vbtn.click(); });
+    page.appendChild(el("div", { class: "panel missing-vars" },
+      el("div", { class: "mv-head" },
+        icon("shield"),
+        el("span", { class: "mv-title" }, `${vaultVars.length} vault-encrypted variable${vaultVars.length === 1 ? "" : "s"}`),
+        el("span", { class: "muted small" }, s.vault_note || "Enter the ansible-vault password to decrypt these for the plan — used once, never stored.")),
+      vaultVars.length ? el("div", { class: "mv-row" }, el("span", { class: "mono mv-name" }, vaultVars.join(", "))) : null,
+      el("div", { class: "mv-row" }, vpw, vbtn)));
+  }
+
   // missing-variables panel: fill values inline → merge into vars → re-plan
   const missingInputs = new Map(); // var name -> input element
   const missing = s.missing_vars || [];
@@ -5354,7 +5373,8 @@ async function openRunModal(prefill = {}) {
         const invName = invObj ? invObj.name : invVal;
         const inv = (rr.inventories || []).find((i) => i.name === invName) || (rr.inventories || [])[0];
         hosts = (inv && inv.hosts) || []; // {name, targeted, varies}, already targeted-first
-      } catch { /* fall back to scan hosts below */ }
+        renderVault(rr.vault_vars || []);
+      } catch { renderVault([]); }
     }
     if (!hosts.length) {
       const invObj = scanInvs.find((i) => (i.path || i.name) === invVal) || scanInvs.find((i) => i.name === invVal);
@@ -5395,6 +5415,49 @@ async function openRunModal(prefill = {}) {
   }, icon("clipboard"), "Plan");
   const varsEd = createVarsEditor();
 
+  // vars_prompt inputs (asked at runtime) + an ansible-vault password field,
+  // both feeding the plan so prompted/vaulted values resolve.
+  let scanPlaybooks = [];
+  const promptInputs = new Map();
+  const promptsBox = el("div", { class: "field", style: { display: "none" } });
+  const vaultPwIn = el("input", { type: "password", placeholder: "ansible-vault password", autocomplete: "off" });
+  const vaultBox = el("div", { class: "field", style: { display: "none" } });
+  const fillPrompts = () => {
+    const pb = scanPlaybooks.find((p) => p.path === pbSel.value);
+    const prompts = [], seen = new Set();
+    for (const play of (pb && pb.plays) || []) {
+      for (const pr of play.vars_prompt || []) {
+        if (pr.name && !seen.has(pr.name)) { seen.add(pr.name); prompts.push(pr); }
+      }
+    }
+    promptInputs.clear();
+    promptsBox.innerHTML = "";
+    if (!prompts.length) { promptsBox.style.display = "none"; return; }
+    promptsBox.style.display = "";
+    promptsBox.appendChild(el("label", null, "Prompted variables"));
+    promptsBox.appendChild(el("span", { class: "hint" }, "This playbook asks for these at runtime (vars_prompt) — provide them to resolve the plan."));
+    for (const pr of prompts) {
+      const inp = el("input", { type: pr.private ? "password" : "text", value: pr.default || "", placeholder: pr.default ? `default: ${pr.default}` : "(required)" });
+      promptInputs.set(pr.name, inp);
+      promptsBox.appendChild(el("div", { class: "prompt-row" },
+        el("label", { class: "mono small", title: pr.prompt || pr.name }, pr.name), inp));
+    }
+  };
+  const collectPromptVars = () => {
+    const out = {};
+    for (const [name, inp] of promptInputs) { const v = inp.value.trim(); if (v) out[name] = v; }
+    return out;
+  };
+  const renderVault = (vv) => {
+    vaultBox.innerHTML = "";
+    if (!vv || !vv.length) { vaultBox.style.display = "none"; return; }
+    vaultBox.style.display = "";
+    vaultBox.appendChild(el("label", null, "Vault password"));
+    vaultBox.appendChild(el("span", { class: "hint" },
+      `${vv.length} vault-encrypted variable${vv.length === 1 ? "" : "s"} in scope (${vv.join(", ")}). Enter the ansible-vault password to decrypt them for this plan — used once, never stored.`));
+    vaultBox.appendChild(vaultPwIn);
+  };
+
   for (const r of State.repos) repoSel.appendChild(el("option", { value: r.id }, r.name));
   repoSel.value = prefill.repoId || State.repoId || State.repos[0].id;
   varsEd.setRepo(repoSel.value);
@@ -5413,6 +5476,7 @@ async function openRunModal(prefill = {}) {
       const pbs = scan.playbooks || [];
       const invs = scan.inventories || [];
       scanInvs = invs;
+      scanPlaybooks = pbs;
       if (!pbs.length) pbSel.appendChild(el("option", { value: "" }, "No playbooks found"));
       for (const p of pbs) pbSel.appendChild(el("option", { value: p.path }, `${p.name || p.path}  (${p.path})`));
       if (!invs.length) invSel.appendChild(el("option", { value: "" }, "No inventories found"));
@@ -5425,6 +5489,7 @@ async function openRunModal(prefill = {}) {
       pbSel.disabled = !pbs.length;
       invSel.disabled = !invs.length;
       runBtn.disabled = planBtn.disabled = !pbs.length;
+      fillPrompts();
       fillHosts();
     } catch (e) {
       pbSel.innerHTML = ""; invSel.innerHTML = "";
@@ -5435,7 +5500,7 @@ async function openRunModal(prefill = {}) {
   };
   repoSel.addEventListener("change", () => { varsEd.setRepo(repoSel.value); fillScanOptions(); });
   invSel.addEventListener("change", fillHosts);
-  pbSel.addEventListener("change", fillHosts);
+  pbSel.addEventListener("change", () => { fillPrompts(); fillHosts(); });
 
   runBtn.onclick = async () => {
     if (!pbSel.value) { toast("Pick a playbook to run", "error"); return; }
@@ -5471,9 +5536,10 @@ async function openRunModal(prefill = {}) {
       limit: limitIn.value.trim(),
       tags: tagsIn.value.trim(),
       check: checkBox.checked,
-      vars: varsEd.getVars(),
+      vars: { ...collectPromptVars(), ...varsEd.getVars() },
       host_vars: {},
       fact_profile: varsEd.getProfile(),
+      ...(vaultPwIn.value ? { vault_password: vaultPwIn.value } : {}),
       ...(planMode === "exact" ? { mode: "exact" } : {}),
     }, planBtn);
   };
@@ -5503,6 +5569,8 @@ async function openRunModal(prefill = {}) {
       el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" } }, hostSel, limitIn),
       el("span", { class: "hint" }, "Pick a host to test against, or type a pattern (web01,db*). Empty = all targeted hosts.")),
     el("div", { class: "field" }, el("label", null, "Tags"), tagsIn),
+    promptsBox,
+    vaultBox,
     el("label", { class: "check-row" }, checkBox,
       el("span", null, "Check mode ", el("span", { class: "muted" }, "(dry run, no changes applied)"))),
     el("div", { class: "field", style: { margin: "14px 0 0" } },
