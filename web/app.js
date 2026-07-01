@@ -5095,6 +5095,7 @@ async function pagePlan(page) {
     onclick: () => openRunModal({
       repoId: result.repo_id, playbook: result.playbook, inventory: result.inventory,
       limit: request.limit || "", tags: request.tags || "", check: !!result.check,
+      vars: request.vars || {}, vaultPassword: request.vault_password || "",
     }),
   }, icon("play"), "Apply (run)");
 
@@ -5464,6 +5465,7 @@ async function openRunModal(prefill = {}) {
   limitIn.value = prefill.limit || "";
   tagsIn.value = prefill.tags || "";
   checkBox.checked = !!prefill.check;
+  vaultPwIn.value = prefill.vaultPassword || "";
 
   const fillScanOptions = async () => {
     pbSel.innerHTML = ""; invSel.innerHTML = "";
@@ -5504,6 +5506,7 @@ async function openRunModal(prefill = {}) {
 
   runBtn.onclick = async () => {
     if (!pbSel.value) { toast("Pick a playbook to run", "error"); return; }
+    varsEd.persist();
     runBtn.disabled = true;
     try {
       const job = await api("/jobs", {
@@ -5515,6 +5518,8 @@ async function openRunModal(prefill = {}) {
           limit: limitIn.value.trim(),
           tags: tagsIn.value.trim(),
           check: checkBox.checked,
+          vars: { ...collectPromptVars(), ...varsEd.getVars() },
+          ...(vaultPwIn.value ? { vault_password: vaultPwIn.value } : {}),
         }),
       });
       closeModal();
@@ -5550,7 +5555,7 @@ async function openRunModal(prefill = {}) {
   const varsBody = el("div", { style: { display: varsOpen ? "" : "none" } },
     varsEd.root,
     el("span", { class: "hint", style: { display: "block" } },
-      "Used by Plan to resolve templates and conditionals. Runs don't take extra vars yet."));
+      "Passed to Plan (to resolve templates) and to Run (as -e extra vars), alongside any prompted variables."));
   const varsHead = el("div", {
     class: "collapse-head",
     onclick: () => {

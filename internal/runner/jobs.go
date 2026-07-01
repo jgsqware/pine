@@ -3,6 +3,7 @@ package runner
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,6 +24,12 @@ type run struct {
 	file   *os.File
 	cancel context.CancelFunc
 	done   bool
+
+	// vaultPassword and extraVars are held in memory only for this run (never
+	// persisted): the password is written to a temp --vault-password-file and
+	// the vars to a temp -e @file when ansible-playbook is invoked.
+	vaultPassword string
+	extraVars     map[string]any
 
 	// per-task wall-time, measured from the TASK banners as they stream
 	curTask  string
@@ -101,7 +108,14 @@ func (r *run) close() {
 }
 
 // StartJob creates a job and launches it in the background.
-func (m *Manager) StartJob(req model.Job) (model.Job, error) {
+// RunOpts carries transient, non-persisted inputs for a run: a vault password
+// (written to a temp --vault-password-file) and extra vars (passed via -e).
+type RunOpts struct {
+	VaultPassword string
+	ExtraVars     map[string]any
+}
+
+func (m *Manager) StartJob(req model.Job, opts ...RunOpts) (model.Job, error) {
 	repo, err := m.Store.GetRepo(req.RepoID)
 	if err != nil {
 		return model.Job{}, fmt.Errorf("unknown repo: %w", err)
@@ -132,6 +146,10 @@ func (m *Manager) StartJob(req model.Job) (model.Job, error) {
 		return job, err
 	}
 	r := &run{subs: map[chan string]bool{}, file: logFile, cancel: cancel}
+	if len(opts) > 0 {
+		r.vaultPassword = opts[0].VaultPassword
+		r.extraVars = opts[0].ExtraVars
+	}
 	m.mu.Lock()
 	m.runs[job.ID] = r
 	m.mu.Unlock()
@@ -275,6 +293,30 @@ func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (faile
 	}
 	if job.Check {
 		args = append(args, "--check")
+	}
+	// vault: write the password to a temp file for --vault-password-file (the
+	// password itself is never logged — only the file path appears in the args).
+	if r.vaultPassword != "" {
+		if pwf, err := os.CreateTemp("", "pine-vault-pw-*"); err == nil {
+			_, _ = pwf.WriteString(r.vaultPassword)
+			pwf.Close()
+			defer os.Remove(pwf.Name())
+			args = append(args, "--vault-password-file", pwf.Name())
+		} else {
+			r.publish("WARNING: could not create vault password file: " + err.Error())
+		}
+	}
+	// extra vars (e.g. resolved vars_prompt answers) passed via -e @file.json
+	if len(r.extraVars) > 0 {
+		if vf, err := os.CreateTemp("", "pine-extravars-*.json"); err == nil {
+			enc, _ := json.Marshal(r.extraVars)
+			_, _ = vf.Write(enc)
+			vf.Close()
+			defer os.Remove(vf.Name())
+			args = append(args, "-e", "@"+vf.Name())
+		} else {
+			r.publish("WARNING: could not create extra-vars file: " + err.Error())
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "ansible-playbook", args...)

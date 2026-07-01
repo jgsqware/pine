@@ -488,16 +488,23 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
-	var req model.Job
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// vault_password is decoded alongside the job but kept out of model.Job so
+	// it is never persisted; it's forwarded to the runner transiently.
+	var body struct {
+		model.Job
+		VaultPassword string         `json:"vault_password"`
+		Vars          map[string]any `json:"vars"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	req := body.Job
 	if req.RepoID == "" || req.Playbook == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("repo_id and playbook are required"))
 		return
 	}
-	job, err := s.Mgr.StartJob(req)
+	job, err := s.Mgr.StartJob(req, runner.RunOpts{VaultPassword: body.VaultPassword, ExtraVars: body.Vars})
 	if err != nil {
 		writeErr(w, errCode(err), err)
 		return

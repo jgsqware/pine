@@ -113,12 +113,15 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       names/args/conditions template as they would at run time (e.g. a prompted
       `docker_path` no longer shows raw). vars_prompt fields are surfaced in the
       run/plan modal.
-- [x] ✅ Vault-aware plans — vault-encrypted variables the playbook uses are
-      detected and listed (in the modal and the plan view); providing the
+- [x] ✅ Vault-aware plans & runs — vault-encrypted variables the playbook uses
+      are detected and listed (in the modal and the plan view); providing the
       ansible-vault password decrypts them for that plan via the ansible-vault
       CLI (transient, never stored). Undecrypted vault values are masked
       (`***vault***`) so raw blobs never leak into resolved names/args.
-      `GET /resolve` and the plan report expose `vault_vars`.
+      `GET /resolve` and the plan report expose `vault_vars`. **Apply (run)**
+      carries the password through to `ansible-playbook --vault-password-file`
+      (and the resolved vars_prompt/extra vars via `-e @file`), all written to
+      temp files removed after the run and never persisted to the job.
 - [x] ✅ Click-to-open source files — a task that reads a local file/template
       (`template`/`copy`/`unarchive`/`assemble`/`script`) gets an **open** link
       on its `src:`; a `{{ templated }}` src is resolved against the current vars
