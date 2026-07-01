@@ -173,6 +173,16 @@ type Repo struct {
 	Error      string      `json:"error,omitempty"`
 	LastSynced string      `json:"last_synced,omitempty"`
 	Summary    RepoSummary `json:"summary"`
+
+	// VaultPassword, when set, is the default ansible-vault password used to
+	// decrypt vault values in plans and runs of this repo (so it need not be
+	// re-entered each time). Redacted out of API responses via HasVaultPassword.
+	VaultPassword    string `json:"vault_password,omitempty"`
+	HasVaultPassword bool   `json:"has_vault_password,omitempty"` // output only: a password is stored
+	// HostKeyChecking controls SSH host-key verification for runs (and exact
+	// plans): "" = respect ansible.cfg, "accept-new" = trust on first use,
+	// "disabled" = ANSIBLE_HOST_KEY_CHECKING=False (insecure).
+	HostKeyChecking string `json:"host_key_checking,omitempty"`
 }
 
 // JobSummary aggregates the PLAY RECAP counters across hosts.

@@ -3,6 +3,7 @@ package plan
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -52,10 +53,24 @@ func ComputeExact(root string, repo model.Repo, req Request) (*Result, error) {
 		data, _ := json.Marshal(map[string]any{k: v})
 		args = append(args, "-e", string(data))
 	}
+	if req.VaultPassword != "" {
+		if pwf, err := os.CreateTemp("", "pine-vault-pw-*"); err == nil {
+			_, _ = pwf.WriteString(req.VaultPassword)
+			pwf.Close()
+			defer os.Remove(pwf.Name())
+			args = append(args, "--vault-password-file", pwf.Name())
+		}
+	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = root
 	cmd.Env = append(cmd.Environ(),
 		"ANSIBLE_STDOUT_CALLBACK=json", "ANSIBLE_NOCOLOR=1", "ANSIBLE_FORCE_COLOR=0")
+	switch repo.HostKeyChecking {
+	case "disabled":
+		cmd.Env = append(cmd.Env, "ANSIBLE_HOST_KEY_CHECKING=False")
+	case "accept-new":
+		cmd.Env = append(cmd.Env, "ANSIBLE_SSH_EXTRA_ARGS=-o StrictHostKeyChecking=accept-new")
+	}
 	out, runErr := cmd.Output() // check failures still produce JSON
 	res, err := parseAnsibleJSON(out)
 	if err != nil {

@@ -181,10 +181,23 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 
 // --- repos ---
 
+// redactRepo strips the stored vault password from a repo before it leaves the
+// API, leaving only a boolean marker that one is set.
+func redactRepo(r model.Repo) model.Repo {
+	if r.VaultPassword != "" {
+		r.HasVaultPassword = true
+		r.VaultPassword = ""
+	}
+	return r
+}
+
 func (s *Server) listRepos(w http.ResponseWriter, r *http.Request) {
 	repos := s.Mgr.Store.ListRepos()
 	if repos == nil {
 		repos = []model.Repo{}
+	}
+	for i := range repos {
+		repos[i] = redactRepo(repos[i])
 	}
 	writeJSON(w, http.StatusOK, repos)
 }
@@ -242,7 +255,7 @@ func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, repo)
+	writeJSON(w, http.StatusCreated, redactRepo(repo))
 }
 
 // cleanScanPaths drops empty entries and rejects path escapes.
@@ -267,9 +280,12 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name      *string   `json:"name"`
-		Branch    *string   `json:"branch"`
-		ScanPaths *[]string `json:"scan_paths"`
+		Name               *string   `json:"name"`
+		Branch             *string   `json:"branch"`
+		ScanPaths          *[]string `json:"scan_paths"`
+		VaultPassword      *string   `json:"vault_password"`
+		ClearVaultPassword bool      `json:"clear_vault_password"`
+		HostKeyChecking    *string   `json:"host_key_checking"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -284,6 +300,21 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) {
 	if req.ScanPaths != nil {
 		repo.ScanPaths = cleanScanPaths(*req.ScanPaths)
 	}
+	// vault password: set only when a non-empty value is provided; clear on request
+	if req.ClearVaultPassword {
+		repo.VaultPassword = ""
+	} else if req.VaultPassword != nil && *req.VaultPassword != "" {
+		repo.VaultPassword = *req.VaultPassword
+	}
+	if req.HostKeyChecking != nil {
+		switch *req.HostKeyChecking {
+		case "", "accept-new", "disabled":
+			repo.HostKeyChecking = *req.HostKeyChecking
+		default:
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid host_key_checking: %s", *req.HostKeyChecking))
+			return
+		}
+	}
 	if err := s.Mgr.Store.UpdateRepo(repo); err != nil {
 		writeErr(w, errCode(err), err)
 		return
@@ -294,7 +325,7 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errCode(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, repo)
+	writeJSON(w, http.StatusOK, redactRepo(repo))
 }
 
 func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {
@@ -303,7 +334,7 @@ func (s *Server) getRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errCode(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, repo)
+	writeJSON(w, http.StatusOK, redactRepo(repo))
 }
 
 func (s *Server) deleteRepo(w http.ResponseWriter, r *http.Request) {
@@ -433,6 +464,10 @@ func (s *Server) computePlan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, errCode(err), err)
 		return
+	}
+	// fall back to the repo's stored vault password when none was supplied
+	if req.VaultPassword == "" {
+		req.VaultPassword = repo.VaultPassword
 	}
 	res, err := s.Mgr.Scan(req.RepoID)
 	if err != nil {

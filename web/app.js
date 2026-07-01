@@ -731,6 +731,10 @@ function drawRepoCards(listBox, refresh) {
           class: "btn btn-sm",
           onclick: () => { setRepo(repo.id); location.hash = "#/playbooks"; },
         }, icon("folder"), "Browse"),
+        el("button", {
+          class: "btn btn-sm", title: "Scan paths, vault password, SSH host-key checking",
+          onclick: () => openScanPathsModal(repo, refresh),
+        }, icon("sync"), "Settings"),
         el("div", { style: { flex: 1 } }),
         el("button", {
           class: "btn btn-sm btn-danger",
@@ -848,8 +852,9 @@ function parseScanPaths(raw) {
   return raw.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
 }
 
-// openScanPathsModal lets the user tell Pine where playbooks live when the
-// default discovery finds nothing (or finds too much).
+// openScanPathsModal is the repository settings modal: playbook scan paths, a
+// stored ansible-vault password (used by plans and runs), and the SSH host-key
+// checking policy applied to runs and exact plans.
 function openScanPathsModal(repo, onDone) {
   const pathsIn = el("textarea", {
     rows: "3",
@@ -857,17 +862,37 @@ function openScanPathsModal(repo, onDone) {
   });
   pathsIn.value = (repo.scan_paths || []).join("\n");
 
+  const hasPw = !!repo.has_vault_password;
+  const vaultIn = el("input", {
+    type: "password", autocomplete: "new-password",
+    placeholder: hasPw ? "•••••••• stored — leave blank to keep" : "ansible-vault password (optional)",
+  });
+  const clearPw = el("input", { type: "checkbox" });
+  const clearRow = hasPw
+    ? el("label", { class: "check-row", style: { marginTop: "6px" } }, clearPw,
+        el("span", null, "Remove the stored vault password"))
+    : null;
+
+  const hostKeySel = el("select", null,
+    el("option", { value: "" }, "Respect ansible.cfg (default)"),
+    el("option", { value: "accept-new" }, "Accept new hosts (trust on first use)"),
+    el("option", { value: "disabled" }, "Disabled — no host-key checking (insecure)"));
+  hostKeySel.value = repo.host_key_checking || "";
+
   const saveBtn = el("button", { class: "btn btn-primary" }, icon("sync"), "Save & re-scan");
   saveBtn.onclick = async () => {
     saveBtn.disabled = true;
     try {
-      await api(`/repos/${repo.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ scan_paths: parseScanPaths(pathsIn.value) }),
-      });
+      const body = {
+        scan_paths: parseScanPaths(pathsIn.value),
+        host_key_checking: hostKeySel.value,
+      };
+      if (clearPw.checked) body.clear_vault_password = true;
+      else if (vaultIn.value) body.vault_password = vaultIn.value;
+      await api(`/repos/${repo.id}`, { method: "PATCH", body: JSON.stringify(body) });
       State.scanCache.delete(repo.id);
       closeModal();
-      toast(`Re-scanning ${repo.name}…`, "success", "Scan paths updated");
+      toast(`Re-scanning ${repo.name}…`, "success", "Settings saved");
       if (onDone) onDone();
     } catch (e) {
       saveBtn.disabled = false;
@@ -876,12 +901,14 @@ function openScanPathsModal(repo, onDone) {
   };
 
   openModal({
-    title: `Playbook locations — ${repo.name}`,
+    title: `Repository settings — ${repo.name}`,
     body: el("div", null,
-      el("p", { class: "muted", style: { marginTop: 0 } },
-        "By default Pine scans the whole repository for playbook-shaped YAML files (skipping roles, inventories and vars). If that finds nothing — or too much — list the directories, files or glob patterns to scan, one per line, relative to the repo root."),
       el("div", { class: "field" }, el("label", null, "Scan paths"), pathsIn,
-        el("span", { class: "hint" }, "Examples: playbooks/ · playbooks/*/billing · deploy/site.yml. Leave empty to restore automatic discovery."))),
+        el("span", { class: "hint" }, "Directories, files or globs to scan (one per line), relative to the repo root. Leave empty for automatic discovery.")),
+      el("div", { class: "field" }, el("label", null, "Vault password"), vaultIn, clearRow,
+        el("span", { class: "hint" }, "Stored ansible-vault password, reused to decrypt vault values in this repo's plans and runs (and passed to ansible-playbook). Stored server-side; never returned to the browser.")),
+      el("div", { class: "field" }, el("label", null, "SSH host-key checking"), hostKeySel,
+        el("span", { class: "hint" }, "Applied to runs and exact plans. “Disabled” sets ANSIBLE_HOST_KEY_CHECKING=False — needed for SSH password auth against hosts not yet in known_hosts, at the cost of MITM protection."))),
     footer: [el("button", { class: "btn", onclick: closeModal }, "Cancel"), saveBtn],
   });
   pathsIn.focus();
@@ -5455,7 +5482,7 @@ async function openRunModal(prefill = {}) {
     vaultBox.style.display = "";
     vaultBox.appendChild(el("label", null, "Vault password"));
     vaultBox.appendChild(el("span", { class: "hint" },
-      `${vv.length} vault-encrypted variable${vv.length === 1 ? "" : "s"} in scope (${vv.join(", ")}). Enter the ansible-vault password to decrypt them for this plan — used once, never stored.`));
+      `${vv.length} vault-encrypted variable${vv.length === 1 ? "" : "s"} in scope (${vv.join(", ")}). Enter the ansible-vault password, or leave blank to use the repository's stored password (Repositories → Settings). Used for this plan/run only.`));
     vaultBox.appendChild(vaultPwIn);
   };
 

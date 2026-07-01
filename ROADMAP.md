@@ -121,7 +121,14 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       `GET /resolve` and the plan report expose `vault_vars`. **Apply (run)**
       carries the password through to `ansible-playbook --vault-password-file`
       (and the resolved vars_prompt/extra vars via `-e @file`), all written to
-      temp files removed after the run and never persisted to the job.
+      temp files removed after the run and never persisted to the job. A repo can
+      also **store a default vault password** (Repositories → Settings) that
+      plans and runs fall back to — persisted server-side, redacted out of every
+      API read (`has_vault_password` marker only).
+- [x] ✅ Per-repo SSH host-key checking — a repo setting ("" respect ansible.cfg
+      / accept-new / disabled) applied to runs and exact plans via
+      `ANSIBLE_HOST_KEY_CHECKING` / `ANSIBLE_SSH_EXTRA_ARGS`, so SSH password auth
+      against hosts not yet in known_hosts can be unblocked explicitly.
 - [x] ✅ Click-to-open source files — a task that reads a local file/template
       (`template`/`copy`/`unarchive`/`assemble`/`script`) gets an **open** link
       on its `src:`; a `{{ templated }}` src is resolved against the current vars

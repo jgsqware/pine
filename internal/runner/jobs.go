@@ -150,6 +150,10 @@ func (m *Manager) StartJob(req model.Job, opts ...RunOpts) (model.Job, error) {
 		r.vaultPassword = opts[0].VaultPassword
 		r.extraVars = opts[0].ExtraVars
 	}
+	// fall back to the repo's stored vault password when the run didn't supply one
+	if r.vaultPassword == "" {
+		r.vaultPassword = repo.VaultPassword
+	}
 	m.mu.Lock()
 	m.runs[job.ID] = r
 	m.mu.Unlock()
@@ -272,6 +276,19 @@ func parseRecapLine(line string, sum *model.JobSummary) bool {
 	return true
 }
 
+// hostKeyCheckingEnv maps a repo's HostKeyChecking setting to ansible env vars.
+// "disabled" turns off verification (works with SSH password auth); "accept-new"
+// trusts unknown hosts on first use while still detecting changed keys.
+func hostKeyCheckingEnv(mode string) []string {
+	switch mode {
+	case "disabled":
+		return []string{"ANSIBLE_HOST_KEY_CHECKING=False"}
+	case "accept-new":
+		return []string{"ANSIBLE_SSH_EXTRA_ARGS=-o StrictHostKeyChecking=accept-new"}
+	}
+	return nil
+}
+
 // runAnsible executes the real ansible-playbook command, streaming output.
 func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (failed bool) {
 	repo, err := m.Store.GetRepo(job.RepoID)
@@ -322,6 +339,7 @@ func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (faile
 	cmd := exec.CommandContext(ctx, "ansible-playbook", args...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(), "ANSIBLE_FORCE_COLOR=0", "ANSIBLE_NOCOLOR=1")
+	cmd.Env = append(cmd.Env, hostKeyCheckingEnv(repo.HostKeyChecking)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		r.publish("ERROR: " + err.Error())
