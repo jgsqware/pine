@@ -5188,8 +5188,17 @@ function createVarsEditor() {
       profileSel,
       el("span", { class: "hint" }, "Simulated ansible_facts (OS family, distribution…) used to evaluate conditionals.")));
 
+  // setVars overwrites the textarea from a {key: value} object (one line each),
+  // so a plan's vars carry into the run modal instead of being re-typed.
+  const setVars = (obj) => {
+    if (!obj || typeof obj !== "object" || !Object.keys(obj).length) return;
+    ta.value = Object.entries(obj)
+      .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+      .join("\n");
+  };
+
   return {
-    root, setRepo, persist,
+    root, setRepo, persist, setVars,
     getVars: () => parseVarsText(ta.value),
     getProfile: () => profileSel.value,
   };
@@ -5211,6 +5220,66 @@ async function runPlan(request, btn) {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+/** POST /api/jobs from a request object and jump to the live job log. */
+async function launchRun(request) {
+  const job = await api("/jobs", {
+    method: "POST",
+    body: JSON.stringify({
+      repo_id: request.repo_id,
+      playbook: request.playbook,
+      inventory: request.inventory || "",
+      limit: request.limit || "",
+      tags: request.tags || "",
+      check: !!request.check,
+      vars: request.vars || {},
+      ...(request.vault_password ? { vault_password: request.vault_password } : {}),
+    }),
+  });
+  closeModal();
+  toast(`${job.playbook} queued`, "success", "Job started");
+  location.hash = `#/job/${job.id}`;
+  return job;
+}
+
+/**
+ * Confirm-and-launch a run straight from a computed plan: the plan already
+ * holds the exact request (inventory, limit, tags, check, vars, vault), so
+ * there is nothing to re-enter — one confirmation, then the live job. An
+ * "Edit run…" escape hatch reopens the full modal for last-minute tweaks.
+ */
+function openApplyConfirm(request, result) {
+  const s = result.summary || {};
+  const row = (label, val) => el("div", { class: "confirm-row" },
+    el("span", { class: "muted small" }, label),
+    el("span", { class: "mono confirm-val" }, val));
+  const body = el("div", { class: "run-confirm" },
+    el("p", { class: "muted", style: { marginTop: 0 } },
+      "Launch with the exact settings from the plan — nothing to re-enter."),
+    row("Inventory", result.inventory || "—"),
+    row("Limit", request.limit || "all targeted hosts"),
+    request.tags ? row("Tags", request.tags) : null,
+    row("Mode", result.check ? "check · dry-run (no changes)" : "apply · makes changes"),
+    row("Hosts", String(s.hosts ?? 0)),
+    (s.unknown ?? 0) > 0
+      ? el("div", { class: "confirm-warn" },
+          `⚠ ${s.unknown} verdict${s.unknown === 1 ? " is" : "s are"} unknown (missing variables) — behaviour at runtime may differ.`)
+      : null);
+  const launch = el("button", { class: "btn btn-primary" }, icon("play"),
+    result.check ? "Launch check" : "Launch run");
+  launch.onclick = async () => {
+    launch.disabled = true;
+    try { await launchRun(request); }
+    catch (e) { launch.disabled = false; toast(e.message, "error"); }
+  };
+  const edit = el("button", { class: "btn", title: "Reopen the full run form to tweak settings" }, "Edit run…");
+  edit.onclick = () => openRunModal({
+    repoId: result.repo_id, playbook: result.playbook, inventory: result.inventory,
+    limit: request.limit || "", tags: request.tags || "", check: !!result.check,
+    vars: request.vars || {}, vaultPassword: request.vault_password || "",
+  });
+  openModal({ title: `Run ${result.playbook}?`, body, footer: [edit, launch], width: "460px" });
 }
 
 /** Horizontal stacked run/skip/unknown bar (proportional segments). */
@@ -5244,11 +5313,7 @@ async function pagePlan(page) {
     icon("sync"), "Re-plan");
   const applyBtn = el("button", {
     class: "btn btn-primary",
-    onclick: () => openRunModal({
-      repoId: result.repo_id, playbook: result.playbook, inventory: result.inventory,
-      limit: request.limit || "", tags: request.tags || "", check: !!result.check,
-      vars: request.vars || {}, vaultPassword: request.vault_password || "",
-    }),
+    onclick: () => openApplyConfirm(request, result),
   }, icon("play"), "Apply (run)");
 
   page.appendChild(el("div", { class: "page-head" },
@@ -5618,6 +5683,9 @@ async function openRunModal(prefill = {}) {
   tagsIn.value = prefill.tags || "";
   checkBox.checked = !!prefill.check;
   vaultPwIn.value = prefill.vaultPassword || "";
+  // carry a plan's / previous run's extra vars into the editor (else re-typed)
+  const hasPrefillVars = !!(prefill.vars && Object.keys(prefill.vars).length);
+  if (hasPrefillVars) varsEd.setVars(prefill.vars);
 
   const fillScanOptions = async () => {
     pbSel.innerHTML = ""; invSel.innerHTML = "";
@@ -5702,7 +5770,7 @@ async function openRunModal(prefill = {}) {
   };
 
   // collapsible vars + fact-profile section (used by Plan; runs ignore it)
-  let varsOpen = !!prefill.plan;
+  let varsOpen = !!prefill.plan || hasPrefillVars;
   const varsCaret = el("span", { class: "collapse-caret" + (varsOpen ? " open" : "") }, "▸");
   const varsBody = el("div", { style: { display: varsOpen ? "" : "none" } },
     varsEd.root,

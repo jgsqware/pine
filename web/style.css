@@ -427,6 +427,17 @@ table.data .mono { color: var(--muted); }
 }
 .modal-head h2 { margin: 0; font-size: 16px; font-weight: 650; flex: 1; }
 .modal-body { padding: 16px 20px; }
+.run-confirm .confirm-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.run-confirm .confirm-row:last-of-type { border-bottom: none; }
+.run-confirm .confirm-val { color: var(--text); text-align: right; word-break: break-word; }
+.run-confirm .confirm-warn {
+  margin-top: 12px; padding: 9px 11px; border-radius: 8px;
+  color: var(--warning); background: var(--warning-dim);
+  border: 1px solid rgba(251, 191, 36, 0.3); font-size: 12.5px; line-height: 1.45;
+}
 .modal-foot {
   padding: 14px 20px;
   border-top: 1px solid var(--border);
