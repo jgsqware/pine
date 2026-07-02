@@ -20,9 +20,9 @@ storage, a polished web UI, a full terminal UI, a CLI and a REST API.
 |---|---|
 | ![Drift](docs/screenshots/drift.png) | ![Impact](docs/screenshots/impact.png) |
 
-| Git worktrees | |
+| Git worktrees | Hygiene — task smells *(rendered mock)* |
 |---|---|
-| ![Worktrees](docs/screenshots/worktrees.png) | |
+| ![Worktrees](docs/screenshots/worktrees.png) | ![Hygiene smells](docs/screenshots/hygiene-smells-mock.png) |
 
 ## Why Pine?
 
