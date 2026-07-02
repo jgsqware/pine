@@ -138,7 +138,12 @@ A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
   shows up), `{{ }}` resolved where possible and left as-is otherwise.
 - **Hygiene report** — unused roles, never-notified handlers (listen- and
   templated-notify-aware), dead variables, untargeted hosts, **plaintext
-  secret detection**, vault usage, tidiness score.
+  secret detection**, vault usage, and **task-level smells** grouped by rule:
+  `command`/`shell` where a native module exists (command-instead-of-module),
+  unnamed tasks, `ignore_errors: true`, `shell` without `changed_when`, bare
+  `include:`, Jinja-wrapped `when:`, and `state: latest`. A tidiness score folds
+  it all in. Also `pine hygiene PATH [--json]` (exit code 4 on a plaintext
+  credential — gate your CI).
 - **Blast radius** — map a git diff to impacted roles (transitive
   dependents) → playbooks → hosts → handlers, as a ripple visualization
   and as `pine impact` (exit code 3 when hosts are affected — gate your CI).
@@ -202,6 +207,7 @@ go build -o pine ./cmd/pine
 ./pine lineage examples/demo-infra -i production --host web01 --redact --json
 ./pine lineage examples/demo-infra --playbook webservers.yml \
                -i inventories/production --all-hosts --redact --json   # effective playbook vars (include_vars expanded)
+./pine hygiene examples/demo-infra                  # dead-code + smells + secrets report (exit 4 on plaintext creds)
 ./pine impact  examples/demo-infra --base HEAD~1 --head HEAD
 ./pine worktrees examples/demo-infra                # list the repo's git worktrees
 ```
@@ -290,7 +296,7 @@ curl -H "Authorization: Bearer $PINE_TOKEN" localhost:8743/api/stats
 | `POST /api/repos/{id}/inventory-preview` | what-if constructed groups |
 | `GET /api/repos/{id}/lineage?inventory=…&host=…` | variable precedence chains |
 | `GET /api/repos/{id}/resolve?playbook=…[&inventory=…&host=…]` | a playbook's effective vars + lineage for inline `{{ }}` resolution |
-| `GET /api/repos/{id}/hygiene` | dead-code + secrets report |
+| `GET /api/repos/{id}/hygiene` | dead-code + task-smells + secrets report |
 | `GET /api/repos/{id}/impact?base=…&head=…` | blast radius of a git diff |
 | `GET/POST /api/repos/{id}/facts[/refresh]` | harvested facts |
 | `GET/POST /api/repos/{id}/drift[/check]` | drift heatmap / launch checks |

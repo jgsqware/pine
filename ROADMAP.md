@@ -30,6 +30,12 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ **2. Dead-code detection** — unused roles, never-notified handlers,
       unused vars (best effort), hosts targeted by no playbook.
       Part of `GET /api/repos/{id}/hygiene`, "Hygiene" page.
+- [x] ✅ **2b. Task-level smells** — command-instead-of-module, unnamed tasks,
+      `ignore_errors: true`, `shell` without `changed_when`, bare `include:`,
+      Jinja-wrapped `when:`, `state: latest`; grouped by rule with a count and
+      folded into the score. In `GET …/hygiene`, the "Hygiene" page, and the new
+      `pine hygiene` CLI (exit 4 on plaintext creds). Validated on messy
+      real-world repos (streisand: 110 unnamed, 104 no-changed_when, …).
 - [x] ✅ **3. Run diff** — compare two jobs of the same playbook: per
       task × host status transitions (ok→changed, ok→failed, new/removed
       tasks). `GET /api/jobs/{id}/diff?with=…`, view in job detail.
