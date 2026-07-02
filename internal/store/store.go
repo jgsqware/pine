@@ -29,9 +29,12 @@ type Store struct {
 	mu    sync.RWMutex
 	dir   string
 	state state
+	lock  *os.File // held for the process lifetime to keep the flock
 }
 
-// Open loads (or initializes) the store at dir.
+// Open loads (or initializes) the store at dir. It takes an exclusive
+// inter-process lock so a second Pine writing the same directory fails fast
+// instead of corrupting the JSON store.
 func Open(dir string) (*Store, error) {
 	// 0700: the store holds vault passwords and inventory data — keep it private
 	// to the owner even on a shared host.
@@ -41,12 +44,28 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "repos"), 0o700); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir}
+	lock, err := lockDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{dir: dir, lock: lock}
 	data, err := os.ReadFile(s.statePath())
 	if err == nil {
 		_ = json.Unmarshal(data, &s.state)
 	}
 	return s, nil
+}
+
+// Close releases the inter-process lock. Optional: the OS drops the flock when
+// the process exits, but tests that open many stores in one process should call
+// it to free the descriptor.
+func (s *Store) Close() error {
+	if s.lock != nil {
+		err := s.lock.Close()
+		s.lock = nil
+		return err
+	}
+	return nil
 }
 
 // Dir returns the data directory.
