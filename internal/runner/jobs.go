@@ -221,6 +221,22 @@ func (m *Manager) Cancel(jobID string) (model.Job, error) {
 }
 
 func (m *Manager) execute(ctx context.Context, job model.Job, r *run) {
+	// Bounded concurrency: the job stays "pending" until a worker slot frees.
+	// A cancel while queued unblocks here and never starts ansible.
+	select {
+	case m.sem <- struct{}{}:
+		defer func() { <-m.sem }()
+	case <-ctx.Done():
+		job.Status = model.JobCanceled
+		job.Finished = time.Now().UTC().Format(time.RFC3339)
+		_ = m.Store.SaveJob(job)
+		r.close()
+		m.mu.Lock()
+		delete(m.runs, job.ID)
+		m.mu.Unlock()
+		return
+	}
+
 	start := time.Now()
 	job.Status = model.JobRunning
 	job.Started = start.UTC().Format(time.RFC3339)

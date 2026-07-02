@@ -198,3 +198,35 @@ func TestPipelineRunWithApprovalGate(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+func TestReconcileInterruptedJobs(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st)
+	if err := st.SaveJob(model.Job{ID: "j_stuck", RepoID: "r", Playbook: "site.yml", Status: model.JobRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveJob(model.Job{ID: "j_pending", RepoID: "r", Playbook: "site.yml", Status: model.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveJob(model.Job{ID: "j_done", RepoID: "r", Playbook: "site.yml", Status: model.JobSuccess}); err != nil {
+		t.Fatal(err)
+	}
+	if n := m.ReconcileInterruptedJobs(); n != 2 {
+		t.Fatalf("reconciled %d, want 2 (running + pending)", n)
+	}
+	for _, id := range []string{"j_stuck", "j_pending"} {
+		j, _ := st.GetJob(id)
+		if j.Status != model.JobFailed {
+			t.Errorf("%s status = %s, want failed", id, j.Status)
+		}
+		if j.Finished == "" {
+			t.Errorf("%s should have a Finished timestamp", id)
+		}
+	}
+	if done, _ := st.GetJob("j_done"); done.Status != model.JobSuccess {
+		t.Errorf("finished job must stay success, got %s", done.Status)
+	}
+}

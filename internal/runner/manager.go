@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ type Manager struct {
 	mu    sync.Mutex
 	scans map[string]*model.ScanResult // repoID -> cached scan
 	runs  map[string]*run              // jobID -> live run
+	sem   chan struct{}                // bounds concurrent job execution
 }
 
 // New creates a Manager on top of the store.
@@ -29,7 +31,44 @@ func New(st *store.Store) *Manager {
 		Store: st,
 		scans: map[string]*model.ScanResult{},
 		runs:  map[string]*run{},
+		sem:   make(chan struct{}, maxConcurrentJobs()),
 	}
+}
+
+// maxConcurrentJobs caps how many jobs run ansible at once (a bulk of scheduled
+// runs firing together would otherwise spawn unbounded processes). Override with
+// PINE_MAX_JOBS; defaults to 4.
+func maxConcurrentJobs() int {
+	if v := os.Getenv("PINE_MAX_JOBS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 4
+}
+
+// ReconcileInterruptedJobs marks jobs left running/pending by a previous
+// process as failed: their in-memory run is gone, so they are not executing.
+// Call once at startup, before serving. Returns how many were fixed.
+func (m *Manager) ReconcileInterruptedJobs() int {
+	n := 0
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, j := range m.Store.ListJobs() {
+		if j.Status != model.JobRunning && j.Status != model.JobPending {
+			continue
+		}
+		j.Status = model.JobFailed
+		if j.Finished == "" {
+			j.Finished = now
+		}
+		_ = m.Store.SaveJob(j)
+		if f, err := os.OpenFile(m.Store.JobLogPath(j.ID), os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+			_, _ = f.WriteString("\n[pine] interrupted: the server restarted while this job was in flight — marked failed.\n")
+			_ = f.Close()
+		}
+		n++
+	}
+	return n
 }
 
 // SyncRepo clones/pulls (git repos) then rescans, asynchronously.

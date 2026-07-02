@@ -138,6 +138,9 @@ func openManager(dataDir string, demo bool) *runner.Manager {
 		log.Fatalf("open data dir: %v", err)
 	}
 	mgr := runner.New(st)
+	if n := mgr.ReconcileInterruptedJobs(); n > 0 {
+		log.Printf("reconciled %d job(s) left in flight by a previous run", n)
+	}
 	if demo || os.Getenv("PINE_DEMO") == "1" {
 		registerDemo(mgr)
 	}
@@ -209,6 +212,9 @@ func cmdLocal(path string, args []string) {
 		log.Fatalf("open data dir: %v", err)
 	}
 	mgr := runner.New(st)
+	if n := mgr.ReconcileInterruptedJobs(); n > 0 {
+		log.Printf("reconciled %d job(s) left in flight by a previous run", n)
+	}
 	registerLocalRepo(mgr, abs)
 
 	if *useTUI {
