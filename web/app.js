@@ -3344,8 +3344,8 @@ async function pageHygiene(page) {
     hygieneScoreRing(score, tone),
     el("div", null,
       el("div", { class: "hh-title" }, "Repository hygiene score"),
-      el("div", { class: "muted small", style: { maxWidth: "520px" } },
-        "Static analysis of unused roles, never-notified handlers, dead variables, untargeted hosts and plaintext secrets.")),
+      el("div", { class: "muted small", style: { maxWidth: "560px" } },
+        "Static analysis of unused roles, never-notified handlers, dead variables, untargeted hosts, plaintext secrets and task-level smells (command-instead-of-module, unnamed tasks, ignore_errors, …).")),
     el("div", { class: "grow" }),
     el("span", { class: "chip" + (vaults > 0 ? " green" : "") },
       `${vaults} vault-encrypted file${vaults === 1 ? "" : "s"}`)));
@@ -3377,6 +3377,13 @@ async function pageHygiene(page) {
         f.file ? el("span", { class: "chip mono" }, f.file) : null,
         el("span", { class: `pill sev-${f.severity === "high" ? "high" : "med"}` }, f.severity || "medium")),
     },
+    {
+      key: "smells", title: "Task smells", ok: "No task smells", icon: "code",
+      row: (f) => hygieneRow(icon("code"), f.rule, f.detail,
+        f.count > 1 ? el("span", { class: "chip" }, `×${f.count}`) : null,
+        f.where ? el("span", { class: "chip mono" }, f.where) : null,
+        el("span", { class: "pill" + (f.severity === "medium" ? " sev-med" : "") }, f.severity || "low")),
+    },
   ];
 
   const total = sections.reduce((n, s) => n + (hy[s.key] || []).length, 0);
@@ -3384,7 +3391,7 @@ async function pageHygiene(page) {
     box.appendChild(el("div", { class: "hero" },
       el("div", { html: ICONS.sparkle.replace("<svg", '<svg class="tree" style="color:var(--accent)"') }),
       el("h2", null, "Your repo is tidy"),
-      el("p", null, "Every role is referenced, every handler gets notified, no dead variables, no untargeted hosts, no plaintext secrets. Keep it that way.")));
+      el("p", null, "Every role is referenced, every handler gets notified, no dead variables, no untargeted hosts, no plaintext secrets and no task smells. Keep it that way.")));
     return;
   }
 
