@@ -32,7 +32,7 @@ func TestClientRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(server.New(mgr))
+	srv := httptest.NewServer(server.New(mgr, server.Config{}))
 	defer srv.Close()
 	c := New(srv.URL)
 

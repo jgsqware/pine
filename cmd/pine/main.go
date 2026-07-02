@@ -184,11 +184,13 @@ func registerDemo(mgr *runner.Manager) {
 // Data lives in <path>/.pine by default so each repo is self-contained.
 func cmdLocal(path string, args []string) {
 	fs := flag.NewFlagSet("local", flag.ExitOnError)
-	addr := fs.String("addr", ":8743", "listen address")
+	addr := fs.String("addr", "127.0.0.1:8743", "listen address")
 	dataDefault := os.Getenv("PINE_DATA")
 	data := fs.String("data", dataDefault, "data directory (default <PATH>/.pine)")
 	noOpen := fs.Bool("no-open", false, "do not open the browser")
 	useTUI := fs.Bool("tui", false, "launch the terminal UI instead of the web server")
+	token := fs.String("token", os.Getenv("PINE_TOKEN"), "require this token on /api/ (or set PINE_TOKEN); mandatory for a non-loopback bind")
+	insecure := fs.Bool("insecure", false, "allow a non-loopback bind without a token (not recommended)")
 	_ = fs.Parse(args)
 
 	abs, err := filepath.Abs(path)
@@ -214,6 +216,9 @@ func cmdLocal(path string, args []string) {
 		return
 	}
 
+	if err := guardBind(*addr, *token, *insecure); err != nil {
+		log.Fatal(err)
+	}
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatalf("listen on %s: %v", *addr, err)
@@ -223,7 +228,7 @@ func cmdLocal(path string, args []string) {
 	if !*noOpen {
 		openBrowser(url)
 	}
-	if err := http.Serve(ln, server.New(mgr)); err != nil {
+	if err := http.Serve(ln, server.New(mgr, server.Config{Token: *token})); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -262,6 +267,39 @@ func localURL(addr net.Addr) string {
 	return fmt.Sprintf("http://%s:%s", host, port)
 }
 
+// isLoopbackBind reports whether a listen address binds only the loopback
+// interface. An empty host (":8743"), "0.0.0.0" or "::" binds every interface
+// and is therefore not loopback-only.
+func isLoopbackBind(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// guardBind refuses to expose Pine on a non-loopback address without a token.
+// Pine's API executes ansible-playbook and clones git, so an unauthenticated
+// public bind is a remote-code-execution surface. Loopback binds stay
+// friction-free; exposing requires either a token or an explicit --insecure.
+func guardBind(addr, token string, insecure bool) error {
+	if isLoopbackBind(addr) || token != "" || insecure {
+		return nil
+	}
+	return fmt.Errorf("refusing to bind %s without authentication: the API runs "+
+		"ansible and git.\n  Set a token (--token or PINE_TOKEN) to require auth, "+
+		"or pass --insecure to override (not recommended).", addr)
+}
+
 // openBrowser best-effort opens url in the user's default browser.
 func openBrowser(url string) {
 	var cmd string
@@ -286,15 +324,24 @@ func openBrowser(url string) {
 
 func cmdServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", ":8743", "listen address")
+	addr := fs.String("addr", "127.0.0.1:8743", "listen address")
 	data := fs.String("data", defaultDataDir(), "data directory")
 	demo := fs.Bool("demo", false, "register the bundled demo repository")
+	token := fs.String("token", os.Getenv("PINE_TOKEN"), "require this token on /api/ (or set PINE_TOKEN); mandatory for a non-loopback bind")
+	insecure := fs.Bool("insecure", false, "allow a non-loopback bind without a token (not recommended)")
 	_ = fs.Parse(args)
 
+	if err := guardBind(*addr, *token, *insecure); err != nil {
+		log.Fatal(err)
+	}
 	mgr := openManager(*data, *demo)
 	go mgr.StartScheduler(context.Background())
-	h := server.New(mgr)
-	log.Printf("Pine %s listening on http://localhost%s (data: %s)", version, *addr, *data)
+	h := server.New(mgr, server.Config{Token: *token})
+	auth := "disabled (loopback)"
+	if *token != "" {
+		auth = "token required"
+	}
+	log.Printf("Pine %s listening on http://localhost%s (data: %s, auth: %s)", version, *addr, *data, auth)
 	if err := http.ListenAndServe(*addr, h); err != nil {
 		log.Fatal(err)
 	}

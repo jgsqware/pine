@@ -50,7 +50,11 @@ type HygieneResult struct {
 	VaultFiles         int                 `json:"vault_files"`
 }
 
-var secretKeyRe = regexp.MustCompile(`(?i)(^|_)(pass(word|wd)?|secret|token|api_?key|access_?key|private_?key|credentials?)s?$`)
+// secretKeyRe flags variable names that hold secrets: the usual password/token/
+// key/credential suffixes, plus the ansible-vault naming convention (a
+// `vault_`-prefixed variable is a secret by definition — a plaintext value under
+// one is itself a hygiene smell).
+var secretKeyRe = regexp.MustCompile(`(?i)(^vault_|(^|_)(pass(word|wd|phrase)?|secret|token|api_?key|access_?key|private_?key|credentials?)s?$)`)
 
 // server_tokens is the apache/nginx version-disclosure directive, not a
 // credential, despite ending in "tokens"

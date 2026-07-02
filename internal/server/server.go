@@ -4,6 +4,7 @@ package server
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,6 +30,16 @@ import (
 // Server wires the manager to HTTP.
 type Server struct {
 	Mgr *runner.Manager
+}
+
+// Config tunes the HTTP surface. The zero value is safe for loopback use.
+type Config struct {
+	// Token, when non-empty, is required on every /api/ request. It may be
+	// presented as a Bearer Authorization header, an X-Pine-Token header, a
+	// pine_token cookie, or a ?token= query parameter (the latter so the
+	// browser EventSource, which cannot set headers, can authenticate the SSE
+	// stream). An empty Token disables authentication (loopback-only default).
+	Token string
 }
 
 // Version and BuildTime are stamped by main at build time (ldflags) and shown
@@ -51,7 +63,7 @@ func buildLabel() string {
 }
 
 // New builds the HTTP handler.
-func New(mgr *runner.Manager) http.Handler {
+func New(mgr *runner.Manager, cfg Config) http.Handler {
 	s := &Server{Mgr: mgr}
 	mux := http.NewServeMux()
 
@@ -108,7 +120,61 @@ func New(mgr *runner.Manager) http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
 
 	mux.HandleFunc("/", s.static)
-	return logRequests(mux)
+	return logRequests(secure(cfg, mux))
+}
+
+// secure gates every /api/ request with a lightweight CSRF check and, when a
+// token is configured, token authentication. Static assets (the SPA shell) are
+// served unauthenticated so the browser can load the login prompt; all data
+// flows through /api/ and is protected.
+func secure(cfg Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			// CSRF: a browser attaches Origin to state-changing requests. If it
+			// is present and does not match the host we are served on, refuse —
+			// this blocks a malicious page from POSTing to a local Pine. Non-
+			// browser clients (curl, CI) send no Origin and are unaffected.
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, r.Host) {
+					writeErr(w, http.StatusForbidden, errors.New("cross-origin request blocked"))
+					return
+				}
+			}
+			if cfg.Token != "" && !tokenOK(r, cfg.Token) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="pine"`)
+				writeErr(w, http.StatusUnauthorized, errors.New("authentication required"))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// tokenOK reports whether the request carries the configured token, accepted as
+// a Bearer header, an X-Pine-Token header, a pine_token cookie, or a ?token=
+// query parameter (for EventSource). The comparison is constant-time.
+func tokenOK(r *http.Request, want string) bool {
+	var got string
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		got = strings.TrimPrefix(h, "Bearer ")
+	} else if h := r.Header.Get("X-Pine-Token"); h != "" {
+		got = h
+	} else if c, err := r.Cookie("pine_token"); err == nil {
+		got = c.Value
+	} else {
+		got = r.URL.Query().Get("token")
+	}
+	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// sameOrigin reports whether the Origin header's host:port matches the request
+// Host we are being served on.
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, host)
 }
 
 func logRequests(next http.Handler) http.Handler {
@@ -217,6 +283,12 @@ func (s *Server) addRepo(w http.ResponseWriter, r *http.Request) {
 	if req.URL == "" && req.Path == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("either url or path is required"))
 		return
+	}
+	if req.URL != "" {
+		if err := runner.ValidateGitURL(req.URL); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	if req.Path != "" {
 		abs, err := filepath.Abs(req.Path)
@@ -353,7 +425,7 @@ func (s *Server) syncRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, errCode(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, repo)
+	writeJSON(w, http.StatusOK, redactRepo(repo))
 }
 
 func (s *Server) scanRepo(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +471,12 @@ func (s *Server) topology(w http.ResponseWriter, r *http.Request) {
 // maxFilePreview caps how much of a source file the raw-file endpoint serves.
 const maxFilePreview = 2 << 20 // 2 MiB
 
+// withinRoot reports whether the absolute path p is root itself or lives under
+// it, used to confine file access to a repo's working directory.
+func withinRoot(root, p string) bool {
+	return p == root || strings.HasPrefix(p, root+string(os.PathSeparator))
+}
+
 // repoFile serves the raw bytes of a file inside a repository's working
 // directory, so the UI can preview the real YAML behind a parsed view. The
 // requested path is confined to the repo workdir to prevent traversal.
@@ -418,10 +496,19 @@ func (s *Server) repoFile(w http.ResponseWriter, r *http.Request) {
 	// confine to the repo workdir
 	rootAbs, err1 := filepath.Abs(root)
 	fullAbs, err2 := filepath.Abs(full)
-	if err1 != nil || err2 != nil || (fullAbs != rootAbs && !strings.HasPrefix(fullAbs, rootAbs+string(os.PathSeparator))) {
+	if err1 != nil || err2 != nil || !withinRoot(rootAbs, fullAbs) {
 		writeErr(w, http.StatusBadRequest, errors.New("invalid path"))
 		return
 	}
+	// Resolve symlinks and re-check: a symlink inside the workdir must not point
+	// outside it (guards against a repo shipping a link to /etc/passwd).
+	realRoot, err1 := filepath.EvalSymlinks(rootAbs)
+	realFull, err2 := filepath.EvalSymlinks(fullAbs)
+	if err1 != nil || err2 != nil || !withinRoot(realRoot, realFull) {
+		writeErr(w, http.StatusNotFound, errors.New("file not found"))
+		return
+	}
+	fullAbs = realFull
 	info, err := os.Stat(fullAbs)
 	if err != nil || info.IsDir() {
 		writeErr(w, http.StatusNotFound, errors.New("file not found"))
@@ -711,6 +798,7 @@ func (s *Server) lineage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
+	out.Redact() // never leak inventory secrets/vault blobs in the JSON
 	writeJSON(w, http.StatusOK, out)
 }
 

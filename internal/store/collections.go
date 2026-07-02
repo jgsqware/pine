@@ -37,7 +37,7 @@ func (s *Store) SaveHostFacts(repoID, host string, facts map[string]any) error {
 	if !safeName(repoID) || !safeName(host) {
 		return ErrNotFound
 	}
-	if err := os.MkdirAll(s.factsDir(repoID), 0o755); err != nil {
+	if err := os.MkdirAll(s.factsDir(repoID), 0o700); err != nil {
 		return err
 	}
 	data, err := json.Marshal(factsFile{
@@ -47,7 +47,7 @@ func (s *Store) SaveHostFacts(repoID, host string, facts map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.factsDir(repoID), host+".json"), data, 0o644)
+	return os.WriteFile(filepath.Join(s.factsDir(repoID), host+".json"), data, 0o600)
 }
 
 // HostFacts loads stored facts for one host (nil when absent).
@@ -108,7 +108,7 @@ func (s *Store) SaveHostServices(repoID, host string, svcs []model.ServiceState)
 	if !safeName(repoID) || !safeName(host) {
 		return ErrNotFound
 	}
-	if err := os.MkdirAll(s.servicesDir(repoID), 0o755); err != nil {
+	if err := os.MkdirAll(s.servicesDir(repoID), 0o700); err != nil {
 		return err
 	}
 	data, err := json.Marshal(servicesFile{
@@ -118,7 +118,7 @@ func (s *Store) SaveHostServices(repoID, host string, svcs []model.ServiceState)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.servicesDir(repoID), host+".json"), data, 0o644)
+	return os.WriteFile(filepath.Join(s.servicesDir(repoID), host+".json"), data, 0o600)
 }
 
 // HostServices loads stored service status for one host (nil when absent),
@@ -182,7 +182,7 @@ func saveJSON[T any](path string, items []T) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

@@ -3,6 +3,24 @@
 Feature checklist from the "what AWX is missing" brainstorm.
 Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another phase
 
+## Security hardening (audit sprint 0)
+
+- [x] ✅ **API token auth** — `--token` / `PINE_TOKEN` gate on every `/api/`
+      request (Bearer / `X-Pine-Token` header, `?token=` for SSE); web UI prompts
+      and remembers it.
+- [x] ✅ **Secure-by-default bind** — `serve`/local bind `127.0.0.1` by default;
+      a non-loopback bind refuses to start without a token (or `--insecure`).
+- [x] ✅ **CSRF protection** — cross-origin state-changing requests rejected.
+- [x] ✅ **Git transport allowlist** — only https/http/git/ssh URLs cloned,
+      transport-helper syntax (`ext::`/`fd::`) blocked + `GIT_ALLOW_PROTOCOL`
+      enforced (closes an unauthenticated RCE).
+- [x] ✅ **Secret-leak fixes** — `/lineage` and `/sync` now redact like
+      `/resolve`; secret-key heuristic covers `passphrase` and the `vault_`
+      convention; symlinks in the raw-file endpoint are confined to the workdir;
+      data dir written `0600`/`0700`.
+- [ ] ⏳ **RBAC / SSO / audit log** — per-user roles and an audit trail (needed
+      for multi-user/enterprise; sprint 3).
+
 ## Quick wins (engine already exists)
 
 - [x] ✅ **1. Variable lineage** — "where does this value come from?":

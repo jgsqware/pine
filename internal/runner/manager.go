@@ -96,6 +96,12 @@ func runGit(dir string, args ...string) error {
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	// Constrain git's transports (blocks ext::/fd:: shell execution) and never
+	// block on a credential prompt for a non-interactive clone.
+	cmd.Env = append(os.Environ(),
+		"GIT_ALLOW_PROTOCOL="+gitAllowProtocol,
+		"GIT_TERMINAL_PROMPT=0",
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := string(out)

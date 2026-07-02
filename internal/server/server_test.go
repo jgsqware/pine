@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jgsqware/pine/internal/model"
 	"github.com/jgsqware/pine/internal/runner"
@@ -32,7 +33,15 @@ func newTestServer(t *testing.T) (http.Handler, string) {
 	if _, err := mgr.SyncRepo(repo.ID); err != nil {
 		t.Fatalf("sync repo: %v", err)
 	}
-	return New(mgr), repo.ID
+	// SyncRepo scans in a background goroutine that writes into the temp data
+	// dir; wait for it to settle so t.TempDir() cleanup doesn't race the writer.
+	for i := 0; i < 200; i++ {
+		if r, _ := st.GetRepo(repo.ID); r.Status == model.RepoReady || r.Status == model.RepoError {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return New(mgr, Config{}), repo.ID
 }
 
 func TestRepoFile(t *testing.T) {
@@ -82,6 +91,34 @@ func TestRepoFile(t *testing.T) {
 			t.Errorf("missing-path status = %d, want 400", rec.Code)
 		}
 	})
+}
+
+// TestLineageRedaction guards the regression the audit found: the /lineage
+// endpoint must mask inventory secrets (vault blobs, password-like scalars)
+// exactly like /resolve does. The demo's db group carries password variables.
+func TestLineageRedaction(t *testing.T) {
+	h, repoID := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/repos/"+repoID+"/lineage?inventory=production&host=db-primary", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("lineage status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	// No raw secret material may appear in the JSON.
+	for _, leak := range []string{"$ANSIBLE_VAULT", "CHANGEME"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("lineage response leaks %q:\n%s", leak, body)
+		}
+	}
+	// And the redaction must actually have fired on this dataset, otherwise the
+	// test would pass even if the handler forgot to call Redact().
+	if !strings.Contains(body, "***REDACTED***") {
+		t.Errorf("expected at least one redacted secret in db-primary lineage; body:\n%s", body)
+	}
 }
 
 func TestServicesEndpoint(t *testing.T) {

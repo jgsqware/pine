@@ -4,11 +4,18 @@ services:
     image: pine:latest
     container_name: pine
     ports:
-      - "8743:8743"
+      # bound to localhost on the host; drop the 127.0.0.1 prefix only behind a
+      # trusted reverse proxy that terminates auth/TLS.
+      - "127.0.0.1:8743:8743"
     environment:
       # registers the bundled Acme Corp demo repository on first start
       PINE_DEMO: "1"
       PINE_DEMO_PATH: /usr/share/pine/demo-infra
+      # The API executes ansible and clones git, so a token is REQUIRED when the
+      # port is exposed. Change this to a long random secret before deploying.
+      # The web UI prompts for it on first load; API/CI callers send it as a
+      # Bearer / X-Pine-Token header (or ?token= for the SSE stream).
+      PINE_TOKEN: "change-me-to-a-long-random-secret"
     volumes:
       - pine-data:/data
       - /home/jgsqware/go/src/gitlab.gaming1.net/landbased-gaming/devops/dockers:/dockers:ro

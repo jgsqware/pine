@@ -156,21 +156,53 @@ function toast(msg, kind = "success", title) {
 
 /* ---- api ---- */
 
-async function api(path, opts = {}) {
+/* ---- auth token ----
+   When Pine is served with an API token (non-loopback binds require one), the
+   browser presents it via an X-Pine-Token header on every request, and a
+   ?token= query on the EventSource stream (which cannot set headers). The token
+   is kept in localStorage; a 401 prompts for it and retries once. */
+function pineToken() {
+  try { return localStorage.getItem("pine_token") || ""; } catch { return ""; }
+}
+function setPineToken(t) {
+  try { t ? localStorage.setItem("pine_token", t) : localStorage.removeItem("pine_token"); } catch { /* private mode */ }
+}
+// tokenQuery appends ?token= (or &token=) to a URL when a token is set, for
+// EventSource which cannot send headers.
+function tokenQuery(url) {
+  const t = pineToken();
+  if (!t) return url;
+  return url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t);
+}
+
+async function api(path, opts = {}, _retried = false) {
+  const headers = { ...(opts.headers || {}) };
+  if (opts.body) headers["Content-Type"] = "application/json";
+  const t = pineToken();
+  if (t) headers["X-Pine-Token"] = t;
   let res;
   try {
     res = await fetch("/api" + path, {
-      headers: opts.body ? { "Content-Type": "application/json" } : undefined,
       ...opts,
+      headers: Object.keys(headers).length ? headers : undefined,
     });
   } catch (e) {
     throw new Error("Network error — is the Pine server running?");
+  }
+  if (res.status === 401 && !_retried) {
+    const entered = window.prompt("Pine requires an API token to continue.\nPaste your token:");
+    if (entered && entered.trim()) {
+      setPineToken(entered.trim());
+      return api(path, opts, true);
+    }
+    throw new Error("Authentication required");
   }
   if (res.status === 204) return null;
   const text = await res.text();
   let data = null;
   if (text) { try { data = JSON.parse(text); } catch { /* non-JSON */ } }
   if (!res.ok) {
+    if (res.status === 401) setPineToken(""); // bad token — drop it so the next call re-prompts
     throw new Error((data && data.error) || `Request failed (HTTP ${res.status})`);
   }
   return data;
@@ -220,7 +252,7 @@ function confirmModal(title, message, confirmLabel = "Delete") {
 
 /** Build the raw-file API URL for a repo-relative path. */
 function rawFileURL(repoId, path) {
-  return `/api/repos/${repoId}/file?path=${path.split("/").map(encodeURIComponent).join("/")}`;
+  return tokenQuery(`/api/repos/${repoId}/file?path=${path.split("/").map(encodeURIComponent).join("/")}`);
 }
 
 async function fetchRawFile(repoId, path) {
@@ -4801,7 +4833,7 @@ async function pageJobDetail(page, segs) {
         class: "btn btn-sm", title: "Diff this run against another run of the same playbook",
         onclick: () => openCompareModal(job, showDiff),
       }, icon("diff"), "Compare") : null,
-      el("a", { class: "btn btn-sm", href: `/api/jobs/${jobId}/log`, download: `${jobId}.log` }, icon("download"), "Download log")));
+      el("a", { class: "btn btn-sm", href: tokenQuery(`/api/jobs/${jobId}/log`), download: `${jobId}.log` }, icon("download"), "Download log")));
     headBox.appendChild(el("div", { class: "row small muted", style: { marginBottom: "12px", gap: "16px" } },
       el("span", null, "repo ", el("b", { style: { color: "var(--text)" } }, job.repo_name || job.repo_id)),
       el("span", null, "inventory ", el("b", { class: "mono", style: { color: "var(--text)" } }, job.inventory || "—")),
@@ -4899,7 +4931,8 @@ async function pageJobDetail(page, segs) {
   if (TERMINAL_STATUSES.has(job.status)) {
     // finished: fetch full log once
     try {
-      const res = await fetch(`/api/jobs/${jobId}/log`);
+      const tk = pineToken();
+      const res = await fetch(`/api/jobs/${jobId}/log`, tk ? { headers: { "X-Pine-Token": tk } } : undefined);
       const text = res.ok ? await res.text() : "";
       logBox.innerHTML = "";
       if (!text.trim()) {
@@ -4915,7 +4948,7 @@ async function pageJobDetail(page, segs) {
   } else {
     // live: stream via SSE (server replays from the start of the run)
     logBox.appendChild(cursor);
-    const es = new EventSource(`/api/jobs/${jobId}/events`);
+    const es = new EventSource(tokenQuery(`/api/jobs/${jobId}/events`));
     onCleanup(() => es.close());
     es.addEventListener("line", (e) => appendLine(e.data));
     es.addEventListener("status", (e) => {

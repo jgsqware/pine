@@ -248,6 +248,33 @@ public Ansible repositories:
 | [ansible-for-devops](https://github.com/geerlingguy/ansible-for-devops) (9.7k ⭐) | 63 playbooks across nested chapter layouts | — |
 | [debops](https://github.com/debops/debops) (1.4k ⭐) | **240 playbooks, 203 roles** | 422-task playbook planned in 24 ms; hygiene report in 121 ms |
 
+## Security
+
+Pine's API executes `ansible-playbook` and clones git repositories, so it is
+**secure by default**:
+
+- **Loopback by default** — `pine .` and `pine serve` bind `127.0.0.1:8743`.
+  Binding a non-loopback address (`:8743`, `0.0.0.0:…`) **requires an API token**
+  (`--token` / `PINE_TOKEN`); Pine refuses to start otherwise (override with
+  `--insecure` only behind a trusted proxy).
+- **Token auth** — when a token is set, every `/api/` call must present it as a
+  `Authorization: Bearer …` or `X-Pine-Token` header (the web UI prompts once and
+  remembers it; the SSE stream uses `?token=`). Docker ships with `PINE_TOKEN` in
+  `docker-compose.yml` — change it before deploying.
+- **CSRF protection** — state-changing requests from a foreign `Origin` are
+  rejected, so a malicious page cannot drive a Pine running on your machine.
+- **Git transport allowlist** — only `https`/`http`/`git`/`ssh` URLs are cloned;
+  git transport-helper syntax (`ext::`, `fd::`) is blocked, defusing remote code
+  execution via a crafted repo URL (`GIT_ALLOW_PROTOCOL` is enforced too).
+- **Secrets never leak** — vault passwords are redacted out of every API read,
+  the `lineage`/`resolve` endpoints mask vault blobs and password-like values,
+  and the data directory (`state.json`, jobs, facts) is written `0600`/`0700`.
+
+```bash
+pine serve --addr 0.0.0.0:8743 --token "$(openssl rand -hex 24)"   # exposed + authenticated
+curl -H "Authorization: Bearer $PINE_TOKEN" localhost:8743/api/stats
+```
+
 ## REST API
 
 | Method & path | Purpose |

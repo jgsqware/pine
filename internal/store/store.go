@@ -33,10 +33,12 @@ type Store struct {
 
 // Open loads (or initializes) the store at dir.
 func Open(dir string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0o755); err != nil {
+	// 0700: the store holds vault passwords and inventory data — keep it private
+	// to the owner even on a shared host.
+	if err := os.MkdirAll(filepath.Join(dir, "jobs"), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "repos"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "repos"), 0o700); err != nil {
 		return nil, err
 	}
 	s := &Store{dir: dir}
@@ -58,7 +60,7 @@ func (s *Store) saveLocked() error {
 		return err
 	}
 	tmp := s.statePath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil { // contains vault passwords
 		return err
 	}
 	return os.Rename(tmp, s.statePath())
@@ -157,7 +159,7 @@ func (s *Store) SaveJob(j model.Job) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.jobPath(j.ID), data, 0o644)
+	return os.WriteFile(s.jobPath(j.ID), data, 0o600)
 }
 
 // GetJob loads one job by id.

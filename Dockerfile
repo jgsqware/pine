@@ -16,4 +16,6 @@ ENV PINE_DATA=/data
 VOLUME /data
 EXPOSE 8743
 ENTRYPOINT ["pine"]
-CMD ["serve", "--addr", ":8743"]
+# Binds all interfaces (container networking). Because this is a non-loopback
+# bind, Pine requires an API token: set PINE_TOKEN (see docker-compose.yml).
+CMD ["serve", "--addr", "0.0.0.0:8743"]
