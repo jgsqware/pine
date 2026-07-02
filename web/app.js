@@ -4848,6 +4848,7 @@ async function pageJobDetail(page, segs) {
         onclick: () => openRunModal({
           repoId: job.repo_id, playbook: job.playbook, inventory: job.inventory || "",
           limit: job.limit || "", tags: job.tags || "", check: !!job.check,
+          vars: job.vars || {},
         }),
       }, icon("sync"), "Re-run") : null,
       TERMINAL_STATUSES.has(job.status) ? el("button", {
@@ -4860,6 +4861,7 @@ async function pageJobDetail(page, segs) {
       el("span", null, "inventory ", el("b", { class: "mono", style: { color: "var(--text)" } }, job.inventory || "—")),
       job.limit ? el("span", null, "limit ", el("b", { class: "mono", style: { color: "var(--text)" } }, job.limit)) : null,
       job.tags ? el("span", null, "tags ", el("b", { class: "mono", style: { color: "var(--text)" } }, job.tags)) : null,
+      job.vars && Object.keys(job.vars).length ? el("span", { title: "extra vars this run was launched with (secrets excluded)" }, "vars ", el("b", { class: "mono", style: { color: "var(--text)" } }, Object.keys(job.vars).join(", "))) : null,
       el("span", { title: job.started || job.created }, running ? `started ${relTime(job.started || job.created)}` : `ran ${relTime(job.started || job.created)}`),
       el("span", null, "duration ", el("b", { class: "mono", style: { color: "var(--text)" } }, fmtDuration(job.duration_ms)))));
     const s = job.summary || {};

@@ -231,6 +231,10 @@ type Job struct {
 	DurationMS    int64          `json:"duration_ms"`
 	Summary       JobSummary     `json:"summary"`
 	TaskDurations []TaskDuration `json:"task_durations,omitempty"`
+	// Vars are the non-secret extra vars this run was launched with, kept so a
+	// Re-run can prefill them. Secret-looking keys are dropped before storage
+	// (they must be re-entered), and the vault password is never persisted.
+	Vars map[string]any `json:"vars,omitempty"`
 }
 
 // Terminal reports whether the job reached a final state.

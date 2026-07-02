@@ -130,6 +130,7 @@ func (m *Manager) StartJob(req model.Job, opts ...RunOpts) (model.Job, error) {
 		Limit:     req.Limit,
 		Tags:      req.Tags,
 		Check:     req.Check,
+		Vars:      req.Vars,
 		Status:    model.JobPending,
 		Created:   time.Now().UTC().Format(time.RFC3339),
 	}

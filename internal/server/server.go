@@ -626,12 +626,34 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("repo_id and playbook are required"))
 		return
 	}
+	// Persist only non-secret extra vars on the job (for Re-run prefill); the
+	// full set, including any secrets, is still passed to ansible transiently.
+	req.Vars = storableVars(body.Vars)
 	job, err := s.Mgr.StartJob(req, runner.RunOpts{VaultPassword: body.VaultPassword, ExtraVars: body.Vars})
 	if err != nil {
 		writeErr(w, errCode(err), err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, job)
+}
+
+// storableVars drops secret-looking keys so they are never persisted on a job
+// (they must be re-entered on a Re-run); returns nil when nothing remains.
+func storableVars(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for k, v := range in {
+		if plan.IsSecretKey(k) {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {

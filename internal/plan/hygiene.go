@@ -71,6 +71,14 @@ var secretKeyRe = regexp.MustCompile(`(?i)(^vault_|(^|_)(pass(word|wd|phrase)?|s
 // credential, despite ending in "tokens"
 var notSecretKeyRe = regexp.MustCompile(`(?i)server_+tokens?$`)
 
+// IsSecretKey reports whether a variable name looks like it holds a secret
+// (password/token/key/credential suffix, or the vault_ convention), excluding
+// known false positives like server_tokens. Callers use it to avoid persisting
+// or displaying secret-looking values.
+func IsSecretKey(key string) bool {
+	return secretKeyRe.MatchString(key) && !notSecretKeyRe.MatchString(key)
+}
+
 // Hygiene cross-references the scan result (plus the raw repo text for
 // variable usage and vault detection) into a tidiness report.
 func Hygiene(res *model.ScanResult, root string) *HygieneResult {

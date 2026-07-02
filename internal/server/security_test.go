@@ -90,3 +90,32 @@ func TestSecureCSRF(t *testing.T) {
 		t.Errorf("non-api path status = %d, want 200", w.Code)
 	}
 }
+
+func TestStorableVars(t *testing.T) {
+	in := map[string]any{
+		"app_version":   "2.4.1",
+		"db_password":   "hunter2", // secret key → dropped
+		"vault_token":   "abc",     // secret key → dropped
+		"replica_count": 3,
+	}
+	out := storableVars(in)
+	if _, ok := out["db_password"]; ok {
+		t.Error("db_password must not be persisted")
+	}
+	if _, ok := out["vault_token"]; ok {
+		t.Error("vault_token must not be persisted")
+	}
+	if out["app_version"] != "2.4.1" {
+		t.Errorf("app_version should survive, got %v", out["app_version"])
+	}
+	if out["replica_count"] != 3 {
+		t.Errorf("replica_count should survive, got %v", out["replica_count"])
+	}
+	// all-secret input collapses to nil (nothing to store)
+	if storableVars(map[string]any{"password": "x"}) != nil {
+		t.Error("all-secret vars should yield nil")
+	}
+	if storableVars(nil) != nil {
+		t.Error("nil in → nil out")
+	}
+}
