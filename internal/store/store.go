@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,6 +29,12 @@ type Store struct {
 	dir   string
 	state state
 	lock  *os.File // held for the process lifetime to keep the flock
+
+	// In-memory job index, built once at Open and kept current by SaveJob, so
+	// listing/counting jobs and /stats never re-read the jobs/ directory.
+	jobs       map[string]model.Job
+	jobsSorted []model.Job // cache, newest first
+	jobsDirty  bool
 }
 
 // Open loads (or initializes) the store at dir. It takes an exclusive
@@ -48,12 +53,35 @@ func Open(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, lock: lock}
+	s := &Store{dir: dir, lock: lock, jobs: map[string]model.Job{}}
 	data, err := os.ReadFile(s.statePath())
 	if err == nil {
 		_ = json.Unmarshal(data, &s.state)
 	}
+	s.loadJobs()
 	return s, nil
+}
+
+// loadJobs reads every job file once at startup into the in-memory index.
+func (s *Store) loadJobs() {
+	entries, err := os.ReadDir(filepath.Join(s.dir, "jobs"))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.dir, "jobs", e.Name()))
+		if err != nil {
+			continue
+		}
+		var j model.Job
+		if json.Unmarshal(data, &j) == nil && j.ID != "" {
+			s.jobs[j.ID] = j
+		}
+	}
+	s.jobsDirty = true
 }
 
 // Close releases the inter-process lock. Optional: the OS drops the flock when
@@ -170,57 +198,93 @@ func (s *Store) JobLogPath(id string) string {
 	return filepath.Join(s.dir, "jobs", id+".log")
 }
 
-// SaveJob writes the job metadata to disk.
+// SaveJob writes the job metadata to disk and updates the in-memory index.
 func (s *Store) SaveJob(j model.Job) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	data, err := json.MarshalIndent(j, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.jobPath(j.ID), data, 0o600)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.WriteFile(s.jobPath(j.ID), data, 0o600); err != nil {
+		return err
+	}
+	s.jobs[j.ID] = j
+	s.jobsDirty = true
+	return nil
 }
 
-// GetJob loads one job by id.
+// GetJob returns one job by id from the in-memory index.
 func (s *Store) GetJob(id string) (model.Job, error) {
 	if strings.ContainsAny(id, "/\\.") {
 		return model.Job{}, ErrNotFound
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	data, err := os.ReadFile(s.jobPath(id))
-	if err != nil {
+	j, ok := s.jobs[id]
+	if !ok {
 		return model.Job{}, ErrNotFound
-	}
-	var j model.Job
-	if err := json.Unmarshal(data, &j); err != nil {
-		return model.Job{}, fmt.Errorf("corrupt job %s: %w", id, err)
 	}
 	return j, nil
 }
 
-// ListJobs returns all jobs, newest first.
+// ensureSortedLocked rebuilds the newest-first cache when the index changed.
+// Caller must hold s.mu (write lock).
+func (s *Store) ensureSortedLocked() {
+	if !s.jobsDirty && s.jobsSorted != nil {
+		return
+	}
+	arr := make([]model.Job, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		arr = append(arr, j)
+	}
+	sort.Slice(arr, func(i, k int) bool { return arr[i].Created > arr[k].Created })
+	s.jobsSorted = arr
+	s.jobsDirty = false
+}
+
+// ListJobs returns all jobs, newest first (served from memory, no disk I/O).
 func (s *Store) ListJobs() []model.Job {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureSortedLocked()
+	out := make([]model.Job, len(s.jobsSorted))
+	copy(out, s.jobsSorted)
+	return out
+}
+
+// ListJobsPage returns a newest-first window of jobs plus the total count.
+// limit <= 0 means "no limit" (from offset to the end).
+func (s *Store) ListJobsPage(limit, offset int) (jobs []model.Job, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureSortedLocked()
+	total = len(s.jobsSorted)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return []model.Job{}, total
+	}
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	out := make([]model.Job, end-offset)
+	copy(out, s.jobsSorted[offset:end])
+	return out, total
+}
+
+// JobCounts returns the running (running+pending) and total job counts without
+// touching disk — for /stats.
+func (s *Store) JobCounts() (running, total int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	entries, err := os.ReadDir(filepath.Join(s.dir, "jobs"))
-	if err != nil {
-		return nil
-	}
-	var jobs []model.Job
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(s.dir, "jobs", e.Name()))
-		if err != nil {
-			continue
-		}
-		var j model.Job
-		if json.Unmarshal(data, &j) == nil {
-			jobs = append(jobs, j)
+	total = len(s.jobs)
+	for _, j := range s.jobs {
+		if j.Status == model.JobRunning || j.Status == model.JobPending {
+			running++
 		}
 	}
-	sort.Slice(jobs, func(i, k int) bool { return jobs[i].Created > jobs[k].Created })
-	return jobs
+	return
 }

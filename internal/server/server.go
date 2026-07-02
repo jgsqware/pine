@@ -282,24 +282,16 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	repos := s.Mgr.Store.ListRepos()
-	jobs := s.Mgr.Store.ListJobs()
-	out := map[string]any{"repos": len(repos), "jobs": len(jobs)}
-	var pb, roles, invs, hosts, groups, running int
+	running, totalJobs := s.Mgr.Store.JobCounts()
+	recent, _ := s.Mgr.Store.ListJobsPage(8, 0) // just the newest few for the dashboard
+	out := map[string]any{"repos": len(repos), "jobs": totalJobs}
+	var pb, roles, invs, hosts, groups int
 	for _, repo := range repos {
 		pb += repo.Summary.Playbooks
 		roles += repo.Summary.Roles
 		invs += repo.Summary.Inventories
 		hosts += repo.Summary.Hosts
 		groups += repo.Summary.Groups
-	}
-	recent := jobs
-	if len(recent) > 8 {
-		recent = recent[:8]
-	}
-	for _, j := range jobs {
-		if j.Status == model.JobRunning || j.Status == model.JobPending {
-			running++
-		}
 	}
 	out["playbooks"], out["roles"], out["inventories"] = pb, roles, invs
 	out["hosts"], out["groups"] = hosts, groups
@@ -668,11 +660,22 @@ func (s *Server) inventoryPreview(w http.ResponseWriter, r *http.Request) {
 // --- jobs ---
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
-	jobs := s.Mgr.Store.ListJobs()
+	limit := atoiDefault(r.URL.Query().Get("limit"), 0) // 0 = all (back-compat)
+	offset := atoiDefault(r.URL.Query().Get("offset"), 0)
+	jobs, total := s.Mgr.Store.ListJobsPage(limit, offset)
 	if jobs == nil {
 		jobs = []model.Job{}
 	}
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+// atoiDefault parses s as an int, falling back to def on empty/invalid input.
+func atoiDefault(s string, def int) int {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return def
 }
 
 func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
