@@ -21,6 +21,23 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [ ] ⏳ **RBAC / SSO / audit log** — per-user roles and an audit trail (needed
       for multi-user/enterprise; sprint 3).
 
+## Robustness (audit sprint 1)
+
+- [x] ✅ **Inter-process store lock** — Open() takes an exclusive flock on the
+      data dir, so a second Pine on the same `--data` fails fast instead of
+      corrupting the JSON store (points to `pine attach`).
+- [x] ✅ **Bounded job concurrency** — a worker pool caps concurrent
+      ansible-playbook runs (default 4, `PINE_MAX_JOBS`); a burst of due
+      schedules queues instead of spawning unbounded processes.
+- [x] ✅ **Boot reconciliation** — jobs left running/pending by a crashed or
+      restarted process are marked failed at startup (their in-memory run is
+      gone), so they don't linger "running" forever.
+- [x] ✅ **Carry vars through Re-run** — jobs persist their non-secret extra
+      vars so a Re-run prefills them (secrets dropped, vault never stored).
+- [ ] ⏳ **Ansible-precedence fixes** — vars_files vs play vars order, role
+      `vars/main.yml` in the plan engine, exact `RoleRef` in hygiene/impact,
+      and `!`/`&` host patterns (from the audit).
+
 ## Quick wins (engine already exists)
 
 - [x] ✅ **1. Variable lineage** — "where does this value come from?":
