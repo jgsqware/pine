@@ -512,6 +512,17 @@ function setRepo(id) {
   }
 }
 
+// syncRepoSelect aligns the global repo context (topbar dropdown + localStorage)
+// with the repo a detail/plan/job page is showing, WITHOUT re-routing — so a
+// shared deep-link like #/playbook/<repo>/<path> no longer leaves the dropdown
+// pointing at a different repo than the page.
+function syncRepoSelect(id) {
+  if (!id || id === State.repoId) return;
+  State.repoId = id;
+  persistRepoSelection();
+  renderRepoSelector();
+}
+
 function getScan(repoId, force = false) {
   if (force) State.scanCache.delete(repoId);
   if (!State.scanCache.has(repoId)) {
@@ -1852,6 +1863,7 @@ async function pagePlaybookDetail(page, segs) {
   const path = decodeSegs(segs.slice(1));
   const repo = State.repos.find((r) => r.id === repoId);
   if (!repo) { page.appendChild(el("div", { class: "empty" }, el("h3", null, "Repository not found"))); return; }
+  syncRepoSelect(repoId);
 
   page.appendChild(skeletonRows(3, 110));
   const scan = await getScan(repoId);
@@ -2172,6 +2184,7 @@ async function pageRoleDetail(page, segs) {
   const name = decodeURIComponent(segs[1] || "");
   const repo = State.repos.find((r) => r.id === repoId);
   if (!repo) { page.appendChild(el("div", { class: "empty" }, el("h3", null, "Repository not found"))); return; }
+  syncRepoSelect(repoId);
 
   page.appendChild(skeletonRows(2, 110));
   const scan = await getScan(repoId);
@@ -4800,6 +4813,7 @@ async function pageJobDetail(page, segs) {
   page.appendChild(skeletonRows(2, 80));
   let job = await api(`/jobs/${jobId}`);
   page.innerHTML = "";
+  syncRepoSelect(job.repo_id);
 
   $("#topbar-title").textContent = `Job · ${job.playbook}`;
 
@@ -5306,6 +5320,7 @@ async function pagePlan(page) {
   if (!PlanState) { location.hash = "#/playbooks"; return; }
   const { request, result } = PlanState;
   const s = result.summary || {};
+  syncRepoSelect(result.repo_id);
 
   $("#topbar-title").textContent = `Plan · ${result.playbook}`;
 
