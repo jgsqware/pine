@@ -103,6 +103,8 @@ func main() {
 		cmdLineage(os.Args[2:])
 	case "impact":
 		cmdImpact(os.Args[2:])
+	case "hygiene":
+		cmdHygiene(os.Args[2:])
 	case "worktrees":
 		cmdWorktrees(os.Args[2:])
 	case "version", "--version", "-v":
@@ -678,6 +680,7 @@ const (
 	cGreen = "\033[32m"
 	cGray  = "\033[90m"
 	cAmber = "\033[33m"
+	cRed   = "\033[31m"
 	cBold  = "\033[1m"
 	cOff   = "\033[0m"
 )
@@ -876,4 +879,101 @@ func cmdImpact(args []string) {
 	if s.HostsTotal > 0 {
 		os.Exit(3) // distinct exit code for CI: changes have impact
 	}
+}
+
+// cmdHygiene runs the dead-code + smell + secrets report over a repo and prints
+// it (or --json). Exit code 4 when high-severity secrets are found, so CI can
+// gate a merge on "no plaintext credentials".
+func cmdHygiene(args []string) {
+	fs := flag.NewFlagSet("hygiene", flag.ExitOnError)
+	var paths scanPathList
+	fs.Var(&paths, "paths", "restrict scan to subdir(s) of PATH (repeatable / comma-separated)")
+	asJSON := fs.Bool("json", false, "print raw hygiene JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine hygiene PATH [--paths SUBDIR] [--json]")
+		os.Exit(2)
+	}
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PATH
+
+	res, err := scanner.Scan(root, paths...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	abs, _ := filepath.Abs(root)
+	out := plan.Hygiene(res, abs)
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		os.Exit(hygieneExit(out))
+	}
+
+	scoreColor := cGreen
+	if out.Score < 80 {
+		scoreColor = cAmber
+	}
+	if out.Score < 50 {
+		scoreColor = cRed
+	}
+	fmt.Printf("%sHYGIENE%s  score %s%d/100%s\n", cBold, cOff, scoreColor, out.Score, cOff)
+
+	section := func(title string, n int, color string) {
+		if n > 0 {
+			fmt.Printf("\n%s%s%s %s(%d)%s\n", color, title, cOff, cGray, n, cOff)
+		}
+	}
+	section("Secrets", len(out.SecretFindings), cRed)
+	for _, f := range out.SecretFindings {
+		mark := cRed + "high" + cOff
+		if f.Severity != "high" {
+			mark = cAmber + f.Severity + cOff
+		}
+		fmt.Printf("  [%s] %s%s%s in %s — %s\n", mark, cBold, f.Key, cOff, f.File, f.Reason)
+	}
+	section("Smells", len(out.Smells), cAmber)
+	for _, sm := range out.Smells {
+		loc := sm.Where
+		if sm.Count > 1 {
+			loc = fmt.Sprintf("%s (+%d more)", sm.Where, sm.Count-1)
+		}
+		fmt.Printf("  %s%s%s %s%s%s — %s\n", cAmber, sm.Rule, cOff, cGray, loc, cOff, sm.Detail)
+	}
+	section("Unused roles", len(out.UnusedRoles), cAmber)
+	for _, r := range out.UnusedRoles {
+		fmt.Printf("  %s — %s\n", r.Name, r.Reason)
+	}
+	section("Unnotified handlers", len(out.UnnotifiedHandlers), cAmber)
+	for _, h := range out.UnnotifiedHandlers {
+		who := h.Name
+		if h.Role != "" {
+			who = h.Role + " › " + h.Name
+		}
+		fmt.Printf("  %s\n", who)
+	}
+	section("Untargeted hosts", len(out.UntargetedHosts), cAmber)
+	for _, h := range out.UntargetedHosts {
+		fmt.Printf("  %s (%s)\n", h.Name, h.Inventory)
+	}
+	section("Unused variables", len(out.UnusedVars), cGray)
+	for _, v := range out.UnusedVars {
+		fmt.Printf("  %s %s(%s)%s\n", v.Key, cGray, v.DefinedIn, cOff)
+	}
+	if out.VaultFiles > 0 {
+		fmt.Printf("\n%s%d vault-encrypted file(s)%s\n", cGreen, out.VaultFiles, cOff)
+	}
+	os.Exit(hygieneExit(out))
+}
+
+// hygieneExit returns 4 when any high-severity secret was found (CI gate),
+// else 0.
+func hygieneExit(out *plan.HygieneResult) int {
+	for _, f := range out.SecretFindings {
+		if f.Severity == "high" {
+			return 4
+		}
+	}
+	return 0
 }

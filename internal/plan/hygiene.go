@@ -39,6 +39,16 @@ type SecretFinding struct {
 	Hint     string `json:"hint"`
 }
 
+// Smell is a task-level anti-pattern, grouped by rule across the whole repo so
+// a repo with 400 unnamed tasks yields one finding with a count, not 400 rows.
+type Smell struct {
+	Rule     string `json:"rule"`     // stable id, e.g. "unnamed-task"
+	Severity string `json:"severity"` // medium | low
+	Detail   string `json:"detail"`   // what & why
+	Where    string `json:"where"`    // first occurrence
+	Count    int    `json:"count"`    // total occurrences of this rule
+}
+
 // HygieneResult is the dead-code + secrets report of one repository.
 type HygieneResult struct {
 	Score              int                 `json:"score"`
@@ -47,6 +57,7 @@ type HygieneResult struct {
 	UnusedVars         []UnusedVar         `json:"unused_vars"`
 	UntargetedHosts    []UntargetedHost    `json:"untargeted_hosts"`
 	SecretFindings     []SecretFinding     `json:"secret_findings"`
+	Smells             []Smell             `json:"smells"`
 	VaultFiles         int                 `json:"vault_files"`
 }
 
@@ -69,6 +80,7 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 		UnusedVars:         []UnusedVar{},
 		UntargetedHosts:    []UntargetedHost{},
 		SecretFindings:     []SecretFinding{},
+		Smells:             []Smell{},
 	}
 
 	// --- unused roles ---
@@ -291,6 +303,9 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 		}
 	}
 
+	// --- task smells ---
+	out.Smells = detectSmells(res)
+
 	// --- score ---
 	score := 100
 	score -= 5 * len(out.UnusedRoles)
@@ -304,8 +319,177 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 			score -= 2
 		}
 	}
+	for _, sm := range out.Smells {
+		// grouped: penalize the rule once (bounded) plus a little per occurrence
+		pen := 1
+		if sm.Severity == "medium" {
+			pen = 3
+		}
+		score -= pen + min(sm.Count/10, 5)
+	}
 	out.Score = max(0, score)
 	return out
+}
+
+// smellAcc accumulates occurrences of one rule while keeping the first location.
+type smellAcc struct {
+	severity string
+	detail   string
+	where    string
+	count    int
+}
+
+// moduleFor maps a shell/command's leading executable to the native Ansible
+// module that should replace it (the classic command-instead-of-module smell).
+var moduleFor = map[string]string{
+	"apt": "ansible.builtin.apt", "apt-get": "ansible.builtin.apt", "aptitude": "ansible.builtin.apt",
+	"yum": "ansible.builtin.yum", "dnf": "ansible.builtin.dnf",
+	"systemctl": "ansible.builtin.systemd", "service": "ansible.builtin.service",
+	"pip": "ansible.builtin.pip", "pip3": "ansible.builtin.pip",
+	"useradd": "ansible.builtin.user", "usermod": "ansible.builtin.user", "userdel": "ansible.builtin.user",
+	"groupadd": "ansible.builtin.group", "groupdel": "ansible.builtin.group",
+	"curl": "ansible.builtin.get_url", "wget": "ansible.builtin.get_url",
+	"git": "ansible.builtin.git", "unzip": "ansible.builtin.unarchive",
+	"mkdir": "ansible.builtin.file", "rm": "ansible.builtin.file", "chown": "ansible.builtin.file",
+	"chmod": "ansible.builtin.file", "ln": "ansible.builtin.file",
+}
+
+// detectSmells walks every task in the repo (playbooks + roles, recursing into
+// blocks) and groups task-level anti-patterns by rule.
+func detectSmells(res *model.ScanResult) []Smell {
+	acc := map[string]*smellAcc{}
+	add := func(rule, severity, detail, where string) {
+		a := acc[rule]
+		if a == nil {
+			a = &smellAcc{severity: severity, detail: detail, where: where}
+			acc[rule] = a
+		}
+		a.count++
+	}
+
+	var visit func(t model.Task, where string)
+	visit = func(t model.Task, where string) {
+		if t.Module == "block" {
+			for _, sub := range [][]model.Task{t.Block, t.Rescue, t.Always} {
+				for _, st := range sub {
+					visit(st, where)
+				}
+			}
+			return
+		}
+		loc := where + " › " + taskLabel(t)
+		mod := strings.TrimPrefix(t.Module, "ansible.builtin.")
+
+		if t.Unnamed && mod != "meta" && mod != "debug" {
+			add("unnamed-task", "low",
+				"task has no name: — harder to read logs and to --start-at-task", loc)
+		}
+		if t.IgnoreErrors {
+			add("ignore-errors", "medium",
+				"ignore_errors: true hides real failures; prefer failed_when or a rescue block", loc)
+		}
+		if mod == "include" {
+			add("deprecated-include", "medium",
+				"bare `include:` is deprecated — use include_tasks / import_tasks", loc)
+		}
+		if strings.Contains(t.When, "{{") {
+			add("jinja-in-when", "low",
+				"when: wrapped in {{ }} — write a bare expression (when: my_var), Jinja is implicit", loc)
+		}
+		if mod == "command" || mod == "shell" || mod == "raw" {
+			cmd := commandText(t.Args)
+			if alt := moduleFor[firstWord(cmd)]; alt != "" {
+				add("command-instead-of-module", "medium",
+					"runs `"+firstWord(cmd)+"` via "+mod+" — use the "+alt+" module (idempotent, check-mode aware)", loc)
+			} else if !t.HasChangedWhen && !strings.Contains(t.Args, "creates") && !strings.Contains(t.Args, "removes") {
+				add("shell-without-changed-when", "low",
+					mod+" always reports changed — set changed_when (or creates/removes) for honest idempotency", loc)
+			}
+		}
+		if packageModule(mod) && strings.Contains(strings.ToLower(t.Args), "latest") {
+			add("package-latest", "low",
+				"state: latest makes runs non-reproducible — pin a version or use state: present", loc)
+		}
+	}
+
+	for _, pb := range res.Playbooks {
+		for _, play := range pb.Plays {
+			for _, list := range [][]model.Task{play.PreTasks, play.Tasks, play.PostTasks, play.Handlers} {
+				for _, t := range list {
+					visit(t, pb.Path)
+				}
+			}
+		}
+	}
+	for _, r := range res.Roles {
+		for _, list := range [][]model.Task{r.Tasks, r.Handlers} {
+			for _, t := range list {
+				visit(t, "role "+r.Name)
+			}
+		}
+	}
+
+	out := make([]Smell, 0, len(acc))
+	for rule, a := range acc {
+		out = append(out, Smell{Rule: rule, Severity: a.severity, Detail: a.detail, Where: a.where, Count: a.count})
+	}
+	// stable order: medium before low, then by count desc, then rule name
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Severity != out[j].Severity {
+			return out[i].Severity == "medium"
+		}
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Rule < out[j].Rule
+	})
+	return out
+}
+
+// taskLabel renders a short, human location for a task.
+func taskLabel(t model.Task) string {
+	if !t.Unnamed && t.Name != "" {
+		return t.Name
+	}
+	if t.Args != "" {
+		a := t.Args
+		if len(a) > 40 {
+			a = a[:40] + "…"
+		}
+		return t.Module + ": " + a
+	}
+	return t.Module
+}
+
+// commandText pulls the command string out of a command/shell arg summary,
+// which is either the raw command or a "cmd: …, creates: …" rendering.
+func commandText(args string) string {
+	if i := strings.Index(args, "cmd:"); i >= 0 {
+		rest := args[i+4:]
+		if c := strings.IndexByte(rest, ','); c >= 0 {
+			rest = rest[:c]
+		}
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(args)
+}
+
+func firstWord(s string) string {
+	s = strings.TrimSpace(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func packageModule(mod string) bool {
+	switch mod {
+	case "apt", "yum", "dnf", "package", "pip", "npm", "gem", "homebrew":
+		return true
+	}
+	return false
 }
 
 // looksLikeSecretValue filters out values that cannot be secrets even when

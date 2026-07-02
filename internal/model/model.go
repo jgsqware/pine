@@ -18,9 +18,13 @@ type Task struct {
 	IncludeVars string   `json:"include_vars,omitempty"` // repo-relative path of a static include_vars file (resolved at scan time)
 	Listen      string   `json:"listen,omitempty"`       // handler listen topic
 	Notify      []string `json:"notify,omitempty"`
-	Block       []Task   `json:"block,omitempty"`
-	Rescue      []Task   `json:"rescue,omitempty"`
-	Always      []Task   `json:"always,omitempty"`
+	// Hygiene signals captured at scan time (the source line is gone later):
+	Unnamed        bool   `json:"unnamed,omitempty"`          // task had no `name:`
+	IgnoreErrors   bool   `json:"ignore_errors,omitempty"`    // ignore_errors: true — masks failures
+	HasChangedWhen bool   `json:"has_changed_when,omitempty"` // a changed_when: was set (idempotency guard)
+	Block          []Task `json:"block,omitempty"`
+	Rescue         []Task `json:"rescue,omitempty"`
+	Always         []Task `json:"always,omitempty"`
 	// Imported holds the tasks pulled in from a static `import_tasks: file`
 	// (resolved at scan time, since import_tasks is processed statically by
 	// Ansible). Empty for dynamic include_tasks or unresolvable/Jinja paths.

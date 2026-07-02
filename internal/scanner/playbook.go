@@ -337,7 +337,16 @@ func parseTaskCtx(m map[string]any, ctx importCtx) model.Task {
 	if t.Module == "" {
 		t.Module = "meta"
 	}
+	switch ie := m["ignore_errors"].(type) {
+	case bool:
+		t.IgnoreErrors = ie
+	case string:
+		s := strings.ToLower(strings.TrimSpace(ie))
+		t.IgnoreErrors = s == "yes" || s == "true" || s == "on"
+	}
+	_, t.HasChangedWhen = m["changed_when"]
 	if t.Name == "" {
+		t.Unnamed = true
 		t.Name = t.Module
 	}
 	// import_tasks is static: pull the referenced file's tasks into the tree so

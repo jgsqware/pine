@@ -207,6 +207,69 @@ forgotten:
 	}
 }
 
+func TestHygieneDetectsSmells(t *testing.T) {
+	root := t.TempDir()
+	writeT(t, root, "site.yml", `
+- name: Smelly
+  hosts: all
+  tasks:
+    - name: Install nginx the wrong way
+      ansible.builtin.command: apt-get install -y nginx
+    - name: Update apt to latest
+      ansible.builtin.apt:
+        name: curl
+        state: latest
+    - ansible.builtin.file:
+        path: /tmp/x
+        state: directory
+    - name: Best-effort cleanup
+      ansible.builtin.shell: rm -rf /tmp/cache
+      ignore_errors: true
+    - name: Old style include
+      include: tasks/extra.yml
+    - name: Jinja in when
+      ansible.builtin.ping:
+      when: "{{ some_flag }}"
+    - name: Raw with no changed_when
+      ansible.builtin.command: echo hello
+`)
+	writeT(t, root, "tasks/extra.yml", `
+- name: extra
+  ansible.builtin.ping:
+`)
+	res, err := scanForT(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Hygiene(res, root)
+
+	got := map[string]int{}
+	for _, s := range out.Smells {
+		got[s.Rule] = s.Count
+	}
+	// each rule must fire at least once
+	for _, rule := range []string{
+		"command-instead-of-module", // apt-get / rm via command|shell
+		"package-latest",            // state: latest
+		"unnamed-task",              // the bare debug
+		"ignore-errors",             // ignore_errors: true
+		"deprecated-include",        // bare include:
+		"jinja-in-when",             // when: "{{ … }}"
+	} {
+		if got[rule] == 0 {
+			t.Errorf("expected smell %q to fire; smells = %+v", rule, out.Smells)
+		}
+	}
+	// `echo hello` via command with no changed_when → shell-without-changed-when
+	if got["shell-without-changed-when"] == 0 {
+		t.Errorf("expected shell-without-changed-when; smells = %+v", out.Smells)
+	}
+	// non-nil for the API contract
+	if out.Smells == nil {
+		t.Error("Smells must be non-nil")
+	}
+}
+
 func TestImpactOnGitRepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
