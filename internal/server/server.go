@@ -3,6 +3,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -120,7 +121,72 @@ func New(mgr *runner.Manager, cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
 
 	mux.HandleFunc("/", s.static)
-	return logRequests(secure(cfg, mux))
+	return logRequests(gzipMiddleware(secure(cfg, mux)))
+}
+
+// gzipMiddleware compresses responses when the client accepts gzip. It skips
+// the SSE stream (compression buffers and would break live job logs) and only
+// encodes 2xx bodies. JSON payloads like /scan (several MB on big repos) shrink
+// ~5-10x on the wire.
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") ||
+			strings.HasSuffix(r.URL.Path, "/events") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gzw := &gzipResponseWriter{ResponseWriter: w}
+		defer gzw.finish()
+		next.ServeHTTP(gzw, r)
+	})
+}
+
+// gzipResponseWriter lazily gzips: it only wraps the body once a 2xx status is
+// known (so 204/304 and already-encoded responses pass through untouched).
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz      *gzip.Writer
+	started bool
+}
+
+func (w *gzipResponseWriter) WriteHeader(code int) {
+	if w.started {
+		return
+	}
+	w.started = true
+	if code >= 200 && code < 300 && code != http.StatusNoContent &&
+		w.Header().Get("Content-Encoding") == "" {
+		w.Header().Del("Content-Length") // gzipped body has a different size
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		w.gz = gzip.NewWriter(w.ResponseWriter)
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !w.started {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.gz != nil {
+		return w.gz.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if w.gz != nil {
+		_ = w.gz.Flush()
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *gzipResponseWriter) finish() {
+	if w.gz != nil {
+		_ = w.gz.Close()
+	}
 }
 
 // secure gates every /api/ request with a lightweight CSRF check and, when a

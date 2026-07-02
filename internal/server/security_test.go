@@ -1,8 +1,11 @@
 package server
 
 import (
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -117,5 +120,50 @@ func TestStorableVars(t *testing.T) {
 	}
 	if storableVars(nil) != nil {
 		t.Error("nil in → nil out")
+	}
+}
+
+func TestGzipMiddleware(t *testing.T) {
+	// a JSON handler wrapped by the gzip middleware
+	h := gzipMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"hello":"world","padding":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	}))
+
+	// with Accept-Encoding: gzip → compressed
+	r := httptest.NewRequest(http.MethodGet, "/api/scan", nil)
+	r.Header.Set("Accept-Encoding", "gzip")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if enc := w.Header().Get("Content-Encoding"); enc != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", enc)
+	}
+	gz, err := gzip.NewReader(w.Body)
+	if err != nil {
+		t.Fatalf("body is not valid gzip: %v", err)
+	}
+	body, _ := io.ReadAll(gz)
+	if !strings.Contains(string(body), `"hello":"world"`) {
+		t.Errorf("decompressed body wrong: %s", body)
+	}
+
+	// without Accept-Encoding → plain
+	r = httptest.NewRequest(http.MethodGet, "/api/scan", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Header().Get("Content-Encoding") == "gzip" {
+		t.Error("must not gzip when client did not ask for it")
+	}
+
+	// SSE stream is never gzipped
+	sse := gzipMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "should-be-untouched")
+	}))
+	r = httptest.NewRequest(http.MethodGet, "/api/jobs/j1/events", nil)
+	r.Header.Set("Accept-Encoding", "gzip")
+	w = httptest.NewRecorder()
+	sse.ServeHTTP(w, r)
+	if w.Header().Get("Content-Encoding") == "gzip" {
+		t.Error("SSE /events must not be gzipped")
 	}
 }
