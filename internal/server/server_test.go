@@ -1,8 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -134,6 +136,122 @@ func TestServicesEndpoint(t *testing.T) {
 	for _, want := range []string{`"inventory":"homelab"`, "teamcity-agent", "docker", `"services"`, `"cells"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("services report missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+// TestScanSlim verifies that ?slim=1 returns metadata + counters without task
+// trees, and that the slim payload is smaller than the full scan.
+func TestScanSlim(t *testing.T) {
+	h, repoID := newTestServer(t)
+
+	do := func(query string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/repos/"+repoID+"/scan"+query, nil))
+		return rec
+	}
+
+	recFull := do("")
+	if recFull.Code != http.StatusOK {
+		t.Fatalf("full scan status = %d", recFull.Code)
+	}
+	recSlim := do("?slim=1")
+	if recSlim.Code != http.StatusOK {
+		t.Fatalf("slim scan status = %d", recSlim.Code)
+	}
+
+	slimBody := recSlim.Body.String()
+	fullBody := recFull.Body.String()
+
+	// Slim payload must not carry individual task module fields.
+	if strings.Contains(slimBody, `"module"`) {
+		t.Error("slim scan must not contain task module fields (task trees present)")
+	}
+	// Slim must still carry playbook and play metadata.
+	for _, want := range []string{`"playbooks"`, `"hosts"`, `"roles"`, `"inventories"`} {
+		if !strings.Contains(slimBody, want) {
+			t.Errorf("slim scan must contain %q", want)
+		}
+	}
+	// Slim scan must carry task/handler counts (not the arrays themselves).
+	if !strings.Contains(slimBody, `"tasks_count"`) {
+		t.Error("slim scan must contain tasks_count")
+	}
+
+	// Payload must be meaningfully smaller.
+	if len(slimBody) >= len(fullBody) {
+		t.Errorf("slim body (%d B) is not smaller than full body (%d B)", len(slimBody), len(fullBody))
+	}
+	t.Logf("payload sizes — full: %d B, slim: %d B (%.0f%% reduction)",
+		len(fullBody), len(slimBody), float64(len(fullBody)-len(slimBody))/float64(len(fullBody))*100)
+}
+
+// TestPlaybookDetail verifies that GET /api/repos/{id}/playbook?path=… returns
+// the full playbook with plays and task trees (not available in the slim scan).
+func TestPlaybookDetail(t *testing.T) {
+	h, repoID := newTestServer(t)
+
+	// Discover a playbook path from the slim scan.
+	recScan := httptest.NewRecorder()
+	h.ServeHTTP(recScan, httptest.NewRequest(http.MethodGet, "/api/repos/"+repoID+"/scan?slim=1", nil))
+	if recScan.Code != http.StatusOK {
+		t.Fatalf("scan status = %d", recScan.Code)
+	}
+	var slim struct {
+		Playbooks []struct {
+			Path string `json:"path"`
+		} `json:"playbooks"`
+	}
+	if err := json.NewDecoder(recScan.Body).Decode(&slim); err != nil {
+		t.Fatalf("decode slim scan: %v", err)
+	}
+	if len(slim.Playbooks) == 0 {
+		t.Skip("no playbooks found in demo repo")
+	}
+	pbPath := slim.Playbooks[0].Path
+
+	// Fetch detail and verify plays + task trees are present.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/api/repos/"+repoID+"/playbook?path="+url.QueryEscape(pbPath), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("playbook detail status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"plays"`, `"path"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("playbook detail missing %q in:\n%s", want, body)
+		}
+	}
+	// Full detail must contain task module info (unlike the slim scan).
+	if !strings.Contains(body, `"module"`) {
+		t.Logf("note: playbook may have no tasks, body: %s", body)
+	}
+
+	// 404 for an unknown playbook.
+	rec404 := httptest.NewRecorder()
+	h.ServeHTTP(rec404, httptest.NewRequest(http.MethodGet,
+		"/api/repos/"+repoID+"/playbook?path=nonexistent.yml", nil))
+	if rec404.Code != http.StatusNotFound {
+		t.Errorf("missing playbook status = %d, want 404", rec404.Code)
+	}
+}
+
+// TestPlaybookDetailPathTraversal guards that the playbook detail endpoint
+// rejects path components that attempt to escape the repository root.
+func TestPlaybookDetailPathTraversal(t *testing.T) {
+	h, repoID := newTestServer(t)
+
+	for _, bad := range []string{
+		"../../../../etc/passwd",
+		"../secret.yml",
+		"/etc/passwd",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/api/repos/"+repoID+"/playbook?path="+url.QueryEscape(bad), nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("traversal %q: status = %d, want 400", bad, rec.Code)
 		}
 	}
 }

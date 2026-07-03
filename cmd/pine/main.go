@@ -18,6 +18,7 @@ import (
 	"github.com/jgsqware/pine/internal/client"
 	"github.com/jgsqware/pine/internal/model"
 	"github.com/jgsqware/pine/internal/plan"
+	"github.com/jgsqware/pine/internal/policy"
 	"github.com/jgsqware/pine/internal/runner"
 	"github.com/jgsqware/pine/internal/scanner"
 	"github.com/jgsqware/pine/internal/server"
@@ -44,6 +45,7 @@ Usage:
   pine lineage PATH --playbook PB -i INV [flags]    + a playbook's effective vars (expands import_tasks/include_vars)
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
   pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
+  pine policy check PATH --policies FILE [flags]    Evaluate governance policies on the plan (CI gate)
   pine worktrees PATH [--json]                      List the repo's git worktrees
   pine version                                      Print version
 
@@ -105,6 +107,8 @@ func main() {
 		cmdLineage(os.Args[2:])
 	case "impact":
 		cmdImpact(os.Args[2:])
+	case "policy":
+		cmdPolicy(os.Args[2:])
 	case "hygiene":
 		cmdHygiene(os.Args[2:])
 	case "worktrees":
@@ -887,6 +891,171 @@ func cmdImpact(args []string) {
 	if s.HostsTotal > 0 {
 		os.Exit(3) // distinct exit code for CI: changes have impact
 	}
+}
+
+// cmdPolicy evaluates policy-as-code rules against the estimated plan of a repo
+// (the OPA/Sentinel of Ansible): `pine policy check PATH --policies FILE`. It
+// computes a plan per playbook (or one with --playbook), runs the rules, prints
+// the violations and exits 1 when any error-severity rule fires — the CI gate.
+func cmdPolicy(args []string) {
+	if len(args) < 1 || args[0] != "check" {
+		fmt.Fprintln(os.Stderr, "usage: pine policy check PATH --policies FILE [-i INV] [--playbook PB] [--limit L] [--tags T] [-e k=v] [--json]")
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("policy check", flag.ExitOnError)
+	policiesPath := fs.String("policies", "", "path to the policy YAML file (required)")
+	inv := fs.String("i", "", "inventory name or path")
+	playbook := fs.String("playbook", "", "restrict evaluation to one playbook (default: all)")
+	limit := fs.String("limit", "", "host limit pattern")
+	tags := fs.String("tags", "", "only tasks with these tags")
+	asJSON := fs.Bool("json", false, "print raw violations JSON")
+	vars := extraVars{}
+	fs.Var(vars, "e", "extra var key=value (repeatable)")
+	_ = fs.Parse(args[1:])
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine policy check PATH --policies FILE [flags]")
+		os.Exit(2)
+	}
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PATH
+	if *policiesPath == "" {
+		fmt.Fprintln(os.Stderr, "policy check: --policies FILE is required")
+		os.Exit(2)
+	}
+
+	policies, err := policy.Load(*policiesPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	res, err := scanner.Scan(root)
+	if err != nil {
+		log.Fatal(err)
+	}
+	abs, _ := filepath.Abs(root)
+
+	var pbs []string
+	if *playbook != "" {
+		pbs = []string{*playbook}
+	} else {
+		for _, pb := range res.Playbooks {
+			pbs = append(pbs, pb.Path)
+		}
+	}
+	if len(pbs) == 0 {
+		fmt.Fprintln(os.Stderr, "policy check: no playbooks found")
+		os.Exit(2)
+	}
+
+	var reports []policyReport
+	var all []policy.Violation
+	for _, pb := range pbs {
+		out, err := plan.Compute(res, abs, model.Repo{ID: "local", Name: filepath.Base(abs)}, plan.Request{
+			Playbook: pb, Inventory: *inv, Limit: *limit, Tags: *tags, Vars: vars,
+		})
+		if err != nil {
+			log.Printf("skip %s: %v", pb, err)
+			continue
+		}
+		groups, total := hostGroupsFor(res, out.Inventory)
+		vs := policy.Evaluate(policies, out, policy.Options{HostGroups: groups, TotalHosts: total})
+		reports = append(reports, policyReport{Playbook: pb, Violations: vs})
+		all = append(all, vs...)
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(reports)
+		if policy.HasError(all) {
+			os.Exit(1)
+		}
+		return
+	}
+	printPolicyReports(reports, len(policies))
+	if policy.HasError(all) {
+		os.Exit(1)
+	}
+}
+
+// hostGroupsFor builds a host→groups map and the host count for the inventory
+// the plan resolved to (matched by path or name, else the first one).
+func hostGroupsFor(res *model.ScanResult, invRef string) (map[string][]string, int) {
+	var chosen *model.Inventory
+	for i := range res.Inventories {
+		in := &res.Inventories[i]
+		if in.Path == invRef || in.Name == invRef {
+			chosen = in
+			break
+		}
+	}
+	if chosen == nil && len(res.Inventories) > 0 {
+		chosen = &res.Inventories[0]
+	}
+	groups := map[string][]string{}
+	if chosen == nil {
+		return groups, 0
+	}
+	for _, h := range chosen.Hosts {
+		groups[h.Name] = h.Groups
+	}
+	return groups, len(chosen.Hosts)
+}
+
+// policyReport groups one playbook's violations for output.
+type policyReport struct {
+	Playbook   string             `json:"playbook"`
+	Violations []policy.Violation `json:"violations"`
+}
+
+func printPolicyReports(reports []policyReport, nPolicies int) {
+	total, errs, warns := 0, 0, 0
+	for _, r := range reports {
+		for _, v := range r.Violations {
+			total++
+			if v.Severity == policy.SeverityError {
+				errs++
+			} else {
+				warns++
+			}
+		}
+	}
+	fmt.Printf("%sPOLICY%s %d rule(s) over %d playbook(s)\n", cBold, cOff, nPolicies, len(reports))
+	if total == 0 {
+		fmt.Printf("%s✓ no violations%s\n", cGreen, cOff)
+		return
+	}
+	for _, r := range reports {
+		if len(r.Violations) == 0 {
+			continue
+		}
+		fmt.Printf("\n%s%s%s\n", cBold, r.Playbook, cOff)
+		for _, v := range r.Violations {
+			mark, color := "✗ error", cRed
+			if v.Severity == policy.SeverityWarning {
+				mark, color = "! warn", cAmber
+			}
+			fmt.Printf("  %s[%s]%s %s%s%s — %s\n", color, mark, cOff, cBold, v.Policy, cOff, v.Detail)
+			loc := ""
+			if v.Task != "" {
+				loc = "task " + v.Task
+			}
+			if len(v.Hosts) > 0 {
+				h := strings.Join(v.Hosts, ", ")
+				if len(v.Hosts) > 6 {
+					h = fmt.Sprintf("%s … (%d hosts)", strings.Join(v.Hosts[:6], ", "), len(v.Hosts))
+				}
+				loc = strings.TrimSpace(loc + "  hosts: " + h)
+			}
+			if loc != "" {
+				fmt.Printf("      %s%s%s\n", cGray, loc, cOff)
+			}
+			if v.Description != "" {
+				fmt.Printf("      %s%s%s\n", cGray, v.Description, cOff)
+			}
+		}
+	}
+	fmt.Printf("\n%sSummary:%s %s%d error(s)%s %s%d warning(s)%s\n",
+		cBold, cOff, cRed, errs, cOff, cAmber, warns, cOff)
 }
 
 // cmdHygiene runs the dead-code + smell + secrets report over a repo and prints

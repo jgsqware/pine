@@ -204,6 +204,38 @@ func contains(s []string, v string) bool {
 	return false
 }
 
+// A variable defined in a role's vars/main.yml must be visible to the
+// per-host effective() engine, so a when:/{{ }} referencing it no longer
+// reports a false "unknown". Aligned with resolve.go's role_vars layer
+// (resolve.go L187-193).
+func TestPlanRoleVarsResolveInEffective(t *testing.T) {
+	r := newVarResolver(nil, nil, nil, nil)
+	play := &model.Play{}
+	roleVars := []map[string]any{{"role_flag": "enabled"}}
+	eff := r.effective(nil, play, nil, nil, roleVars)
+	if eff["role_flag"] != "enabled" {
+		t.Fatalf("role_flag = %v, want enabled (role vars/main.yml must be merged)", eff["role_flag"])
+	}
+	// prove a when:/name referencing it now resolves instead of staying unknown
+	got, known, _ := scanner.Interpolate("{{ role_flag }}", eff)
+	if !known || got != "enabled" {
+		t.Errorf("interpolate({{ role_flag }}) = %q known=%v, want enabled/true", got, known)
+	}
+}
+
+// role vars/main.yml (Ansible precedence level 15) outrank vars_files (level
+// 14): when a key is defined in both, the role var must win.
+func TestPlanRoleVarsBeatVarsFiles(t *testing.T) {
+	r := newVarResolver(nil, nil, nil, nil)
+	play := &model.Play{Vars: map[string]any{"shared": "from_play_vars"}}
+	playFileVars := []map[string]any{{"shared": "from_vars_file"}}
+	roleVars := []map[string]any{{"shared": "from_role_vars"}}
+	eff := r.effective(nil, play, nil, playFileVars, roleVars)
+	if eff["shared"] != "from_role_vars" {
+		t.Errorf("shared = %v, want from_role_vars (role vars outrank vars_files)", eff["shared"])
+	}
+}
+
 // Missing vars are reported with dotted paths (ansible_facts.os_family);
 // supplying them back with the same dotted key must resolve the lookups.
 func TestPlanDottedUserVarsResolve(t *testing.T) {

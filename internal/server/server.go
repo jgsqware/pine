@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -77,6 +79,8 @@ func New(mgr *runner.Manager, cfg Config) http.Handler {
 	mux.HandleFunc("DELETE /api/repos/{id}", s.deleteRepo)
 	mux.HandleFunc("POST /api/repos/{id}/sync", s.syncRepo)
 	mux.HandleFunc("GET /api/repos/{id}/scan", s.scanRepo)
+	mux.HandleFunc("GET /api/repos/{id}/playbook", s.playbookDetail)
+	mux.HandleFunc("GET /api/repos/{id}/role", s.roleDetail)
 	mux.HandleFunc("GET /api/repos/{id}/topology", s.topology)
 	mux.HandleFunc("GET /api/repos/{id}/file", s.repoFile)
 
@@ -486,10 +490,112 @@ func (s *Server) syncRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, redactRepo(repo))
 }
 
+// slimPlay is a Play with task arrays stripped; metadata needed for the
+// playbook list and run-modal prompts (hosts, play-level tags, vars_prompt) is
+// preserved. Per-task detail is available on demand via GET /api/repos/{id}/playbook.
+type slimPlay struct {
+	Name          string            `json:"name"`
+	Hosts         string            `json:"hosts"`
+	Become        bool              `json:"become,omitempty"`
+	Serial        string            `json:"serial,omitempty"`
+	Strategy      string            `json:"strategy,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
+	Vars          map[string]any    `json:"vars,omitempty"`
+	VarsFiles     []string          `json:"vars_files,omitempty"`
+	VarsPrompt    []model.PromptVar `json:"vars_prompt,omitempty"`
+	Roles         []string          `json:"roles,omitempty"`
+	Import        string            `json:"import,omitempty"`
+	TasksCount    int               `json:"tasks_count,omitempty"`
+	PreTasksCount int               `json:"pre_tasks_count,omitempty"`
+	HandlersCount int               `json:"handlers_count,omitempty"`
+}
+
+// slimPlaybook is Playbook with slimmed plays (no task trees).
+type slimPlaybook struct {
+	Path  string     `json:"path"`
+	Name  string     `json:"name"`
+	Plays []slimPlay `json:"plays"`
+}
+
+// slimRole is Role without tasks, handlers, defaults and vars maps. Counts
+// and lightweight metadata are preserved so the role-list cards stay accurate.
+type slimRole struct {
+	Name          string   `json:"name"`
+	Path          string   `json:"path"`
+	Description   string   `json:"description,omitempty"`
+	Dependencies  []string `json:"dependencies,omitempty"`
+	TasksCount    int      `json:"tasks_count"`
+	HandlersCount int      `json:"handlers_count,omitempty"`
+	Templates     []string `json:"templates,omitempty"`
+	Files         []string `json:"files,omitempty"`
+}
+
+// slimScanResult is ScanResult without deep task trees (see GET /scan?slim=1).
+// Inventories are carried unchanged — they contain no task data.
+type slimScanResult struct {
+	Playbooks   []slimPlaybook    `json:"playbooks"`
+	Roles       []slimRole        `json:"roles"`
+	Inventories []model.Inventory `json:"inventories"`
+}
+
+// toSlimScan projects a full ScanResult down to a slimScanResult, omitting
+// task arrays (Tasks, PreTasks, PostTasks, Handlers inside plays; Tasks,
+// Handlers, Defaults, Vars inside roles). Derived counts replace the arrays.
+func toSlimScan(res *model.ScanResult) slimScanResult {
+	pbs := make([]slimPlaybook, 0, len(res.Playbooks))
+	for _, pb := range res.Playbooks {
+		slim := slimPlaybook{Path: pb.Path, Name: pb.Name, Plays: make([]slimPlay, 0, len(pb.Plays))}
+		for _, p := range pb.Plays {
+			slim.Plays = append(slim.Plays, slimPlay{
+				Name:          p.Name,
+				Hosts:         p.Hosts,
+				Become:        p.Become,
+				Serial:        p.Serial,
+				Strategy:      p.Strategy,
+				Tags:          p.Tags,
+				Vars:          p.Vars,
+				VarsFiles:     p.VarsFiles,
+				VarsPrompt:    p.VarsPrompt,
+				Roles:         p.Roles,
+				Import:        p.Import,
+				TasksCount:    len(p.Tasks),
+				PreTasksCount: len(p.PreTasks),
+				HandlersCount: len(p.Handlers),
+			})
+		}
+		pbs = append(pbs, slim)
+	}
+	roles := make([]slimRole, 0, len(res.Roles))
+	for _, r := range res.Roles {
+		roles = append(roles, slimRole{
+			Name:          r.Name,
+			Path:          r.Path,
+			Description:   r.Description,
+			Dependencies:  r.Dependencies,
+			TasksCount:    r.TasksCount,
+			HandlersCount: len(r.Handlers),
+			Templates:     r.Templates,
+			Files:         r.Files,
+		})
+	}
+	invs := res.Inventories
+	if invs == nil {
+		invs = []model.Inventory{}
+	}
+	return slimScanResult{Playbooks: pbs, Roles: roles, Inventories: invs}
+}
+
 func (s *Server) scanRepo(w http.ResponseWriter, r *http.Request) {
 	res, err := s.Mgr.Scan(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, errCode(err), err)
+		return
+	}
+	// ?slim=1: strip task trees, return metadata + counters only.
+	// The full result (backward-compatible default) remains at the same URL
+	// without the parameter so existing integrations are unaffected.
+	if r.URL.Query().Get("slim") == "1" {
+		writeJSON(w, http.StatusOK, toSlimScan(res))
 		return
 	}
 	out := *res
@@ -503,6 +609,77 @@ func (s *Server) scanRepo(w http.ResponseWriter, r *http.Request) {
 		out.Inventories = []model.Inventory{}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// playbookDetail returns the full scan detail (plays + task trees) of a single
+// playbook, identified by its repo-relative path (?path=). The path is confined
+// via the same idiom as /file: reject ".." traversals and absolute paths, then
+// verify the path exists within the scan result (which was itself confined to
+// the repo workdir at scan time).
+func (s *Server) playbookDetail(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	rel := r.URL.Query().Get("path")
+	if rel == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("path is required"))
+		return
+	}
+	// Confinement: reject traversal components and absolute paths.
+	// filepath.FromSlash normalises cross-platform; then we re-check the
+	// cleaned segments to catch any residual ".." or rooted paths.
+	cleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
+	if filepath.IsAbs(rel) || strings.Contains(rel, "..") || strings.HasPrefix(cleaned, "..") {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid path"))
+		return
+	}
+	_ = repo // verified above; scan is keyed by ID
+	res, err := s.Mgr.Scan(repo.ID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	for i := range res.Playbooks {
+		if res.Playbooks[i].Path == rel {
+			pb := res.Playbooks[i]
+			if pb.Plays == nil {
+				pb.Plays = []model.Play{}
+			}
+			writeJSON(w, http.StatusOK, pb)
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, fmt.Errorf("playbook %q not found", rel))
+}
+
+// roleDetail returns the full scan detail (tasks, handlers, defaults, vars) of
+// a single role, identified by its name (?name=).
+func (s *Server) roleDetail(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.Mgr.Store.GetRepo(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("name is required"))
+		return
+	}
+	_ = repo
+	res, err := s.Mgr.Scan(repo.ID)
+	if err != nil {
+		writeErr(w, errCode(err), err)
+		return
+	}
+	for i := range res.Roles {
+		if res.Roles[i].Name == name {
+			writeJSON(w, http.StatusOK, res.Roles[i])
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, fmt.Errorf("role %q not found", name))
 }
 
 func (s *Server) topology(w http.ResponseWriter, r *http.Request) {
@@ -528,6 +705,46 @@ func (s *Server) topology(w http.ResponseWriter, r *http.Request) {
 
 // maxFilePreview caps how much of a source file the raw-file endpoint serves.
 const maxFilePreview = 2 << 20 // 2 MiB
+
+// maxLogReplay caps how much of a job log the SSE endpoint replays into memory
+// when a client connects. Without a bound, os.ReadFile slurps the entire log
+// into RAM per connected client, and a verbose job (ansible with -vvv over many
+// hosts routinely emits hundreds of MiB) turns each /events subscriber into a
+// memory-exhaustion DoS. We replay only the tail of the log; the full,
+// unbounded log is still available at GET /api/jobs/{id}/log, which streams
+// straight from disk via http.ServeFile and never buffers the whole file.
+const maxLogReplay = 256 << 10 // 256 KiB of recent scrollback
+
+// tailLogFile returns at most maxBytes read from the end of the file at path.
+// When the file exceeds maxBytes it reports truncated=true and drops the
+// leading partial line so replay always starts on a clean line boundary. It
+// bounds the allocation to maxBytes regardless of the file's real size, so a
+// single pathologically long line cannot blow the cap either.
+func tailLogFile(path string, maxBytes int64) (data []byte, truncated bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if fi.Size() <= maxBytes {
+		data, err = io.ReadAll(io.LimitReader(f, maxBytes))
+		return data, false, err
+	}
+	if _, err = f.Seek(fi.Size()-maxBytes, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+	if data, err = io.ReadAll(io.LimitReader(f, maxBytes)); err != nil {
+		return nil, false, err
+	}
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		data = data[i+1:]
+	}
+	return data, true, nil
+}
 
 // withinRoot reports whether the absolute path p is root itself or lives under
 // it, used to confine file access to a repo's working directory.
@@ -783,7 +1000,18 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	// subscribe BEFORE replaying the log to avoid missing lines
 	ch, live := s.Mgr.Subscribe(id)
 
-	if data, err := os.ReadFile(s.Mgr.Store.JobLogPath(id)); err == nil && len(data) > 0 {
+	// Replay only the tail of the log (see maxLogReplay) so a huge/verbose job
+	// cannot exhaust memory per subscriber. Live lines beyond the tail keep
+	// arriving on ch below.
+	if data, truncated, err := tailLogFile(s.Mgr.Store.JobLogPath(id), maxLogReplay); err == nil && len(data) > 0 {
+		if truncated {
+			// Surface the drop to the operator using the existing "line" event —
+			// this does not change the SSE event format, just prepends one
+			// clearly-marked synthetic line so the truncation is visible in the
+			// log viewer (an invisible SSE ": comment" would leave the user
+			// unaware that older output is missing).
+			sendLine(fmt.Sprintf("[pine] earlier output truncated — showing last %d KiB; full log at /api/jobs/%s/log", maxLogReplay>>10, id))
+		}
 		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
 			sendLine(line)
 		}

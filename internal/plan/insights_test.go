@@ -207,6 +207,85 @@ forgotten:
 	}
 }
 
+// TestHygieneRoleRefExact verifies that the unused-role detector uses the
+// exact RoleRef instead of a substring match on t.Args. The classic false
+// positive: role "db" must remain unused even when role "mariadb" is
+// referenced via include_role (old Contains code would mark "db" as used
+// because "mariadb" contains the substring "db").
+func TestHygieneRoleRefExact(t *testing.T) {
+	root := t.TempDir()
+	writeT(t, root, "site.yml", `
+- name: Site
+  hosts: all
+  tasks:
+    - name: Setup database
+      include_role:
+        name: mariadb
+`)
+	writeT(t, root, "roles/mariadb/tasks/main.yml", `
+- name: Install mariadb
+  ansible.builtin.apt:
+    name: mariadb-server
+`)
+	// role 'db' exists but is never referenced
+	writeT(t, root, "roles/db/tasks/main.yml", `
+- name: DB setup
+  ansible.builtin.ping:
+`)
+	res, err := scanForT(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Hygiene(res, root)
+
+	dbUnused, mariadbUnused := false, false
+	for _, r := range out.UnusedRoles {
+		switch r.Name {
+		case "db":
+			dbUnused = true
+		case "mariadb":
+			mariadbUnused = true
+		}
+	}
+	// 'db' is a substring of 'mariadb' — old code would wrongly mark it used
+	if !dbUnused {
+		t.Errorf("role 'db' should be unused (anti-substring); unused_roles=%+v", out.UnusedRoles)
+	}
+	if mariadbUnused {
+		t.Errorf("role 'mariadb' should be referenced via include_role; unused_roles=%+v", out.UnusedRoles)
+	}
+}
+
+// TestHygieneRoleRefIncludeRole verifies that include_role with an exact name
+// correctly marks that role as used.
+func TestHygieneRoleRefIncludeRole(t *testing.T) {
+	root := t.TempDir()
+	writeT(t, root, "site.yml", `
+- name: Site
+  hosts: all
+  tasks:
+    - name: Setup web
+      include_role:
+        name: web
+`)
+	writeT(t, root, "roles/web/tasks/main.yml", `
+- name: Install nginx
+  ansible.builtin.apt:
+    name: nginx
+`)
+	res, err := scanForT(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Hygiene(res, root)
+
+	for _, r := range out.UnusedRoles {
+		if r.Name == "web" {
+			t.Errorf("role 'web' should be referenced via include_role; unused_roles=%+v", out.UnusedRoles)
+		}
+	}
+}
+
 func TestHygieneDetectsSmells(t *testing.T) {
 	root := t.TempDir()
 	writeT(t, root, "site.yml", `

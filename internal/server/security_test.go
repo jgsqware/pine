@@ -1,12 +1,19 @@
 package server
 
 import (
+	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/jgsqware/pine/internal/model"
+	"github.com/jgsqware/pine/internal/runner"
+	"github.com/jgsqware/pine/internal/store"
 )
 
 // echoOK is a trivial handler standing in for the real mux.
@@ -165,5 +172,82 @@ func TestGzipMiddleware(t *testing.T) {
 	sse.ServeHTTP(w, r)
 	if w.Header().Get("Content-Encoding") == "gzip" {
 		t.Error("SSE /events must not be gzipped")
+	}
+}
+
+// jobEventsFixture registers a terminal job whose log file holds body, then
+// returns the SSE replay produced by the /events handler. A terminal job is
+// not "live", so Subscribe returns ok=false and jobEvents replays the log and
+// returns without blocking on a channel.
+func jobEventsFixture(t *testing.T, body []byte) string {
+	t.Helper()
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	srv := &Server{Mgr: runner.New(st)}
+	job := model.Job{ID: store.NewID("j"), Status: model.JobSuccess}
+	if err := st.SaveJob(job); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+	if err := os.WriteFile(st.JobLogPath(job.ID), body, 0o600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/jobs/"+job.ID+"/events", nil)
+	req.SetPathValue("id", job.ID)
+	rec := httptest.NewRecorder()
+	srv.jobEvents(rec, req)
+	return rec.Body.String()
+}
+
+// TestJobEventsBoundedReplay proves the SSE replay never loads a whole verbose
+// log into memory: a 4 MiB log is replayed down to its tail (<= the cap), the
+// earliest content is dropped with a visible truncation notice, and the most
+// recent content survives.
+func TestJobEventsBoundedReplay(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteString("EARLY_MARKER this first line must be truncated away\n")
+	pad := strings.Repeat("x", 100)
+	for buf.Len() < maxLogReplay*16 { // ~4 MiB, 16x the replay cap
+		fmt.Fprintf(&buf, "filler %s\n", pad)
+	}
+	buf.WriteString("RECENT_MARKER this last line must survive the tail\n")
+	logSize := buf.Len()
+
+	body := jobEventsFixture(t, buf.Bytes())
+
+	if strings.Contains(body, "EARLY_MARKER") {
+		t.Error("early log content should have been truncated out of the replay")
+	}
+	if !strings.Contains(body, "RECENT_MARKER") {
+		t.Error("recent log content missing from the replay tail")
+	}
+	if !strings.Contains(body, "earlier output truncated") {
+		t.Error("truncation notice missing from replay")
+	}
+	if !strings.Contains(body, "event: status") {
+		t.Error("status event missing from stream")
+	}
+	// A 4 MiB log must not produce a multi-MiB replay: the body carries only the
+	// bounded tail plus small SSE framing, well under the raw log size and the
+	// documented cap (allow generous headroom for per-line "event: line/data:"
+	// framing).
+	if got := len(body); got >= logSize/2 {
+		t.Errorf("replay body %d B not bounded relative to %d B log", got, logSize)
+	}
+	if got := len(body); got > maxLogReplay*2 {
+		t.Errorf("replay body %d B exceeds bound %d B", got, maxLogReplay*2)
+	}
+}
+
+// TestJobEventsSmallLogFull confirms the common case is unaffected: a log under
+// the cap is replayed in full with no truncation notice.
+func TestJobEventsSmallLogFull(t *testing.T) {
+	body := jobEventsFixture(t, []byte("EARLY_MARKER\nmiddle line\nRECENT_MARKER\n"))
+	if !strings.Contains(body, "EARLY_MARKER") || !strings.Contains(body, "RECENT_MARKER") {
+		t.Error("a small log should be replayed in full")
+	}
+	if strings.Contains(body, "earlier output truncated") {
+		t.Error("a small log must not be flagged as truncated")
 	}
 }

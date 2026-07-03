@@ -523,16 +523,30 @@ function syncRepoSelect(id) {
   renderRepoSelector();
 }
 
+// getScan fetches the slim scan result (?slim=1) for a repository. The slim
+// payload carries play metadata and counts but no task trees, making it
+// significantly smaller on large repos. Full task detail is available
+// on demand via getPlaybookDetail / getRoleDetail below.
 function getScan(repoId, force = false) {
   if (force) State.scanCache.delete(repoId);
   if (!State.scanCache.has(repoId)) {
-    const p = api(`/repos/${repoId}/scan`).catch((e) => {
+    const p = api(`/repos/${repoId}/scan?slim=1`).catch((e) => {
       State.scanCache.delete(repoId);
       throw e;
     });
     State.scanCache.set(repoId, p);
   }
   return State.scanCache.get(repoId);
+}
+
+/** Fetch the full detail of one playbook (plays + task trees). */
+function getPlaybookDetail(repoId, path) {
+  return api(`/repos/${repoId}/playbook?path=${encodeURIComponent(path)}`);
+}
+
+/** Fetch the full detail of one role (tasks, handlers, defaults, vars). */
+function getRoleDetail(repoId, name) {
+  return api(`/repos/${repoId}/role?name=${encodeURIComponent(name)}`);
 }
 
 /** Guard for repo-scoped pages: returns repo or renders an empty state. */
@@ -1865,14 +1879,15 @@ async function pagePlaybookDetail(page, segs) {
   if (!repo) { page.appendChild(el("div", { class: "empty" }, el("h3", null, "Repository not found"))); return; }
   syncRepoSelect(repoId);
 
+  // Load full task-tree detail on demand (slim scan has no task arrays).
   page.appendChild(skeletonRows(3, 110));
-  const scan = await getScan(repoId);
-  const pb = (scan.playbooks || []).find((p) => p.path === path);
+  let pb;
+  try { pb = await getPlaybookDetail(repoId, path); } catch { pb = null; }
   page.innerHTML = "";
   if (!pb) {
     page.appendChild(el("div", { class: "empty" },
       el("h3", null, "Playbook not found"),
-      el("p", null, `“${path}” is not in the latest scan of ${repo.name}. It may have been removed or renamed.`),
+      el("p", null, `"${path}" is not in the latest scan of ${repo.name}. It may have been removed or renamed.`),
       el("button", { class: "btn", onclick: () => (location.hash = "#/playbooks") }, "Back to playbooks")));
     return;
   }
@@ -2163,7 +2178,7 @@ async function pageRoles(page) {
       el("div", { class: "desc" }, role.description || el("span", { class: "muted", style: { fontStyle: "italic" } }, "No description (meta/main.yml)")),
       el("div", { class: "stats" },
         el("span", null, el("b", null, String(role.tasks_count ?? (role.tasks || []).length)), " tasks"),
-        el("span", null, el("b", null, String((role.handlers || []).length)), " handlers"),
+        el("span", null, el("b", null, String(role.handlers_count ?? (role.handlers || []).length)), " handlers"),
         el("span", null, el("b", null, String((role.templates || []).length)), " templates"),
         el("span", null, el("b", null, String((role.files || []).length)), " files")),
       (role.dependencies || []).length
@@ -2186,14 +2201,15 @@ async function pageRoleDetail(page, segs) {
   if (!repo) { page.appendChild(el("div", { class: "empty" }, el("h3", null, "Repository not found"))); return; }
   syncRepoSelect(repoId);
 
+  // Load full role detail on demand (slim scan omits tasks, handlers, defaults, vars).
   page.appendChild(skeletonRows(2, 110));
-  const scan = await getScan(repoId);
-  const role = (scan.roles || []).find((r) => r.name === name);
+  let role;
+  try { role = await getRoleDetail(repoId, name); } catch { role = null; }
   page.innerHTML = "";
   if (!role) {
     page.appendChild(el("div", { class: "empty" },
       el("h3", null, "Role not found"),
-      el("p", null, `“${name}” is not in the latest scan of ${repo.name}.`),
+      el("p", null, `"${name}" is not in the latest scan of ${repo.name}.`),
       el("button", { class: "btn", onclick: () => (location.hash = "#/roles") }, "Back to roles")));
     return;
   }

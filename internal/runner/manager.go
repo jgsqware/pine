@@ -19,20 +19,36 @@ import (
 type Manager struct {
 	Store *store.Store
 
-	mu    sync.Mutex
-	scans map[string]*model.ScanResult // repoID -> cached scan
-	runs  map[string]*run              // jobID -> live run
-	sem   chan struct{}                // bounds concurrent job execution
+	mu     sync.Mutex
+	scans  map[string]*model.ScanResult  // repoID -> cached scan result
+	caches map[string]*scanner.ScanCache // repoID -> incremental parse cache
+	runs   map[string]*run               // jobID -> live run
+	sem    chan struct{}                 // bounds concurrent job execution
 }
 
 // New creates a Manager on top of the store.
 func New(st *store.Store) *Manager {
 	return &Manager{
-		Store: st,
-		scans: map[string]*model.ScanResult{},
-		runs:  map[string]*run{},
-		sem:   make(chan struct{}, maxConcurrentJobs()),
+		Store:  st,
+		scans:  map[string]*model.ScanResult{},
+		caches: map[string]*scanner.ScanCache{},
+		runs:   map[string]*run{},
+		sem:    make(chan struct{}, maxConcurrentJobs()),
 	}
+}
+
+// scanCacheFor returns the per-repo incremental parse cache, creating it on
+// first use. The cache lives for the Manager's lifetime so consecutive syncs
+// of the same repo reuse unchanged parse results.
+func (m *Manager) scanCacheFor(id string) *scanner.ScanCache {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.caches[id]
+	if c == nil {
+		c = scanner.NewScanCache()
+		m.caches[id] = c
+	}
+	return c
 }
 
 // maxConcurrentJobs caps how many jobs run ansible at once (a bulk of scheduled
@@ -154,7 +170,7 @@ func runGit(dir string, args ...string) error {
 
 // rescan refreshes the cached scan and the repo summary counters.
 func (m *Manager) rescan(repo *model.Repo) error {
-	res, err := scanner.Scan(m.Store.RepoWorkdir(repo), repo.ScanPaths...)
+	res, err := scanner.ScanWithCache(m.Store.RepoWorkdir(repo), m.scanCacheFor(repo.ID), repo.ScanPaths...)
 	if err != nil {
 		return err
 	}
@@ -178,7 +194,7 @@ func (m *Manager) Scan(id string) (*model.ScanResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := scanner.Scan(m.Store.RepoWorkdir(&repo), repo.ScanPaths...)
+	res, err := scanner.ScanWithCache(m.Store.RepoWorkdir(&repo), m.scanCacheFor(id), repo.ScanPaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -192,5 +208,6 @@ func (m *Manager) Scan(id string) (*model.ScanResult, error) {
 func (m *Manager) Forget(id string) {
 	m.mu.Lock()
 	delete(m.scans, id)
+	delete(m.caches, id)
 	m.mu.Unlock()
 }

@@ -41,7 +41,7 @@ func PreviewInventory(res *model.ScanResult, req PreviewRequest) (*PreviewResult
 
 	for hi := range inv.Hosts {
 		h := &inv.Hosts[hi]
-		eff := resolver.effective(h, nil, nil, nil)
+		eff := resolver.effective(h, nil, nil, nil, nil)
 		for _, rule := range inv.ConstructedRules {
 			var names []string
 			for n := range rule.Groups {

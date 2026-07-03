@@ -122,9 +122,90 @@ func TestPlanVaultDecrypts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := firstTaskArgs(out); got != "login --pass topsecret" {
-		t.Errorf("vault value not decrypted: %q", got)
+	// The engine decrypts internally, but the exposed plan must redact the
+	// secret: the plaintext must never reach the resolved arg.
+	if got := firstTaskArgs(out); got != "login --pass "+RedactedMark {
+		t.Errorf("decrypted vault value not redacted in args: %q", got)
 	}
+	if strings.Contains(planText(out), "topsecret") {
+		t.Errorf("decrypted secret leaked into plan: %s", planText(out))
+	}
+}
+
+// A secret-looking plaintext var (the exact shape a decrypted vault value takes
+// once injected into eff) must be redacted in both the task name and args, and
+// never appear in clear anywhere in the returned plan. Deterministic: needs no
+// ansible-vault.
+func TestPlanRedactsResolvedSecret(t *testing.T) {
+	res, root := writeRepo(t, map[string]string{
+		"inv/hosts":              "[web]\nweb01\n",
+		"inv/group_vars/all.yml": "db_password: topsecret\nserver_tokens: \"off\"\n",
+		"site.yml": "- hosts: all\n  tasks:\n" +
+			"    - name: \"login {{ server_tokens }} {{ db_password }}\"\n" +
+			"      ansible.builtin.command: \"login --pass {{ db_password }}\"\n",
+	})
+	out, err := Compute(res, root, model.Repo{ID: "r", Name: "vt"}, Request{Playbook: "site.yml", Inventory: "hosts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tp := out.Plays[0].Tasks[0]
+	// server_tokens: "off" is a toggle, not a secret — it stays visible.
+	if tp.Name != "login off "+RedactedMark {
+		t.Errorf("name not redacted as expected: %q", tp.Name)
+	}
+	if tp.Args != "login --pass "+RedactedMark {
+		t.Errorf("args not redacted as expected: %q", tp.Args)
+	}
+	if strings.Contains(planText(out), "topsecret") {
+		t.Errorf("secret leaked into plan: %s", planText(out))
+	}
+}
+
+// redactSecretVars masks vault-derived and secret-looking values while leaving
+// toggles/numeric knobs and undecryptable blobs untouched.
+func TestRedactSecretVars(t *testing.T) {
+	vars := map[string]any{
+		"db_password":   "topsecret", // decrypted secret (plaintext)
+		"registry":      "reg.local", // ordinary value
+		"server_tokens": "off",       // toggle under a secret-ish name
+		"http_port":     8080,        // numeric knob
+		"legacy_blob":   vaultMask,   // undecryptable blob, already masked
+		"opaque":        "42",        // non-secret key holding vault plaintext
+	}
+	// "opaque" carries a decrypted vault value even though its name is innocuous.
+	got := redactSecretVars(vars, map[string]bool{"db_password": true, "opaque": true})
+	want := map[string]any{
+		"db_password":   RedactedMark,
+		"registry":      "reg.local",
+		"server_tokens": "off",
+		"http_port":     8080,
+		"legacy_blob":   vaultMask,
+		"opaque":        RedactedMark,
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("redactSecretVars[%q] = %v, want %v", k, got[k], w)
+		}
+	}
+}
+
+// planText serializes a plan's user-facing name/arg fields so a test can assert
+// no secret substring leaked anywhere.
+func planText(out *Result) string {
+	var b strings.Builder
+	for _, pp := range out.Plays {
+		for _, tp := range pp.Tasks {
+			b.WriteString(tp.Name)
+			b.WriteByte('\n')
+			b.WriteString(tp.Args)
+			b.WriteByte('\n')
+			b.WriteString(tp.RawName)
+			b.WriteByte('\n')
+			b.WriteString(tp.RawArgs)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // indentBlock indents each line of a YAML block scalar by ten spaces.

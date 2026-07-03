@@ -95,13 +95,8 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 	referenced := map[string]bool{}
 	var markTask func(t model.Task)
 	markTask = func(t model.Task) {
-		m := strings.TrimPrefix(t.Module, "ansible.builtin.")
-		if m == "include_role" || m == "import_role" {
-			for i := range res.Roles {
-				if strings.Contains(t.Args, res.Roles[i].Name) {
-					referenced[res.Roles[i].Name] = true
-				}
-			}
+		if t.RoleRef != "" {
+			referenced[t.RoleRef] = true
 		}
 		for _, sub := range [][]model.Task{t.Block, t.Rescue, t.Always} {
 			for _, st := range sub {

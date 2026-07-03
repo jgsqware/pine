@@ -3,8 +3,10 @@ package scanner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jgsqware/pine/internal/model"
 	"gopkg.in/yaml.v3"
@@ -15,7 +17,7 @@ var roleDirNames = map[string]bool{"roles": true}
 
 // scanRoles parses every role under roles/, plus any extra role parent dirs
 // contributed by a layout plugin (e.g. generic_roles/).
-func scanRoles(root string, plugin *Plugin) []model.Role {
+func scanRoles(root string, plugin *Plugin, cache *ScanCache) []model.Role {
 	dirs := []string{"roles"}
 	if plugin != nil {
 		dirs = append(dirs, plugin.RoleDirs...)
@@ -24,7 +26,9 @@ func scanRoles(root string, plugin *Plugin) []model.Role {
 	// one roles/ per chapter or project)
 	dirs = append(dirs, findRoleDirs(root)...)
 
-	var out []model.Role
+	// Deduplicate sequentially (the shared `seen` map is not touched during
+	// the parallel parse below), building the flat worklist of role dirs.
+	var roleDirs []string
 	seen := map[string]bool{}
 	for _, rd := range dirs {
 		rolesDir := filepath.Join(root, rd)
@@ -41,11 +45,38 @@ func scanRoles(root string, plugin *Plugin) []model.Role {
 				continue
 			}
 			seen[e.Name()] = true
-			out = append(out, parseRole(root, roleDir))
+			roleDirs = append(roleDirs, roleDir)
 		}
 	}
+
+	// Parse each role concurrently (bounded to GOMAXPROCS). Results are
+	// written by index into a pre-sized slice, so there is no shared mutable
+	// state and the final sort keeps ordering deterministic.
+	out := make([]model.Role, len(roleDirs))
+	sem := make(chan struct{}, maxParseWorkers())
+	var wg sync.WaitGroup
+	for i, dir := range roleDirs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, dir string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out[i] = parseRoleCached(root, dir, cache)
+		}(i, dir)
+	}
+	wg.Wait()
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// maxParseWorkers bounds the per-item parse fan-out to the available CPUs.
+func maxParseWorkers() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // looksLikeRole requires at least one conventional role subdirectory, so
@@ -96,6 +127,22 @@ func findRoleDirs(root string) []string {
 	walk(root, 0)
 	sort.Strings(out)
 	return out
+}
+
+// parseRoleCached returns the cached parse of a role directory when no file in
+// its tree changed (aggregate mtime/size), otherwise parses and records it. A
+// nil cache parses directly.
+func parseRoleCached(root, dir string, cache *ScanCache) model.Role {
+	if cache == nil {
+		return parseRole(root, dir)
+	}
+	s := roleSig(dir)
+	if v, hit := cache.lookup(dir, s); hit {
+		return v.(model.Role)
+	}
+	r := parseRole(root, dir)
+	cache.store(dir, s, r)
+	return r
 }
 
 func parseRole(root, dir string) model.Role {

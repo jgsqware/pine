@@ -1,0 +1,35 @@
+# Pine policy-as-code — governance rules evaluated against the estimated plan.
+# Run as a CI gate:  pine policy check . --policies policies.yml
+# `error` violations fail the build (exit 1); `warning` are reported only.
+policies:
+  # 1. Never let a package float to the newest version on production hosts:
+  #    `state: latest` is non-deterministic and defeats reproducible deploys.
+  - id: no-state-latest-in-prod
+    description: "state: latest is forbidden on production hosts (pin versions)"
+    severity: error
+    match:
+      inventory: "*production*"
+      module: [apt, yum, dnf, package, pip, npm]
+    assert:
+      forbid_args:
+        state: latest
+
+  # 2. Any play that escalates privileges (become: true) must be reviewed:
+  #    require an explicit `approved` tag so a change-approver signs off.
+  - id: become-requires-approved-tag
+    description: "privilege escalation (become) requires an 'approved' tag"
+    severity: error
+    match:
+      become: true
+    assert:
+      require_tag: approved
+
+  # 3. Cap the blast radius: a single run must not touch more than 30% of hosts
+  #    (nudges toward serial batches / smaller limits for risky changes).
+  - id: blast-radius-max-30pct
+    description: "a run must not touch more than 30% of the inventory hosts"
+    severity: warning
+    match:
+      inventory: "*production*"
+    assert:
+      max_blast_radius_pct: 30

@@ -275,6 +275,52 @@ func TestResolveIncludeVars(t *testing.T) {
 	}
 }
 
+// Ansible precedence: play vars_files (level 14) outrank play vars (level 12).
+// Both variable engines had it inverted (play vars overwrote vars_files). When
+// the same key is set in BOTH play vars and a vars_files file, the vars_files
+// value must win, and the lineage must record play_vars first (lower) then
+// vars_file last (higher).
+func TestResolveVarsFilesBeatPlayVars(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "extra.yml"), []byte("shared: from_vars_file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := &model.ScanResult{
+		Playbooks: []model.Playbook{{
+			Path: "p.yml",
+			Plays: []model.Play{{
+				Name: "p", Hosts: "all",
+				Vars:      map[string]any{"shared": "from_play_vars"},
+				VarsFiles: []string{"extra.yml"},
+			}},
+		}},
+	}
+	out, err := Resolve(res, root, "p.yml", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := out.Plays[0].Vars
+	if v["shared"] != "from_vars_file" {
+		t.Errorf("shared = %v, want from_vars_file (vars_files outrank play vars)", v["shared"])
+	}
+	chain := out.Plays[0].Lineage["shared"]
+	if len(chain) != 2 || chain[0].Scope != "play_vars" || chain[len(chain)-1].Scope != "vars_file" {
+		t.Errorf("shared lineage = %+v, want play_vars then vars_file", chain)
+	}
+}
+
+// Same precedence rule in the per-host effective() engine: playFileVars
+// (vars_files, level 14) must beat play.Vars (level 12).
+func TestEffectiveVarsFilesBeatPlayVars(t *testing.T) {
+	r := newVarResolver(nil, nil, nil, nil)
+	play := &model.Play{Vars: map[string]any{"shared": "from_play_vars"}}
+	playFileVars := []map[string]any{{"shared": "from_vars_file"}}
+	eff := r.effective(nil, play, nil, playFileVars, nil)
+	if eff["shared"] != "from_vars_file" {
+		t.Errorf("shared = %v, want from_vars_file (vars_files outrank play vars)", eff["shared"])
+	}
+}
+
 func TestResolveDemoPlaybook(t *testing.T) {
 	res, root := demoScan(t)
 	out, err := Resolve(res, root, "webservers.yml", "", "")

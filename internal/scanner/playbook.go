@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jgsqware/pine/internal/model"
 	"gopkg.in/yaml.v3"
@@ -58,7 +59,7 @@ const maxPlaybookDepth = 8
 // restrict discovery. Otherwise the whole repository is walked recursively,
 // skipping role/inventory internals, keeping any YAML file shaped like a
 // playbook, plus any extra playbook dirs contributed by a layout plugin.
-func scanPlaybooks(root string, plugin *Plugin, scanPaths []string) []model.Playbook {
+func scanPlaybooks(root string, plugin *Plugin, scanPaths []string, cache *ScanCache) []model.Playbook {
 	var candidates []string
 	if len(scanPaths) > 0 {
 		candidates = expandScanPaths(root, scanPaths)
@@ -73,8 +74,10 @@ func scanPlaybooks(root string, plugin *Plugin, scanPaths []string) []model.Play
 		}
 	}
 
+	// Deduplicate and filter sequentially (the shared `seen` map is not
+	// touched during the parallel parse below), building the flat worklist.
 	seen := map[string]bool{}
-	var out []model.Playbook
+	var files []string
 	for _, f := range candidates {
 		if seen[f] {
 			continue
@@ -85,9 +88,32 @@ func scanPlaybooks(root string, plugin *Plugin, scanPaths []string) []model.Play
 			strings.HasPrefix(base, ".") || base == "galaxy.yml" {
 			continue
 		}
-		pb, ok := parsePlaybook(root, f)
-		if ok {
-			out = append(out, pb)
+		files = append(files, f)
+	}
+
+	// Parse each candidate concurrently (bounded to GOMAXPROCS), writing by
+	// index into pre-sized slices so there is no shared mutable state. Non-
+	// playbook files are dropped afterwards, preserving order; the final sort
+	// keeps output deterministic.
+	parsed := make([]model.Playbook, len(files))
+	ok := make([]bool, len(files))
+	sem := make(chan struct{}, maxParseWorkers())
+	var wg sync.WaitGroup
+	for i, f := range files {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, f string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			parsed[i], ok[i] = parsePlaybookCached(root, f, cache)
+		}(i, f)
+	}
+	wg.Wait()
+
+	out := make([]model.Playbook, 0, len(files))
+	for i := range files {
+		if ok[i] {
+			out = append(out, parsed[i])
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
@@ -154,6 +180,25 @@ func expandScanPaths(root string, paths []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// parsePlaybookCached returns the cached parse of file when its mtime/size are
+// unchanged, otherwise parses and records it. A nil cache parses directly.
+func parsePlaybookCached(root, file string, cache *ScanCache) (model.Playbook, bool) {
+	if cache == nil {
+		return parsePlaybook(root, file)
+	}
+	s, ok := fileSig(file)
+	if !ok {
+		return parsePlaybook(root, file)
+	}
+	if v, hit := cache.lookup(file, s); hit {
+		r := v.(pbResult)
+		return r.pb, r.ok
+	}
+	pb, valid := parsePlaybook(root, file)
+	cache.store(file, s, pbResult{pb: pb, ok: valid})
+	return pb, valid
 }
 
 func parsePlaybook(root, file string) (model.Playbook, bool) {

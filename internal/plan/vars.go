@@ -95,7 +95,7 @@ func setVar(eff map[string]any, key string, val any) {
 }
 
 // effective computes the merged vars visible to one host within one play.
-func (r *varResolver) effective(host *model.Host, play *model.Play, roleDefaults []map[string]any, playFileVars []map[string]any) map[string]any {
+func (r *varResolver) effective(host *model.Host, play *model.Play, roleDefaults []map[string]any, playFileVars, roleVars []map[string]any) map[string]any {
 	eff := map[string]any{}
 	merge := func(m map[string]any) {
 		for k, v := range m {
@@ -161,9 +161,8 @@ func (r *varResolver) effective(host *model.Host, play *model.Play, roleDefaults
 	}
 
 	if play != nil {
-		for _, fv := range playFileVars {
-			merge(fv)
-		}
+		// Ansible play-level precedence (low → high): play vars (12) < vars_prompt
+		// (13) < vars_files (14). Merge in that order so vars_files win.
 		merge(play.Vars)
 		// vars_prompt: a prompted variable IS defined at runtime. Fall back to its
 		// default so it resolves in the plan; a user-supplied answer (userVars,
@@ -176,6 +175,18 @@ func (r *varResolver) effective(host *model.Host, play *model.Play, roleDefaults
 				eff[pr.Name] = pr.Default
 			}
 		}
+		// vars_files outrank play vars and vars_prompt, so merge them last.
+		for _, fv := range playFileVars {
+			merge(fv)
+		}
+	}
+
+	// role vars/main.yml sit near the top of Ansible's precedence (level 15) —
+	// above play vars (12) and vars_files (14), but below extra/user vars — so
+	// merge them after the play-level layers and before userVars. Aligned with
+	// resolve.go's ordering (see resolve.go L187-193).
+	for _, rv := range roleVars {
+		merge(rv)
 	}
 
 	mergeUser(r.userVars)

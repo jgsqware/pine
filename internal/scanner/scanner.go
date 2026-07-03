@@ -8,24 +8,46 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jgsqware/pine/internal/model"
 )
 
 // Scan inspects the repository rooted at path and returns everything found.
 // Optional scanPaths restrict playbook discovery to specific directories,
-// files or globs (relative to root).
+// files or globs (relative to root). It parses every file from scratch; for
+// incremental re-scans that reuse unchanged parse results, use ScanWithCache.
 func Scan(root string, scanPaths ...string) (*model.ScanResult, error) {
+	return ScanWithCache(root, nil, scanPaths...)
+}
+
+// ScanWithCache is Scan with an optional incremental parse cache that survives
+// between calls. A nil cache reproduces Scan's behavior exactly (parse
+// everything). With a cache, playbook files and role directories whose
+// mtime/size are unchanged since the previous scan reuse their cached parse
+// result instead of being re-parsed; paths absent from this scan are purged.
+func ScanWithCache(root string, cache *ScanCache, scanPaths ...string) (*model.ScanResult, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	plugin := detectPlugin(root)
-	res := &model.ScanResult{
-		Playbooks:   scanPlaybooks(root, plugin, scanPaths),
-		Roles:       scanRoles(root, plugin),
-		Inventories: scanInventories(root),
+	if cache != nil {
+		// Serialize the whole scan on this cache and reset seen-tracking, so
+		// vanished paths can be purged once all phases complete.
+		cache.beginScan()
+		defer cache.endScan()
 	}
+	plugin := detectPlugin(root)
+	// The three phases are independent (disjoint result slices, read-only
+	// filesystem access), so run them concurrently. Each writes only its own
+	// field, so no locking is needed.
+	res := &model.ScanResult{}
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); res.Playbooks = scanPlaybooks(root, plugin, scanPaths, cache) }()
+	go func() { defer wg.Done(); res.Roles = scanRoles(root, plugin, cache) }()
+	go func() { defer wg.Done(); res.Inventories = scanInventories(root) }()
+	wg.Wait()
 	return res, nil
 }
 

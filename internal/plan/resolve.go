@@ -155,11 +155,8 @@ func Resolve(res *model.ScanResult, root, playbookPath, inventory, host string) 
 			}
 		}
 
-		for _, vf := range play.VarsFiles {
-			if vars := loadPlayVarsFile(root, pb.Path, vf); len(vars) > 0 {
-				add("vars_file", vf, vars)
-			}
-		}
+		// Ansible play-level precedence (low → high): play vars (12) < vars_prompt
+		// (13) < vars_files (14). Add them in that order so the last write wins.
 		add("play_vars", playLabel(play, pi), play.Vars)
 
 		// vars_prompt: the variable IS defined (asked interactively). Use its
@@ -177,6 +174,14 @@ func Resolve(res *model.ScanResult, root, playbookPath, inventory, host string) 
 			}
 			pv.Vars[pr.Name] = val
 			pv.Lineage[pr.Name] = append(pv.Lineage[pr.Name], LineageEntry{Scope: "vars_prompt", Name: pr.Name, Value: val})
+		}
+
+		// vars_files outrank play vars and vars_prompt in Ansible's precedence,
+		// so load them last — last write wins.
+		for _, vf := range play.VarsFiles {
+			if vars := loadPlayVarsFile(root, pb.Path, vf); len(vars) > 0 {
+				add("vars_file", vf, vars)
+			}
 		}
 
 		// role vars/main.yml sit near the top of Ansible's precedence — above

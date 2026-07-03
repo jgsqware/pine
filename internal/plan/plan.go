@@ -97,6 +97,7 @@ type HandlerPlan struct {
 type PlayPlan struct {
 	Name         string        `json:"name"`
 	Hosts        string        `json:"hosts"`
+	Become       bool          `json:"become,omitempty"` // play escalates privileges (become: true)
 	Import       string        `json:"import,omitempty"`
 	MatchedHosts []string      `json:"matched_hosts"`
 	Batches      [][]string    `json:"batches"`
@@ -265,25 +266,41 @@ func (c *computer) playbook(pb *model.Playbook, out *Result, depth int) {
 }
 
 func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
-	pp := PlayPlan{Name: play.Name, Hosts: play.Hosts, Tasks: []TaskPlan{}}
+	pp := PlayPlan{Name: play.Name, Hosts: play.Hosts, Become: play.Become, Tasks: []TaskPlan{}}
 
 	// targeted hosts
+	// hostsUncertain is set when the host pattern (or limit) contains constructs
+	// that MatchHosts cannot evaluate (~regex, [n:m] ranges).  In that case we
+	// expand to all inventory hosts and mark every task verdict "unknown" so
+	// the plan never presents a firm result it cannot justify.
 	var hosts []string
+	hostsUncertain := false
 	if c.inv != nil {
-		hosts = scanner.MatchHosts(play.Hosts, c.inv)
-		if c.req.Limit != "" {
-			limited := scanner.MatchHosts(c.req.Limit, c.inv)
-			lim := map[string]bool{}
-			for _, h := range limited {
-				lim[h] = true
+		if scanner.HasUnsupportedPattern(play.Hosts) {
+			hostsUncertain = true
+			for _, h := range c.inv.Hosts {
+				hosts = append(hosts, h.Name)
 			}
-			var keep []string
-			for _, h := range hosts {
-				if lim[h] {
-					keep = append(keep, h)
+		} else {
+			hosts = scanner.MatchHosts(play.Hosts, c.inv)
+			if c.req.Limit != "" {
+				if scanner.HasUnsupportedPattern(c.req.Limit) {
+					hostsUncertain = true
+				} else {
+					limited := scanner.MatchHosts(c.req.Limit, c.inv)
+					lim := map[string]bool{}
+					for _, h := range limited {
+						lim[h] = true
+					}
+					var keep []string
+					for _, h := range hosts {
+						if lim[h] {
+							keep = append(keep, h)
+						}
+					}
+					hosts = keep
 				}
 			}
-			hosts = keep
 		}
 	}
 	if len(hosts) == 0 && (play.Hosts == "localhost" || play.Hosts == "127.0.0.1" || c.inv == nil) {
@@ -306,9 +323,17 @@ func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
 
 	// per-host effective vars
 	var roleDefaults []map[string]any
+	var roleVars []map[string]any
 	for _, rn := range play.Roles {
-		if r := c.roles[rn]; r != nil && r.Defaults != nil {
-			roleDefaults = append(roleDefaults, r.Defaults)
+		if r := c.roles[rn]; r != nil {
+			if r.Defaults != nil {
+				roleDefaults = append(roleDefaults, r.Defaults)
+			}
+			// role vars/main.yml sit above play vars & vars_files in Ansible's
+			// precedence (level 15); merged after them in effective().
+			if r.Vars != nil {
+				roleVars = append(roleVars, r.Vars)
+			}
 		}
 	}
 	var fileVars []map[string]any
@@ -338,7 +363,7 @@ func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
 	}
 	eff := map[string]map[string]any{}
 	for _, h := range hosts {
-		eff[h] = c.resolver.effective(hostByName[h], &play, roleDefaults, fileVars)
+		eff[h] = c.resolver.effective(hostByName[h], &play, roleDefaults, fileVars, roleVars)
 		for k, v := range eff[h] {
 			if s, ok := v.(string); ok && isVaultValue(s) {
 				c.vaultVars[k] = true
@@ -357,7 +382,7 @@ func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
 
 	// tasks in execution order
 	add := func(section, role string, tasks []model.Task) {
-		c.flatten(&pp, play, section, role, "", tasks, hosts, eff, false)
+		c.flatten(&pp, play, section, role, "", tasks, hosts, eff, false, hostsUncertain)
 	}
 	add("pre_tasks", "", play.PreTasks)
 	for _, rn := range play.Roles {
@@ -381,22 +406,22 @@ func (c *computer) play(pb *model.Playbook, play model.Play) PlayPlan {
 
 // flatten walks tasks (recursing into blocks and statically-imported task files,
 // inheriting their when) and appends a TaskPlan per leaf task.
-func (c *computer) flatten(pp *PlayPlan, play model.Play, section, role, inheritedWhen string, tasks []model.Task, hosts []string, eff map[string]map[string]any, rescue bool) {
+func (c *computer) flatten(pp *PlayPlan, play model.Play, section, role, inheritedWhen string, tasks []model.Task, hosts []string, eff map[string]map[string]any, rescue bool, hostsUncertain bool) {
 	for _, t := range tasks {
 		when := combineWhen(inheritedWhen, t.When)
 		if t.Module == "block" {
-			c.flatten(pp, play, section, role, when, t.Block, hosts, eff, rescue)
-			c.flatten(pp, play, section, role, when, t.Rescue, hosts, eff, true)
-			c.flatten(pp, play, section, role, when, t.Always, hosts, eff, rescue)
+			c.flatten(pp, play, section, role, when, t.Block, hosts, eff, rescue, hostsUncertain)
+			c.flatten(pp, play, section, role, when, t.Rescue, hosts, eff, true, hostsUncertain)
+			c.flatten(pp, play, section, role, when, t.Always, hosts, eff, rescue, hostsUncertain)
 			continue
 		}
 		// import_tasks is static: expand its tasks inline instead of showing the
 		// import as a single opaque step.
 		if len(t.Imported) > 0 {
-			c.flatten(pp, play, section, role, when, t.Imported, hosts, eff, rescue)
+			c.flatten(pp, play, section, role, when, t.Imported, hosts, eff, rescue, hostsUncertain)
 			continue
 		}
-		pp.Tasks = append(pp.Tasks, c.task(play, section, role, when, t, hosts, eff, rescue))
+		pp.Tasks = append(pp.Tasks, c.task(play, section, role, when, t, hosts, eff, rescue, hostsUncertain))
 	}
 }
 
@@ -410,7 +435,7 @@ func combineWhen(a, b string) string {
 	return "(" + a + ") and (" + b + ")"
 }
 
-func (c *computer) task(play model.Play, section, role, when string, t model.Task, hosts []string, eff map[string]map[string]any, rescue bool) TaskPlan {
+func (c *computer) task(play model.Play, section, role, when string, t model.Task, hosts []string, eff map[string]map[string]any, rescue bool, hostsUncertain bool) TaskPlan {
 	tp := TaskPlan{
 		RawName: t.Name,
 		Name:    t.Name,
@@ -439,17 +464,28 @@ func (c *computer) task(play model.Play, section, role, when string, t model.Tas
 	if len(hosts) > 0 {
 		repVars = eff[hosts[0]]
 	} else {
-		repVars = c.resolver.effective(nil, &play, nil, nil)
+		var roleVars []map[string]any
+		for _, rn := range play.Roles {
+			if r := c.roles[rn]; r != nil && r.Vars != nil {
+				roleVars = append(roleVars, r.Vars)
+			}
+		}
+		repVars = c.resolver.effective(nil, &play, nil, nil, roleVars)
 		expandNestedVars(repVars)
 	}
-	if name, known, _ := scanner.Interpolate(t.Name, repVars); known {
+	// The name/args are exposed in the Result, so interpolate them against a
+	// redacted view: a decrypted vault secret (or any secret-looking value) must
+	// never surface in clear here, even though repVars keeps the plaintext the
+	// engine evaluates when/loop against.
+	safeVars := redactSecretVars(repVars, c.vaultVars)
+	if name, known, _ := scanner.Interpolate(t.Name, safeVars); known {
 		tp.Name = name
 	}
 	// resolve module args too (e.g. a docker_image name), keeping the raw form
 	// when interpolation actually changed something.
 	if t.Args != "" {
 		tp.Args = t.Args
-		if a, _, _ := scanner.Interpolate(t.Args, repVars); a != t.Args {
+		if a, _, _ := scanner.Interpolate(t.Args, safeVars); a != t.Args {
 			tp.RawArgs, tp.Args = t.Args, a
 		}
 	}
@@ -480,6 +516,11 @@ func (c *computer) task(play model.Play, section, role, when string, t model.Tas
 	for _, h := range hosts {
 		v := HostVerdict{Status: StatusRun}
 		switch {
+		case hostsUncertain:
+			// The play's host pattern contains unsupported constructs (regex ~,
+			// range [n:m]); we cannot determine which hosts are actually targeted,
+			// so every verdict is unknown rather than a firm claim.
+			v = HostVerdict{Status: StatusUnknown, Reason: "host pattern contains unsupported constructs (regex/range)"}
 		case rescue:
 			v = HostVerdict{Status: StatusSkip, Reason: "rescue path: runs only when the block fails"}
 		case tagsExcluded:
@@ -563,6 +604,29 @@ func (c *computer) handlers(handlers []model.Task, tasks []TaskPlan) []HandlerPl
 }
 
 // --- shared helpers (kept aligned with the simulator's behavior) ---
+
+// redactSecretVars returns a copy of vars safe to interpolate into an exposed
+// task name or arg. Secret material is replaced with the shared RedactedMark
+// (the same marker lineage/resolve use) while the original map keeps its
+// plaintext for when/loop evaluation. It reuses the IsSecretKey + sensitiveValue
+// heuristic — so toggles like server_tokens: "off" and numeric knobs stay
+// visible — and additionally force-masks any var whose original value was an
+// ansible-vault blob (vaultKeys): a decrypted secret is still a secret. A value
+// already reduced to vaultMask (an undecryptable blob) keeps that mark.
+func redactSecretVars(vars map[string]any, vaultKeys map[string]bool) map[string]any {
+	out := make(map[string]any, len(vars))
+	for k, v := range vars {
+		switch {
+		case v == vaultMask:
+			out[k] = v
+		case vaultKeys[k], sensitiveValue(IsSecretKey(k), v):
+			out[k] = RedactedMark
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
 
 func findPlaybook(res *model.ScanResult, path string) *model.Playbook {
 	for i := range res.Playbooks {

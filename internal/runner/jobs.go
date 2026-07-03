@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +18,13 @@ import (
 	"github.com/jgsqware/pine/internal/model"
 	"github.com/jgsqware/pine/internal/store"
 )
+
+// subscriberBuffer bounds the per-subscriber log fan-out channel. Each live
+// /events client gets its own buffered channel of this many lines; publish
+// drops lines (never blocks the job) once a slow reader lets its buffer fill,
+// so a stalled or malicious subscriber costs at most subscriberBuffer queued
+// line references rather than growing without bound.
+const subscriberBuffer = 4096
 
 // run is the in-memory side of a live job: log fan-out + cancellation.
 type run struct {
@@ -179,7 +187,7 @@ func (m *Manager) Subscribe(jobID string) (ch chan string, ok bool) {
 	if r.done {
 		return nil, false
 	}
-	ch = make(chan string, 4096)
+	ch = make(chan string, subscriberBuffer)
 	r.subs[ch] = true
 	return ch, true
 }
@@ -307,6 +315,43 @@ func hostKeyCheckingEnv(mode string) []string {
 	return nil
 }
 
+// withinRoot reports whether the absolute path p is root itself or lives under
+// it. Mirrors internal/server.withinRoot; replicated here (rather than exporting
+// it or importing server) to keep the runner free of a server→runner cycle.
+func withinRoot(root, p string) bool {
+	return p == root || strings.HasPrefix(p, root+string(os.PathSeparator))
+}
+
+// confineToWorkdir validates that rel resolves to a file inside root (a job's
+// workdir) and returns the cleaned relative path to hand to ansible-playbook.
+// It rejects absolute paths, "..", and symlinks pointing outside the workdir —
+// the same EvalSymlinks+withinRoot idiom the HTTP file endpoint uses.
+func confineToWorkdir(root, rel string) (string, error) {
+	if strings.TrimSpace(rel) == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("must be a relative path within the repository: %q", rel)
+	}
+	clean := filepath.Clean(rel)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path escapes the repository: %q", rel)
+	}
+	full := filepath.Join(root, clean)
+	rootAbs, err1 := filepath.Abs(root)
+	fullAbs, err2 := filepath.Abs(full)
+	if err1 != nil || err2 != nil || !withinRoot(rootAbs, fullAbs) {
+		return "", fmt.Errorf("path escapes the repository: %q", rel)
+	}
+	// Resolve symlinks and re-check: a link inside the workdir must not point out.
+	realRoot, err1 := filepath.EvalSymlinks(rootAbs)
+	realFull, err2 := filepath.EvalSymlinks(fullAbs)
+	if err1 != nil || err2 != nil || !withinRoot(realRoot, realFull) {
+		return "", fmt.Errorf("path not found or escapes the repository: %q", rel)
+	}
+	return clean, nil
+}
+
 // runAnsible executes the real ansible-playbook command, streaming output.
 func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (failed bool) {
 	repo, err := m.Store.GetRepo(job.RepoID)
@@ -316,9 +361,29 @@ func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (faile
 	}
 	workdir := m.Store.RepoWorkdir(&repo)
 
-	args := []string{job.Playbook}
-	if job.Inventory != "" {
-		args = append(args, "-i", job.Inventory)
+	// Confine the playbook (and inventory) to the repo workdir before it reaches
+	// ansible-playbook: reject absolute paths, "..", and symlinks that escape.
+	// This runs before argv construction so a suspect path never launches ansible.
+	playbook, err := confineToWorkdir(workdir, job.Playbook)
+	if err != nil {
+		r.publish("ERROR: invalid playbook: " + err.Error())
+		return true
+	}
+	inventory := job.Inventory
+	if inventory != "" {
+		inventory, err = confineToWorkdir(workdir, job.Inventory)
+		if err != nil {
+			r.publish("ERROR: invalid inventory: " + err.Error())
+			return true
+		}
+	}
+
+	// Options first, then "--", then the positional playbook last: everything
+	// after "--" is treated as a positional argument, so a playbook path that
+	// starts with '-' can never be parsed as an option.
+	var args []string
+	if inventory != "" {
+		args = append(args, "-i", inventory)
 	}
 	if job.Limit != "" {
 		args = append(args, "--limit", job.Limit)
@@ -353,6 +418,9 @@ func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (faile
 			r.publish("WARNING: could not create extra-vars file: " + err.Error())
 		}
 	}
+
+	// End of options: the confined playbook path is the sole positional argument.
+	args = append(args, "--", playbook)
 
 	cmd := exec.CommandContext(ctx, ansible.Bin("ansible-playbook"), args...)
 	cmd.Dir = workdir

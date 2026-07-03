@@ -290,13 +290,8 @@ func newImpactIndex(res *model.ScanResult) *impactIndex {
 	var taskRoles func(t model.Task) []string
 	taskRoles = func(t model.Task) []string {
 		var out []string
-		m := strings.TrimPrefix(t.Module, "ansible.builtin.")
-		if m == "include_role" || m == "import_role" {
-			for i := range res.Roles {
-				if strings.Contains(t.Args, res.Roles[i].Name) {
-					out = append(out, res.Roles[i].Name)
-				}
-			}
+		if t.RoleRef != "" {
+			out = append(out, t.RoleRef)
 		}
 		for _, sub := range [][]model.Task{t.Block, t.Rescue, t.Always} {
 			for _, st := range sub {

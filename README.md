@@ -147,6 +147,12 @@ A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
 - **Blast radius** — map a git diff to impacted roles (transitive
   dependents) → playbooks → hosts → handlers, as a ripple visualization
   and as `pine impact` (exit code 3 when hosts are affected — gate your CI).
+- **Policy-as-code** — declarative YAML governance rules (the OPA/Sentinel of
+  Ansible) evaluated against the estimated plan: forbid `state: latest` in
+  prod, require an `approved` tag on privilege-escalating plays, cap the blast
+  radius to N% of hosts, and more. `pine policy check PATH --policies FILE`
+  exits non-zero on any `error`-severity violation (`warning`s are reported but
+  don't gate) — a CI governance gate. Format: [docs/policy.md](docs/policy.md).
 
 ## Quickstart
 
@@ -209,6 +215,7 @@ go build -o pine ./cmd/pine
                -i inventories/production --all-hosts --redact --json   # effective playbook vars (include_vars expanded)
 ./pine hygiene examples/demo-infra                  # dead-code + smells + secrets report (exit 4 on plaintext creds)
 ./pine impact  examples/demo-infra --base HEAD~1 --head HEAD
+./pine policy check examples/demo-infra --policies examples/demo-infra/policies.yml -i production   # governance gate (exit 1 on an error violation)
 ./pine worktrees examples/demo-infra                # list the repo's git worktrees
 ```
 
@@ -289,7 +296,10 @@ curl -H "Authorization: Bearer $PINE_TOKEN" localhost:8743/api/stats
 | `GET /api/stats` | dashboard counters + recent jobs |
 | `GET/POST /api/repos`, `PATCH/DELETE /api/repos/{id}` | manage repositories (`scan_paths` included) |
 | `POST /api/repos/{id}/sync` | pull + re-scan |
-| `GET /api/repos/{id}/scan` | full scan result |
+| `GET /api/repos/{id}/scan` | full scan result (playbooks, roles, inventories with complete task trees) |
+| `GET /api/repos/{id}/scan?slim=1` | slim scan: metadata + counters only, no task trees — significantly smaller on large repos; backward-compatible (the unparameterised URL is unchanged) |
+| `GET /api/repos/{id}/playbook?path=PATH` | full detail of one playbook (plays + task trees) — fetched on demand when a playbook is opened |
+| `GET /api/repos/{id}/role?name=NAME` | full detail of one role (tasks, handlers, defaults, vars) — fetched on demand when a role is opened |
 | `GET /api/repos/{id}/topology?inventory=…` | inventory graph |
 | `POST /api/plans` | compute a plan (vars, host_vars, fact_profile, mode, vault_password) |
 | `GET /api/fact-profiles` | built-in fact presets |

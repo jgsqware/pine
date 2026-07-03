@@ -1,0 +1,20 @@
+# A relaxed baseline the demo repo passes cleanly (CI green / exit 0).
+# Contrast with policies.yml, which gates on unapproved privilege escalation.
+policies:
+  - id: no-state-latest-in-prod
+    description: "state: latest is forbidden on production hosts (pin versions)"
+    severity: error
+    match:
+      inventory: "*production*"
+      module: [apt, yum, dnf, package, pip, npm]
+    assert:
+      forbid_args:
+        state: latest
+
+  - id: blast-radius-advisory
+    description: "advisory: flag runs touching more than 90% of hosts"
+    severity: warning
+    match:
+      inventory: "*production*"
+    assert:
+      max_blast_radius_pct: 90
