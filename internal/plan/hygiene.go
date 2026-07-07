@@ -37,6 +37,13 @@ type SecretFinding struct {
 	Severity string `json:"severity"` // high | low
 	Reason   string `json:"reason"`
 	Hint     string `json:"hint"`
+
+	// Git provenance — populated by SecretTimeline when the repo is a git
+	// repository. Zero values mean "git not available" or "file not tracked".
+	IntroducedSHA  string `json:"introduced_sha,omitempty"`  // short SHA of the introducing commit
+	IntroducedDate string `json:"introduced_date,omitempty"` // RFC 3339
+	IntroducedBy   string `json:"introduced_by,omitempty"`   // author name
+	AgeSinceCommit string `json:"age_since_commit,omitempty"` // human "N commits ago"
 }
 
 // Smell is a task-level anti-pattern, grouped by rule across the whole repo so
@@ -49,6 +56,18 @@ type Smell struct {
 	Count    int    `json:"count"`    // total occurrences of this rule
 }
 
+// PurgedSecret is a secret that was committed to git history but has since been
+// removed from HEAD — it is still a leak because the value lives in the log.
+type PurgedSecret struct {
+	Key            string `json:"key"`
+	IntroducedSHA  string `json:"introduced_sha"`  // short SHA where it first appeared
+	IntroducedDate string `json:"introduced_date"` // RFC 3339
+	IntroducedBy   string `json:"introduced_by"`   // author name
+	RemovedSHA     string `json:"removed_sha"`     // short SHA where it was deleted/overwritten
+	RemovedDate    string `json:"removed_date"`    // RFC 3339
+	File           string `json:"file"`            // path as it appeared in history
+}
+
 // HygieneResult is the dead-code + secrets report of one repository.
 type HygieneResult struct {
 	Score              int                 `json:"score"`
@@ -57,6 +76,7 @@ type HygieneResult struct {
 	UnusedVars         []UnusedVar         `json:"unused_vars"`
 	UntargetedHosts    []UntargetedHost    `json:"untargeted_hosts"`
 	SecretFindings     []SecretFinding     `json:"secret_findings"`
+	PurgedSecrets      []PurgedSecret      `json:"purged_secrets"`
 	Smells             []Smell             `json:"smells"`
 	VaultFiles         int                 `json:"vault_files"`
 }
@@ -88,6 +108,7 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 		UnusedVars:         []UnusedVar{},
 		UntargetedHosts:    []UntargetedHost{},
 		SecretFindings:     []SecretFinding{},
+		PurgedSecrets:      []PurgedSecret{},
 		Smells:             []Smell{},
 	}
 
@@ -309,6 +330,9 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 	// --- task smells ---
 	out.Smells = detectSmells(res)
 
+	// --- git secret timeline (best-effort: no-op when root is not a git repo) ---
+	enrichSecretTimeline(out, root)
+
 	// --- score ---
 	score := 100
 	score -= 5 * len(out.UnusedRoles)
@@ -322,6 +346,8 @@ func Hygiene(res *model.ScanResult, root string) *HygieneResult {
 			score -= 2
 		}
 	}
+	// purged secrets still leak via git history — penalise similarly to live ones
+	score -= 5 * len(out.PurgedSecrets)
 	for _, sm := range out.Smells {
 		// grouped: penalize the rule once (bounded) plus a little per occurrence
 		pen := 1

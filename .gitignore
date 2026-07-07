@@ -1,4 +1,5 @@
 /pine
+/pine-lsp
 /dist/
 *.log
 .pine/

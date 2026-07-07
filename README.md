@@ -250,6 +250,65 @@ failure. To keep it running at boot before you log in, enable linger once:
 > `pine tui` would open a *second* engine on the same files — it now warns when
 > it detects a running daemon and points you to `attach`.
 
+## Editor integration (LSP)
+
+Pine ships a **Language Server** (`pine-lsp`) that brings the variable engine —
+precedence lineage, defined-nowhere and dead-variable/role analysis — straight
+into any LSP-capable editor. No Ansible install, no external LSP framework: it
+speaks JSON-RPC 2.0 over stdio (`Content-Length` framing) using only the Go
+standard library.
+
+```bash
+go build -o pine-lsp ./cmd/pine-lsp      # build the server binary
+```
+
+What it does, against the workspace root (`rootUri`) scanned as an Ansible repo:
+
+- **Hover** a `{{ var }}`, a `when:`/`vars:` key, or any variable → the full
+  **precedence chain** rendered in Markdown: every layer that defines it
+  (role defaults → group_vars → host_vars → play vars → vars_files), which value
+  wins, and a best-effort `file:line` per layer. In a playbook the chain is
+  resolved as a representative targeted host; elsewhere it is shown
+  repository-wide. Example on `examples/demo-infra`, hovering
+  `backup_retention_days`:
+
+  > ### `backup_retention_days`
+  > **Effective value:** `14`
+  > _Scope: repository-wide (no single target host)_
+  > **Defined in** (low → high precedence):
+  > 1. **role_default** `backup` = `7`
+  > 2. **group_vars** `all (production)` = `14` ✅ **wins**
+
+- **Diagnostics** on open/save (`textDocument/publishDiagnostics`):
+  - *warning* — a variable referenced in `{{ … }}` but **defined in no scanned
+    scope** ("defined nowhere"); runtime vars (`register`, `set_fact`, facts,
+    magic vars) are excluded so the warning stays honest.
+  - *hint* — a variable **defined in this file but never used** anywhere Pine
+    scanned (dead variable), positioned on its definition line.
+  - *info* — a file that belongs to a **dead role** (never referenced by any
+    playbook, dependency or `include_role`).
+
+Re-scans use the incremental parse cache: on `didSave` only changed files are
+re-parsed. Positions come from a lightweight textual parse of each line (regex
+for `{{ … }}` and YAML keys), so character offsets are exact for ASCII/Latin
+content; the dead-role note lands on line 0 since a role has no single line.
+
+**VS Code** — install a generic LSP client extension (e.g. *"Generic LSP
+Client"*) and point it at the binary for YAML files, for example:
+
+```jsonc
+// settings.json
+"glspc.server.path": "/absolute/path/to/pine-lsp",
+"glspc.server.languageId": "yaml",
+"glspc.server.workspaceMode": true
+```
+
+Open a repo such as `examples/demo-infra`, then hover a variable in
+`webservers.yml` or `group_vars/all.yml` to see its lineage, and watch the
+Problems panel populate with defined-nowhere warnings and dead-variable hints.
+Any editor with a generic LSP client works the same way (Neovim `vim.lsp`,
+Helix `languages.toml`, …) by launching `pine-lsp` over stdio.
+
 ## Battle-tested on real repositories
 
 Pine's scanner and engines are validated against three of the most popular
@@ -344,6 +403,7 @@ A static, dependency-free product site lives in [`website/`](website/)
 
 ```
 cmd/pine/             CLI entrypoint (serve | tui | attach | service | scan | plan | impact)
+cmd/pine-lsp/         Language Server: lineage on hover + diagnostics (stdio JSON-RPC)
 internal/scanner/     Ansible parser: playbooks, roles, inventories,
                       constructed plugin, tri-state Jinja evaluator
 internal/plan/        plan engine, lineage, hygiene, impact, time-lapse,

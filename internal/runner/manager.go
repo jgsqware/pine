@@ -15,26 +15,46 @@ import (
 	"github.com/jgsqware/pine/internal/store"
 )
 
+// inFlightScan is an in-progress scan entry.  The first goroutine that reaches
+// a cache miss starts the actual scanner and records itself here; subsequent
+// goroutines for the same repoID wait on done.  When the scan finishes (or
+// fails) the leader closes done, making all waiters unblock simultaneously.
+type inFlightScan struct {
+	done chan struct{}
+	res  *model.ScanResult
+	err  error
+}
+
 // Manager owns repo syncing, scan results and running jobs.
 type Manager struct {
 	Store *store.Store
 
-	mu     sync.Mutex
-	scans  map[string]*model.ScanResult  // repoID -> cached scan result
-	caches map[string]*scanner.ScanCache // repoID -> incremental parse cache
-	runs   map[string]*run               // jobID -> live run
-	sem    chan struct{}                 // bounds concurrent job execution
+	mu       sync.Mutex
+	scans    map[string]*model.ScanResult  // repoID -> cached scan result
+	caches   map[string]*scanner.ScanCache // repoID -> incremental parse cache
+	inflight map[string]*inFlightScan      // repoID -> in-progress scan (nil when idle)
+	runs     map[string]*run               // jobID -> live run
+	sem      chan struct{}                 // bounds concurrent job execution
 }
 
 // New creates a Manager on top of the store.
+//
+// Boot warm-up: valid disk snapshots are pre-loaded into the in-memory scan
+// cache so the very first /scan call after restart is served from memory
+// without blocking.  A background goroutine per repo then triggers a real scan
+// (through the singleflight path) to refresh the cache to the latest on-disk
+// state.  See bootWarmup in persist.go for the full contract.
 func New(st *store.Store) *Manager {
-	return &Manager{
-		Store:  st,
-		scans:  map[string]*model.ScanResult{},
-		caches: map[string]*scanner.ScanCache{},
-		runs:   map[string]*run{},
-		sem:    make(chan struct{}, maxConcurrentJobs()),
+	m := &Manager{
+		Store:    st,
+		scans:    map[string]*model.ScanResult{},
+		caches:   map[string]*scanner.ScanCache{},
+		inflight: map[string]*inFlightScan{},
+		runs:     map[string]*run{},
+		sem:      make(chan struct{}, maxConcurrentJobs()),
 	}
+	m.bootWarmup(st.ListRepos())
+	return m
 }
 
 // scanCacheFor returns the per-repo incremental parse cache, creating it on
@@ -169,8 +189,11 @@ func runGit(dir string, args ...string) error {
 }
 
 // rescan refreshes the cached scan and the repo summary counters.
+// On success the result is persisted to disk (atomic temp+rename) so that the
+// next boot can serve it instantly while the background warm-up refresh runs.
 func (m *Manager) rescan(repo *model.Repo) error {
-	res, err := scanner.ScanWithCache(m.Store.RepoWorkdir(repo), m.scanCacheFor(repo.ID), repo.ScanPaths...)
+	workdir := m.Store.RepoWorkdir(repo)
+	res, err := scanner.ScanWithCache(workdir, m.scanCacheFor(repo.ID), repo.ScanPaths...)
 	if err != nil {
 		return err
 	}
@@ -178,36 +201,136 @@ func (m *Manager) rescan(repo *model.Repo) error {
 	m.scans[repo.ID] = res
 	m.mu.Unlock()
 	repo.Summary = scanner.Summarize(res)
+	// Persist snapshot for warm-up on next boot.  Compute marker after the
+	// scan so it reflects the state the scan actually observed (HEAD may have
+	// been updated by fetch→reset --hard just before us).
+	m.saveScanSnapshot(repo.ID, repoMarker(workdir), res)
 	return nil
 }
 
 // Scan returns the (possibly cached) scan result for a repo.
+//
+// The returned *ScanResult is a shallow structural copy of the cached value:
+// the three top-level slices (Playbooks, Roles, Inventories) are
+// re-allocated so that callers can safely append to them without corrupting
+// the cache. The slice elements themselves (Playbook, Role, Inventory structs)
+// are shared with the cache — callers must not mutate their fields or
+// sub-maps. All current callers are read-only; this contract is documented
+// here as the canonical reference for the immutable-cache chain (Audit §2 A6).
+//
+// Concurrent cache-miss deduplication (Audit §5-P3):
+// When N goroutines call Scan for the same repo and no cached result exists,
+// only the first goroutine performs the actual scan; the rest wait on a shared
+// channel and share the single result (or error).  Every caller gets its own
+// shallow copy of the result regardless of whether it was the leader or a
+// waiter.  This eliminates the thundering-herd on HTTP fan-out.
+//
+// Forget semantics during an in-flight scan:
+// If Forget is called while a scan is in progress, the in-flight entry is
+// removed from the map immediately.  The scan that is already running continues
+// to completion; its result is stored in the cache and broadcast to all current
+// waiters (they already hold a reference to the entry).  A subsequent Scan call
+// that arrives after Forget will start a new in-flight scan independently.
+// This guarantees that no waiter is stranded and that the cache is eventually
+// consistent after a Forget+Scan sequence.
 func (m *Manager) Scan(id string) (*model.ScanResult, error) {
+	// Fast path: cache hit — no scan needed.
 	m.mu.Lock()
 	if res, ok := m.scans[id]; ok {
 		m.mu.Unlock()
-		return res, nil
+		return shallowCopyScanResult(res), nil
 	}
+
+	// Slow path: cache miss.
+	// Check for an in-flight scan started by another goroutine for the same id.
+	if entry, ok := m.inflight[id]; ok {
+		// Another goroutine is already scanning; wait for it.
+		m.mu.Unlock()
+		<-entry.done
+		if entry.err != nil {
+			return nil, entry.err
+		}
+		return shallowCopyScanResult(entry.res), nil
+	}
+
+	// We are the first goroutine to miss for this id.  Register an in-flight
+	// entry so that concurrent callers join our result instead of racing us.
+	entry := &inFlightScan{done: make(chan struct{})}
+	m.inflight[id] = entry
 	m.mu.Unlock()
 
-	repo, err := m.Store.GetRepo(id)
-	if err != nil {
-		return nil, err
+	// Perform the scan outside of the mutex.
+	// Use a named return + defer so that panics also close done and clean up.
+	func() {
+		defer func() {
+			// Always close done (unblocks all waiters) and remove the in-flight
+			// entry.  We only remove our own entry; if Forget was called while we
+			// were scanning, the slot may already be absent or replaced — that is
+			// intentional (see doc comment above).
+			m.mu.Lock()
+			if m.inflight[id] == entry {
+				delete(m.inflight, id)
+			}
+			if entry.res != nil {
+				m.scans[id] = entry.res
+			}
+			m.mu.Unlock()
+			close(entry.done)
+		}()
+
+		repo, err := m.Store.GetRepo(id)
+		if err != nil {
+			entry.err = err
+			return
+		}
+		workdir := m.Store.RepoWorkdir(&repo)
+		res, err := scanner.ScanWithCache(workdir, m.scanCacheFor(id), repo.ScanPaths...)
+		if err != nil {
+			entry.err = err
+			return
+		}
+		entry.res = res
+		// Persist snapshot for boot warm-up on next restart.
+		m.saveScanSnapshot(id, repoMarker(workdir), res)
+	}()
+
+	if entry.err != nil {
+		return nil, entry.err
 	}
-	res, err := scanner.ScanWithCache(m.Store.RepoWorkdir(&repo), m.scanCacheFor(id), repo.ScanPaths...)
-	if err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	m.scans[id] = res
-	m.mu.Unlock()
-	return res, nil
+	return shallowCopyScanResult(entry.res), nil
 }
 
-// Forget drops cached state for a deleted repo.
+// shallowCopyScanResult returns a new *ScanResult whose top-level slices are
+// freshly allocated copies of src's slices. The slice elements (Playbook,
+// Role, Inventory) are shared by value — callers must treat them as read-only.
+// This protects the cache from append-mutations on the returned slices while
+// avoiding a full deep copy of potentially large task trees.
+func shallowCopyScanResult(src *model.ScanResult) *model.ScanResult {
+	out := &model.ScanResult{
+		Playbooks:   append([]model.Playbook(nil), src.Playbooks...),
+		Roles:       append([]model.Role(nil), src.Roles...),
+		Inventories: append([]model.Inventory(nil), src.Inventories...),
+	}
+	return out
+}
+
+// Forget drops cached state for a deleted or re-synced repo.
+//
+// If a scan is currently in flight for id, the in-flight entry is removed from
+// the map so that new callers arriving after Forget will start a fresh scan.
+// The in-flight scan itself continues running; its result will be broadcast to
+// any goroutines that are already waiting on the entry's channel, and will be
+// stored in the scan cache once it completes (the deferred cleanup inside Scan
+// only removes the entry if it is still ours, so a replaced entry is left
+// alone).  See the Scan doc comment for the full Forget-during-scan semantics.
+//
+// The persisted disk snapshot is also removed so a subsequent boot does not
+// serve stale content for this repo.
 func (m *Manager) Forget(id string) {
 	m.mu.Lock()
 	delete(m.scans, id)
 	delete(m.caches, id)
+	delete(m.inflight, id)
 	m.mu.Unlock()
+	m.deleteScanSnapshot(id)
 }

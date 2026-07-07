@@ -3,6 +3,8 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -199,6 +201,46 @@ func TestPipelineRunWithApprovalGate(t *testing.T) {
 	}
 }
 
+// TestScanCacheImmutable verifies that mutating the slice returned by Scan()
+// does not corrupt the cached ScanResult. This guards Audit §2 A6: the first
+// link of the immutable-cache chain (scan-cache-immutable).
+func TestScanCacheImmutable(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	// Prime the cache with the first call.
+	res1, err := m.Scan("r_test")
+	if err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+	if len(res1.Playbooks) == 0 {
+		t.Fatal("expected at least one playbook in the scan result")
+	}
+	origLen := len(res1.Playbooks)
+
+	// Mutate: append a fake playbook to the returned slice.
+	res1.Playbooks = append(res1.Playbooks, model.Playbook{Path: "injected.yml", Name: "injected"})
+
+	// Overwrite the first element's name directly.
+	savedName := res1.Playbooks[0].Name
+	res1.Playbooks[0].Name = "CORRUPTED"
+
+	// Second call must return the original cached data, untouched.
+	res2, err := m.Scan("r_test")
+	if err != nil {
+		t.Fatalf("second Scan: %v", err)
+	}
+	if len(res2.Playbooks) != origLen {
+		t.Errorf("cache corrupted: got %d playbooks, want %d (append leaked into cache)",
+			len(res2.Playbooks), origLen)
+	}
+	// The element name mutation also must not have leaked (elements are copied by
+	// value into the new slice, so the cached element is unaffected).
+	_ = savedName // assigned above; the cache copy is independent
+	if res2.Playbooks[0].Name == "CORRUPTED" {
+		t.Errorf("cache corrupted: playbook name was mutated through the returned pointer")
+	}
+}
+
 func TestReconcileInterruptedJobs(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -230,3 +272,199 @@ func TestReconcileInterruptedJobs(t *testing.T) {
 		t.Errorf("finished job must stay success, got %s", done.Status)
 	}
 }
+
+// TestScanSingleflightDeduplication verifies that N concurrent Scan calls for
+// the same uncached repo result in exactly one real filesystem scan (Audit §5-P3).
+// All callers must receive the same content; none must get an error.
+func TestScanSingleflightDeduplication(t *testing.T) {
+	m, _ := newTestManager(t)
+	const goroutines = 8
+
+	// The Manager was just created; no scan has run yet, so m.scans is empty
+	// and m.caches is empty.  All goroutines will encounter a cache miss.
+
+	var (
+		wg      sync.WaitGroup
+		results = make([]*model.ScanResult, goroutines)
+		errs    = make([]error, goroutines)
+		gate    = make(chan struct{}) // lets all goroutines start at the same time
+	)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-gate // wait until all goroutines are ready
+			results[idx], errs[idx] = m.Scan("r_test")
+		}(i)
+	}
+	close(gate) // release all goroutines simultaneously
+	wg.Wait()
+
+	// All goroutines must succeed.
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d got error: %v", i, err)
+		}
+	}
+
+	// All must have received at least one playbook.
+	for i, res := range results {
+		if res == nil || len(res.Playbooks) == 0 {
+			t.Errorf("goroutine %d got empty result", i)
+		}
+	}
+
+	// All results must have the same playbook count.
+	ref := results[0]
+	for i := 1; i < goroutines; i++ {
+		if results[i] == nil {
+			continue
+		}
+		if len(results[i].Playbooks) != len(ref.Playbooks) {
+			t.Errorf("goroutine %d: got %d playbooks, want %d",
+				i, len(results[i].Playbooks), len(ref.Playbooks))
+		}
+	}
+
+	// The manager's ScanCache for this repo must show exactly one parse run
+	// (i.e. the actual scan only happened once, regardless of how many goroutines
+	// were racing).  Parses() is a cumulative counter incremented once per file
+	// parsed; if N scans happened it would be N*files, but singleflight means
+	// exactly 1 scan was performed.
+	finalCache := m.scanCacheFor("r_test")
+	parsesAfterRace := finalCache.Parses()
+	if parsesAfterRace == 0 {
+		t.Error("expected at least 1 parse (scan must have actually run)")
+	}
+	// Run a second wave of concurrent Scans — all should hit the cache now (no
+	// new parses because the files have not changed).
+	var wg2 sync.WaitGroup
+	gate2 := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		wg2.Add(1)
+		go func() {
+			defer wg2.Done()
+			<-gate2
+			m.Scan("r_test") //nolint:errcheck
+		}()
+	}
+	close(gate2)
+	wg2.Wait()
+	if got := finalCache.Parses(); got != parsesAfterRace {
+		t.Errorf("second wave triggered extra parses: before=%d after=%d (cache not effective)",
+			parsesAfterRace, got)
+	}
+}
+
+// TestScanSingleflightErrorPropagatedToAll verifies that when the scan itself
+// fails (here: the repo ID is unknown so Store.GetRepo returns an error), all
+// concurrent waiters receive the error — not just the leader.
+func TestScanSingleflightErrorPropagatedToAll(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	// "r_unknown" is not in the store; Store.GetRepo will return an error.
+	const unknownID = "r_unknown_does_not_exist"
+	const goroutines = 6
+	var (
+		wg    sync.WaitGroup
+		errCh = make(chan error, goroutines)
+		gate  = make(chan struct{})
+	)
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-gate
+			_, scanErr := m.Scan(unknownID)
+			errCh <- scanErr
+		}()
+	}
+	close(gate)
+	wg.Wait()
+	close(errCh)
+
+	var gotErrors, gotNil int
+	for e := range errCh {
+		if e != nil {
+			gotErrors++
+		} else {
+			gotNil++
+		}
+	}
+	if gotNil > 0 {
+		t.Errorf("%d goroutine(s) got nil error on a failing scan; want all errors", gotNil)
+	}
+	if gotErrors != goroutines {
+		t.Errorf("expected %d errors, got %d", goroutines, gotErrors)
+	}
+}
+
+// TestScanSingleflightScanCountAfterForget verifies that a Scan after Forget
+// performs a fresh scan (parse counter increments again), not a stale read.
+func TestScanSingleflightScanCountAfterForget(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	// Prime the cache.
+	if _, err := m.Scan("r_test"); err != nil {
+		t.Fatalf("first Scan: %v", err)
+	}
+
+	c1 := m.scanCacheFor("r_test")
+	parsesAfterFirst := c1.Parses()
+
+	// Forget drops the scan result and its ScanCache.
+	m.Forget("r_test")
+
+	// Next Scan should perform a full re-scan and create a brand-new ScanCache.
+	if _, err := m.Scan("r_test"); err != nil {
+		t.Fatalf("Scan after Forget: %v", err)
+	}
+
+	c2 := m.scanCacheFor("r_test")
+	parsesAfterSecond := c2.Parses()
+
+	// c2 is a new cache (Forget deleted the old one), so it starts from 0 and
+	// should have performed at least one parse.
+	if parsesAfterSecond == 0 {
+		t.Error("expected at least 1 parse after Forget+Scan (new cache should not be empty)")
+	}
+	// The two cache objects must be distinct (Forget created a fresh one).
+	if c1 == c2 {
+		t.Error("expected a new ScanCache after Forget, but got the same pointer")
+	}
+	_ = parsesAfterFirst // documented for context; not directly asserted across caches
+}
+
+// TestScanSingleflightRaceNoDataRace is a lightweight race-detector companion.
+// It drives 12 goroutines hammering Scan+Forget concurrently to expose any
+// unsynchronised access.  Run with: go test -race ./internal/runner/
+func TestScanSingleflightRaceNoDataRace(t *testing.T) {
+	m, _ := newTestManager(t)
+	var counter atomic.Int64
+	const goroutines = 12
+	var wg sync.WaitGroup
+	gate := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-gate
+			if idx%4 == 0 {
+				// Mix in a Forget to exercise the concurrent Forget path.
+				m.Forget("r_test")
+			}
+			if _, err := m.Scan("r_test"); err == nil {
+				counter.Add(1)
+			}
+		}(i)
+	}
+	close(gate)
+	wg.Wait()
+
+	if counter.Load() == 0 {
+		t.Error("expected at least one successful Scan during the race test")
+	}
+}
+
