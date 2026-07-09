@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/jgsqware/pine/internal/ansible"
 )
 
 // vaultMask replaces a vault value that could not be decrypted, so the raw
@@ -28,8 +30,8 @@ func newVaultDecryptor(password string) (*vaultDecryptor, func(), error) {
 	if strings.TrimSpace(password) == "" {
 		return nil, noop, nil
 	}
-	if _, err := exec.LookPath("ansible-vault"); err != nil {
-		return nil, noop, err
+	if !ansible.Available("ansible-vault") {
+		return nil, noop, exec.ErrNotFound
 	}
 	f, err := os.CreateTemp("", "pine-vault-pw-*")
 	if err != nil {
@@ -66,8 +68,10 @@ func (d *vaultDecryptor) decrypt(blob string) (string, bool) {
 		return "", false
 	}
 	tmp.Close()
-	out, err := exec.Command("ansible-vault", "decrypt", tmp.Name(),
-		"--output", "-", "--vault-password-file", d.pwFile).Output()
+	vc := exec.Command(ansible.Bin("ansible-vault"), "decrypt", tmp.Name(),
+		"--output", "-", "--vault-password-file", d.pwFile)
+	vc.Env = ansible.Env()
+	out, err := vc.Output()
 	if err != nil {
 		return "", false
 	}

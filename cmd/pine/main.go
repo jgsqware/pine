@@ -62,6 +62,8 @@ Environment:
   PINE_DATA   data directory (default ~/.pine, or <PATH>/.pine in local mode)
   PINE_DEMO   set to 1 to auto-register the bundled demo repository
   PINE_ADDR   daemon address for 'pine attach' / detection (default :8743)
+  PINE_TOOL_PATH  extra dirs to find ansible in (colon-separated); Pine already
+              looks in mise/asdf shims and ~/.local/bin for non-login PATHs
 `, version)
 }
 

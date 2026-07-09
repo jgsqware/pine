@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/jgsqware/pine/internal/ansible"
 	"github.com/jgsqware/pine/internal/model"
 )
 
@@ -35,8 +36,8 @@ type ansibleJSON struct {
 // ComputeExact runs `ansible-playbook --check` with the JSON callback and
 // renders the result in the plan format, labeled mode: "exact".
 func ComputeExact(root string, repo model.Repo, req Request) (*Result, error) {
-	bin, err := exec.LookPath("ansible-playbook")
-	if err != nil {
+	bin, ok := ansible.LookPath("ansible-playbook")
+	if !ok {
 		return nil, fmt.Errorf("ansible-playbook not found on this host - exact mode needs ansible installed (use estimated mode instead)")
 	}
 	args := []string{req.Playbook, "--check"}
@@ -63,7 +64,7 @@ func ComputeExact(root string, repo model.Repo, req Request) (*Result, error) {
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = root
-	cmd.Env = append(cmd.Environ(),
+	cmd.Env = append(ansible.Env(),
 		"ANSIBLE_STDOUT_CALLBACK=json", "ANSIBLE_NOCOLOR=1", "ANSIBLE_FORCE_COLOR=0")
 	switch repo.HostKeyChecking {
 	case "disabled":

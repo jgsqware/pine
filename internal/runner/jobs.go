@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jgsqware/pine/internal/ansible"
 	"github.com/jgsqware/pine/internal/model"
 	"github.com/jgsqware/pine/internal/store"
 )
@@ -132,7 +133,7 @@ func (m *Manager) StartJob(req model.Job, opts ...RunOpts) (model.Job, error) {
 		Status:    model.JobPending,
 		Created:   time.Now().UTC().Format(time.RFC3339),
 	}
-	if _, err := exec.LookPath("ansible-playbook"); err != nil {
+	if !ansible.Available("ansible-playbook") {
 		job.Simulated = true
 	}
 	if err := m.Store.SaveJob(job); err != nil {
@@ -336,9 +337,9 @@ func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (faile
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "ansible-playbook", args...)
+	cmd := exec.CommandContext(ctx, ansible.Bin("ansible-playbook"), args...)
 	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(), "ANSIBLE_FORCE_COLOR=0", "ANSIBLE_NOCOLOR=1")
+	cmd.Env = append(ansible.Env(), "ANSIBLE_FORCE_COLOR=0", "ANSIBLE_NOCOLOR=1")
 	cmd.Env = append(cmd.Env, hostKeyCheckingEnv(repo.HostKeyChecking)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

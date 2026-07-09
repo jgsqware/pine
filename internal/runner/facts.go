@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jgsqware/pine/internal/ansible"
 	"github.com/jgsqware/pine/internal/model"
 	"github.com/jgsqware/pine/internal/plan"
 )
@@ -92,9 +93,9 @@ func (m *Manager) gatherReal(ctx context.Context, job *model.Job, r *run, inv *m
 	if job.Inventory != "" {
 		args = append(args, "-i", job.Inventory)
 	}
-	cmd := exec.CommandContext(ctx, "ansible", args...)
+	cmd := exec.CommandContext(ctx, ansible.Bin("ansible"), args...)
 	cmd.Dir = m.Store.RepoWorkdir(&repo)
-	cmd.Env = append(os.Environ(), "ANSIBLE_NOCOLOR=1")
+	cmd.Env = append(ansible.Env(), "ANSIBLE_NOCOLOR=1")
 	out, _ := cmd.CombinedOutput()
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		r.publish(line)

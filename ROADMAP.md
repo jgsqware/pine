@@ -66,6 +66,11 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       for the daemon (auto-restart, optional linger) straight from the CLI
 - [x] ✅ TUI auto-refresh — re-syncs connected repos on load and periodically,
       announcing what changed in the status bar
+- [x] ✅ Version-manager-aware ansible — Pine finds `ansible`/`ansible-playbook`/
+      `ansible-vault` installed via mise/asdf/pipx even under a minimal
+      (systemd/cron) PATH, by augmenting PATH with the common shim/bin dirs
+      (mise & asdf shims, `~/.local/bin`, …) and running the tools with it;
+      `PINE_TOOL_PATH` adds extra dirs. No more false "simulation mode".
 - [x] ✅ Service status — hosts × services heatmap from the `services:` var,
       real running/stopped state via ansible `service_facts` (tri-state, honest
       `unknown`/`estimated`), plus status pills on inventory hosts
