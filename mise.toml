@@ -1,5 +1,11 @@
 [tools]
 go = "1.24"
+# ansible-playbook / -vault: real runs, exact plans, fact & service_facts
+# gathering, and vault decryption. Without it Pine falls back to simulation.
+ansible = "latest"
+# node is only used for the `node --check web/app.js` lint (the web UI is
+# embedded static assets — no build step).
+node = "lts"
 glow = "latest"
 lazydocker = "latest"
 

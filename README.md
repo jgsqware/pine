@@ -145,6 +145,20 @@ A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
 
 ## Quickstart
 
+### Prerequisites
+
+- **Go 1.24+** to build from source (not needed for the Docker image).
+- **git** — Pine clones/pulls connected repos.
+- **Ansible** (`ansible-playbook`, and `ansible-vault` for encrypted vars) to
+  *run* playbooks, gather facts and compute exact plans. Without it Pine still
+  scans, visualizes and plans — it just runs in **simulation mode**.
+- **Docker + Docker Compose** only for the container workflow below.
+
+Using [mise](https://mise.jdx.dev)? The bundled `mise.toml` pins Go, Ansible and
+Node, so `mise install` gives you a self-contained toolchain (Docker and git
+stay as system prerequisites). Pine also finds an Ansible installed via
+mise/asdf/pipx even under a minimal service `PATH`.
+
 ### Local (a binary + your repo)
 
 Install the binary, then point it at any Ansible repo:
