@@ -137,24 +137,42 @@ func (a *app) viewFlow(h int) string {
 		sFaint.Render(fmt.Sprintf("   %d plays · %d tasks", len(pb.Plays), tasks))
 
 	ch := h - 2 // title line + blank line
+
+	// Master/detail by default: the block chain on the left, a live preview of
+	// the highlighted step on the right. Collapses to a full-width chain when the
+	// terminal is narrow or the preview is toggled off (h / ←).
+	chainW := a.width * 52 / 100
+	if chainW < 30 {
+		chainW = 30
+	}
+	detW := a.width - chainW - 1
 	var content string
-	if a.flowOpen {
-		chainW := a.width * 48 / 100
-		if chainW < 32 {
-			chainW = 32
-		}
-		detW := a.width - chainW - 1
-		if detW < 26 {
-			detW = 26
-			chainW = a.width - detW - 1
-		}
+	if a.flowOpen && detW >= 30 {
 		left := a.flowChain(chainW, ch)
-		right := a.box("step detail", a.flowDetailBody(detW-4), detW, ch, true)
+		right := a.box(a.flowDetailTitle(), a.flowDetailBody(detW-4), detW, ch, false)
 		content = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 	} else {
 		content = a.flowChain(a.width, ch)
 	}
 	return title + "\n\n" + content
+}
+
+// flowDetailTitle labels the right-hand preview box by the selected node kind.
+func (a *app) flowDetailTitle() string {
+	nodes := a.flowNodes()
+	if a.flowCur >= 0 && a.flowCur < len(nodes) {
+		switch nodes[a.flowCur].kind {
+		case fnPlay:
+			return "play"
+		case fnImport:
+			return "import"
+		case fnRole:
+			return "role"
+		case fnTask:
+			return "task"
+		}
+	}
+	return "detail"
 }
 
 // flowChain renders the block chain into a totalW×h cell, scrolled to keep the
@@ -199,31 +217,38 @@ func (a *app) flowNodeLines(n flowNode, indent, w int, sel bool) []string {
 	case fnSection:
 		return []string{strings.Repeat(" ", indent) + sFaint.Render("── "+n.section+" ──")}
 	case fnPlay:
-		return flowCard("PLAY  "+n.title, playMeta(n.play), indent, w, sel, true)
+		return flowCard("PLAY  "+n.title, playMeta(n.play), indent, w, sel, cCyan, sCyan)
 	case fnImport:
-		return flowCard("import_playbook", sCyan.Render(n.title), indent, w, sel, true)
+		return flowCard("import_playbook", sCyan.Render(n.title), indent, w, sel, cCyan, sCyan)
 	case fnRole:
-		return flowCard("role  "+n.title, sFaint.Render("role"), indent, w, sel, false)
+		return flowCard("role  "+n.title, sFaint.Render("applied as a role"), indent, w, sel, cBorder, sDim)
 	case fnTask:
-		sub := sCyan.Render(shortModule(n.task.Module))
-		if bg := strings.Join(taskBadges(n.task), " "); bg != "" {
-			sub += "  " + sFaint.Render(bg)
-		}
-		return flowCard(taskTitle(n.task), sub, indent, w, sel, false)
+		// Inverted card: the ansible module labels the frame; the box body says
+		// *what it will do* (the task's descriptive name). Truncate the name to
+		// the content width (module titles are short and truncated by flowCard).
+		what := truncTo(taskWhat(n.task), w-4)
+		return flowCard(shortModule(n.task.Module), what, indent, w, sel, cBorder, sCyan)
 	}
 	return nil
 }
 
+// taskWhat is the human "what will be done" line for a task's card body: its
+// descriptive name, or a faint placeholder when the task is unnamed.
+func taskWhat(t *model.Task) string {
+	if t.Name != "" {
+		return t.Name
+	}
+	return "(unnamed)"
+}
+
 // flowCard renders a 3-line rounded block with the title on the top border and
-// a single content line. accent marks plays; sel highlights the current step.
-func flowCard(title, sub string, indent, w int, sel, accent bool) []string {
+// a single content line. baseBorder/baseTitle style an unselected card; the
+// selected step is always promoted to the green accent.
+func flowCard(title, sub string, indent, w int, sel bool, baseBorder lipgloss.TerminalColor, baseTitle lipgloss.Style) []string {
 	if w < 8 {
 		w = 8
 	}
-	bc, ts := cBorder, sDim
-	if accent {
-		bc, ts = cCyan, sCyan
-	}
+	bc, ts := baseBorder, baseTitle
 	marker := "  "
 	if sel {
 		bc, ts, marker = cAccent, sTitle, "▸ "
@@ -266,26 +291,53 @@ func (a *app) flowDetailBody(w int) string {
 
 func taskDetailBody(t *model.Task, w int) string {
 	var b strings.Builder
-	b.WriteString(sTitle.Render(taskTitle(t)) + "\n\n")
-	b.WriteString(kv("module", t.Module))
+
+	// Headline: the module (accent) — the *kind* of action — with its full FQCN
+	// faint alongside; then the descriptive name — *what it will do* — below.
+	short := shortModule(t.Module)
+	b.WriteString(sTitle.Render(short))
+	if t.Module != short {
+		b.WriteString(sFaint.Render("  " + t.Module))
+	}
+	b.WriteString("\n")
+	if t.Name != "" {
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render(truncTo(t.Name, w)) + "\n")
+	} else {
+		b.WriteString(sFaint.Render("(unnamed task)") + "\n")
+	}
+
+	// Badge row: structural markers in cyan, conditional in amber.
+	var badges []string
 	if t.Loop {
-		b.WriteString(kv("loop", "yes"))
-	}
-	if len(t.Tags) > 0 {
-		b.WriteString(kv("tags", strings.Join(t.Tags, ", ")))
-	}
-	if len(t.Notify) > 0 {
-		b.WriteString(kv("notify", sWarn.Render(strings.Join(t.Notify, ", "))))
-	}
-	if t.IncludePath != "" {
-		b.WriteString(kv("include", sCyan.Render(t.IncludePath)))
+		badges = append(badges, sCyan.Render("loop"))
 	}
 	if t.When != "" {
-		b.WriteString("\n" + sCyan.Render("when") + "\n" + indentLines(wrap(t.When, w-2), "  ") + "\n")
+		badges = append(badges, sWarn.Render("conditional"))
+	}
+	if t.IncludePath != "" {
+		badges = append(badges, sCyan.Render("include"))
+	}
+	for _, tg := range t.Tags {
+		badges = append(badges, sCyan.Render("#"+tg))
+	}
+	if len(badges) > 0 {
+		b.WriteString("\n" + strings.Join(badges, sFaint.Render("  ")) + "\n")
+	}
+
+	if len(t.Notify) > 0 {
+		b.WriteString("\n" + sCyan.Render("notifies") + "\n" +
+			quoteBlock(sWarn.Render("→ "+strings.Join(t.Notify, ", "))))
+	}
+	if t.IncludePath != "" {
+		b.WriteString("\n" + sCyan.Render("includes") + "\n" + quoteBlock(sCyan.Render(t.IncludePath)))
+	}
+	if t.When != "" {
+		b.WriteString("\n" + sCyan.Render("when") + "\n" + quoteBlock(wrap(t.When, w-4)))
 	}
 	if t.Args != "" {
-		b.WriteString("\n" + sCyan.Render("args") + "\n" + indentLines(wrap(t.Args, w-2), "  ") + "\n")
+		b.WriteString("\n" + sCyan.Render("args") + "\n" + quoteBlock(wrap(t.Args, w-4)))
 	}
+
 	for _, sec := range []struct {
 		label string
 		tasks []model.Task
@@ -295,10 +347,20 @@ func taskDetailBody(t *model.Task, w int) string {
 		}
 		b.WriteString("\n" + sTitle.Render(fmt.Sprintf("%s (%d)", sec.label, len(sec.tasks))) + "\n")
 		for i := range sec.tasks {
-			b.WriteString("  • " + taskTitle(&sec.tasks[i]) + "\n")
+			b.WriteString(sFaint.Render("  • ") + taskTitle(&sec.tasks[i]) + "\n")
 		}
 	}
 	return b.String()
+}
+
+// quoteBlock renders a value block with a faint left rule, for when/args/notify
+// sections in the detail pane.
+func quoteBlock(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = sFaint.Render("│ ") + lines[i]
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func playDetailBody(p *model.Play, w int) string {
@@ -415,26 +477,6 @@ func shortModule(m string) string {
 	return m
 }
 
-func taskBadges(t *model.Task) []string {
-	var b []string
-	if t.When != "" {
-		b = append(b, "when")
-	}
-	if t.Loop {
-		b = append(b, "loop")
-	}
-	if len(t.Tags) > 0 {
-		b = append(b, "#"+strings.Join(t.Tags, ","))
-	}
-	if len(t.Notify) > 0 {
-		b = append(b, "→"+strings.Join(t.Notify, ","))
-	}
-	if t.IncludePath != "" {
-		b = append(b, "include")
-	}
-	return b
-}
-
 func playMeta(p *model.Play) string {
 	parts := []string{sCyan.Render(p.Hosts)}
 	if p.Serial != "" {
@@ -458,14 +500,6 @@ func wrap(s string, w int) string {
 		w = 4
 	}
 	return lipgloss.NewStyle().Width(w).Render(s)
-}
-
-func indentLines(s, prefix string) string {
-	lines := strings.Split(s, "\n")
-	for i := range lines {
-		lines[i] = prefix + lines[i]
-	}
-	return strings.Join(lines, "\n")
 }
 
 func clampInt(v, lo, hi int) int {

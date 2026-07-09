@@ -526,7 +526,7 @@ func (a *app) open() tea.Cmd {
 				a.clampCursor()
 			} else {
 				a.flowPlaybook = a.scan.Playbooks[row.pbIX]
-				a.flowCur, a.flowOpen, a.mode = 0, false, "flow"
+				a.flowCur, a.flowOpen, a.mode = 0, true, "flow" // open the detail preview by default
 				a.flowSnap(1)
 			}
 		}
@@ -617,9 +617,9 @@ func (a *app) keyHelp() string {
 		return helpLine([2]string{"↑/↓", "scroll"}, [2]string{"G", "end"}, [2]string{"esc", "back"})
 	}
 	if a.mode == "flow" {
-		toggle := "show info"
+		toggle := "show detail"
 		if a.flowOpen {
-			toggle = "hide info"
+			toggle = "hide detail"
 		}
 		return helpLine([2]string{"↑/↓", "step"}, [2]string{"enter", toggle}, [2]string{"r", "run"}, [2]string{"esc", "back"})
 	}
