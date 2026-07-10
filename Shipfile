@@ -1,0 +1,18 @@
+# Shipfile — pine · install du binaire puis restart du service systemd user (no-op propre hors Linux)
+app "pine"
+fail_hint "pine service install (si l'unit n'existe pas encore) · journalctl --user -u pine"
+
+step "install (mise run install)" shell 'mise run install'
+step "restart pine.service"       shell '
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemctl absent — binaire installé, pas de service à redémarrer"
+    exit 0
+  fi
+  if ! systemctl --user cat pine.service >/dev/null 2>&1; then
+    echo "pine.service non installé — lancer d abord : pine service install" >&2
+    exit 1
+  fi
+  systemctl --user restart pine.service
+  systemctl --user --no-pager --lines=0 status pine.service || true
+  echo "service relancé — $(pine version 2>/dev/null || echo pine)"
+'
