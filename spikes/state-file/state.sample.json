@@ -1,0 +1,17 @@
+{
+  "semantics": "observed from runs — NOT authoritative desired state",
+  "hosts": {
+    "web01": {
+      "app : deploy script": {
+        "status": "unknown",
+        "observed_at_tick": 2,
+        "run_id": "j17"
+      },
+      "nginx : install": {
+        "status": "ok",
+        "observed_at_tick": 8,
+        "run_id": "j42"
+      }
+    }
+  }
+}
