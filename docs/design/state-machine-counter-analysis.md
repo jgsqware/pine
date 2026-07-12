@@ -1,6 +1,8 @@
 # Counter-analysis — how far can Pine push a Terraform-like state machine on top of Ansible?
 
-Status: theoretical pass done; empirical spikes pending (see "Open questions").
+Status: **concluded** — theoretical pass + three empirical spikes
+(`spikes/checkmode-liars`, `spikes/fingerprint-stability`,
+`spikes/state-file`). Final verdict at the end of this document.
 
 ## Scope
 
@@ -137,25 +139,43 @@ Guardrails that make it honest:
 | Reconciliation | apply converges by contract | idempotence by convention only | drift-driven loop for *certified* playbooks only |
 | Destroy/import | yes | no | out of scope, permanently |
 
-## Open questions → empirical spikes
+## Empirical results (three spikes, 2026-07-12)
 
-1. **How often does `--check` lie in the wild?** Measure module-level check
-   reliability across ansible-nas, ansible-for-devops, debops.
-   (`spikes/checkmode-liars/`)
-2. **How stable is the plan fingerprint in practice?** Quantify
-   false-block (benign refactor) and false-pass (fact change) rates on the
-   demo repo and real repos. (`spikes/fingerprint-stability/`)
-3. **Can an observed-state file + drift-driven loop work end to end?**
-   Prototype the host × task state and the certified-only reconcile loop;
-   find where it breaks. (`spikes/state-file/`)
+1. **`--check` honesty in the wild** (`spikes/checkmode-liars/REPORT.md`,
+   4,339 tasks across ansible-nas, ansible-for-devops, debops): check mode
+   is **79–100% structurally honest**. The blind spot (0–10%) concentrates
+   in `command`/`shell` — exactly the tasks most likely to be
+   non-idempotent. Sleeper finding: debops sets `check_mode: false` on 79
+   tasks, so a "drift scan" against it **mutates the hosts it scans**.
+2. **Fingerprint stability** (`spikes/fingerprint-stability/REPORT.md`,
+   7 mutations on the demo repo): the gate is **fail-open on the most
+   common operator changes**. A version bump in module args and a host-IP
+   repoint both pass the approved fingerprint unchanged (2 false passes);
+   a pure task rename blocks it (1 false block). Cause: the fingerprint
+   hashes plan *structure*, not resolved args or connection identity.
+3. **Observed state + guarded reconcile loop** (`spikes/state-file/REPORT.md`,
+   adversarial simulation): the loop is safe iff **all four guardrails**
+   hold — idempotence certification on user-initiated runs only,
+   check-reliability filtering of the trigger, oscillation breaker,
+   refusal of `check_mode: false` playbooks. Drift on check-blind tasks is
+   **permanently invisible**; observation staleness is the only honest
+   signal. Nothing required desired-state authority.
 
-## Provisional conclusion
+## Final verdict
 
-Full Terraform-like is **not reachable**: pillar 1 is impossible in the
-authoritative sense, pillar 2 caps at a labeled prediction, pillar 3 is
-safe only behind eligibility gates. What *is* reachable is a coherent,
-honest sub-model — observed state, confidence-labeled plans, tripwire
-gating, certified reconciliation — which is more than any existing Ansible
-control plane offers. The empirical spikes decide how much of pillars 2–3
-survives contact with real repos; final verdict and ROADMAP impact land in
-this document after the spikes run.
+**Full Terraform-like: no — and the spikes say the gap is narrower and
+different than feared.**
+
+| Pillar | Verdict | Empirical nuance |
+|---|---|---|
+| State file | ❌ authoritative state impossible | ✅ observed host × task cache works and suffices for the loop |
+| plan == apply | ❌ not guaranteeable | ✅ ~80–100% structural check honesty; 🔴 gate currently fail-open on args/connection changes — fixable |
+| Reconcile loop | ⚠️ unsafe as default | ✅ safe behind the four guardrails, all cheap to implement |
+
+The honest ceiling is real and worth building: **fingerprint v2**
+(resolved-args digest + connection identity, raw name dropped),
+**check-reliability badges** with a per-playbook drift-trust score, an
+**observed-state file** with staleness alarms, and **drift-driven
+schedules for certified playbooks**. Terraform-style destroy/import/state
+authority is abandoned permanently, with this document as the record of
+why. ROADMAP.md carries the actionable items.

@@ -88,6 +88,34 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ **11. Secrets hygiene** — plaintext password-like values in vars,
       vault usage inventory. Part of the hygiene report.
 
+## State machine / GitOps — counter-analysis outcomes
+
+From `docs/design/state-machine-counter-analysis.md` (theory + 3 spikes,
+2026-07-12). Terraform-style *authoritative* state, destroy and import are
+**abandoned permanently** — structurally impossible on Ansible; the doc is
+the record of why. What survives, in dependency order:
+
+- [ ] ⏳ **Fingerprint v2** — hash resolved module-args digest + per-host
+      connection identity, drop the raw task name. Closes the two
+      demonstrated fail-open gaps (version bump, host repoint) and the
+      rename false block (`spikes/fingerprint-stability`). Referenced
+      file/template *content* stays a documented blind spot unless content
+      digests are added (decide then).
+- [ ] ⏳ **Check-reliability badges** — classify every task
+      honest/blind/forced/overridden (KB from `spikes/checkmode-liars`),
+      badge plan & drift views, compute a per-playbook **drift-trust
+      score**, and refuse drift scans on playbooks containing
+      `check_mode: false` tasks (a scan must never mutate hosts).
+- [ ] ⏳ **Observed-state file** — persist host × task observations
+      (status, observed-at, run id) from existing job logs; staleness
+      alarms for check-blind tasks ("last observed N days ago" is the only
+      honest signal). Labeled *observed*, never authoritative.
+- [ ] 🔗 **Drift-driven schedules** — reconcile on trusted drift instead of
+      a timer, gated on: idempotence certification (2 consecutive
+      zero-changed *user-initiated* runs) ∧ zero forced tasks ∧ trigger
+      counted on check-honest tasks only ∧ oscillation breaker (3 cycles →
+      freeze + notify). Blocked by the three items above.
+
 ## Earlier milestones (done)
 
 - [x] ✅ Multi-repo + recursive scanning + per-repo scan paths
