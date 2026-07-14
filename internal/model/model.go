@@ -219,6 +219,10 @@ type Job struct {
 	RepoID        string         `json:"repo_id"`
 	RepoName      string         `json:"repo_name"`
 	Playbook      string         `json:"playbook"`
+	// Probe, when set, marks this job as a read-only probe run rather than a
+	// playbook run; it holds the catalog ID. The zero value means "playbook",
+	// so jobs stored before probes existed keep their meaning.
+	Probe         string         `json:"probe,omitempty"`
 	Inventory     string         `json:"inventory,omitempty"`
 	Limit         string         `json:"limit,omitempty"`
 	Tags          string         `json:"tags,omitempty"`

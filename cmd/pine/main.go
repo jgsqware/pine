@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jgsqware/pine/internal/client"
 	"github.com/jgsqware/pine/internal/model"
@@ -47,6 +49,8 @@ Usage:
   pine impact PATH [--base REF] [--head REF]        Blast radius of a git diff
   pine policy check PATH --policies FILE [flags]    Evaluate governance policies on the plan (CI gate)
   pine worktrees PATH [--json]                      List the repo's git worktrees
+  pine probe list                                   List the read-only probes
+  pine probe run PROBE [--repo N] [--limit PAT]     Observe hosts without SSH (read-only)
   pine version                                      Print version
 
 Plan flags:
@@ -113,6 +117,8 @@ func main() {
 		cmdHygiene(os.Args[2:])
 	case "worktrees":
 		cmdWorktrees(os.Args[2:])
+	case "probe":
+		cmdProbe(os.Args[2:])
 	case "version", "--version", "-v":
 		if buildTime != "" {
 			fmt.Printf("pine %s (built %s)\n", version, buildTime)
@@ -411,6 +417,100 @@ func cmdAttach(args []string) {
 	if err := tui.RunEngine(c, ""); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// cmdProbe runs read-only observability probes against hosts, so an operator
+// can inspect a box without opening an SSH session. Probes are named entries
+// in a server-side catalog — there is no way to pass a command string.
+func cmdProbe(args []string) {
+	if len(args) > 0 && args[0] == "list" {
+		for _, p := range runner.Probes() {
+			inv := "ansible -m " + p.Module
+			if p.Args != "" {
+				inv += " -a " + strconv.Quote(p.Args)
+			}
+			fmt.Printf("%-10s %-22s %s\n%-33s %s\n\n", p.ID, p.Title, p.Desc, "", inv)
+		}
+		return
+	}
+	if len(args) > 0 && args[0] == "run" {
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("probe", flag.ExitOnError)
+	repoRef := fs.String("repo", "", "repo name or ID (default: the only repo, if there is exactly one)")
+	inv := fs.String("i", "", "inventory name or path")
+	limit := fs.String("limit", "", "ansible host pattern to probe (default: all)")
+	addr := fs.String("addr", defaultAddr(), "address of the running daemon")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine probe run PROBE [--repo NAME] [-i INV] [--limit PATTERN]")
+		fmt.Fprintln(os.Stderr, "       pine probe list")
+		os.Exit(2)
+	}
+	probeID := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PROBE
+	if _, ok := runner.ProbeByID(probeID); !ok {
+		fmt.Fprintf(os.Stderr, "unknown probe %q — see `pine probe list`\n", probeID)
+		os.Exit(2)
+	}
+
+	base := baseURL(*addr)
+	c := client.New(base)
+	if err := c.Ping(); err != nil {
+		log.Fatalf("no Pine daemon at %s: %v\nStart one with `pine serve`.", base, err)
+	}
+	repoID, err := resolveRepo(c, *repoRef)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	job, err := c.RunProbe(repoID, probeID, *inv, *limit)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// stream the live log, then fall back to the stored one if the job already
+	// finished before we managed to subscribe
+	if ch, ok := c.Subscribe(job.ID); ok {
+		for line := range ch {
+			fmt.Println(line)
+		}
+	} else if out, err := c.JobLog(job.ID); err == nil {
+		fmt.Print(out)
+	}
+
+	// the stream can end before the daemon has written the terminal state
+	final := job
+	for range 50 {
+		if cur, err := c.GetJob(job.ID); err == nil {
+			final = cur
+			if cur.Terminal() {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	s := final.Summary
+	fmt.Printf("\n%s: ok=%d unreachable=%d failed=%d\n", final.Status, s.OK, s.Unreachable, s.Failed)
+	if final.Status != model.JobSuccess {
+		os.Exit(1)
+	}
+}
+
+// resolveRepo turns a repo name or ID into an ID, defaulting to the sole repo.
+func resolveRepo(c *client.Client, ref string) (string, error) {
+	repos := c.ListRepos()
+	if ref == "" {
+		if len(repos) == 1 {
+			return repos[0].ID, nil
+		}
+		return "", fmt.Errorf("--repo is required (%d repos configured)", len(repos))
+	}
+	for _, r := range repos {
+		if r.ID == ref || r.Name == ref {
+			return r.ID, nil
+		}
+	}
+	return "", fmt.Errorf("unknown repo %q", ref)
 }
 
 // defaultAddr is the daemon address attach/detection use, overridable via

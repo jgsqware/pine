@@ -54,6 +54,7 @@ func waitJob(t *testing.T, m *Manager, id string) model.Job {
 }
 
 func TestGatherFactsSimulated(t *testing.T) {
+	t.Setenv("PINE_SIMULATE", "1") // otherwise a dev box with ansible installed runs the real thing
 	m, _ := newTestManager(t)
 	job, err := m.GatherFacts("r_test", "")
 	if err != nil {

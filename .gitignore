@@ -5,3 +5,5 @@
 .pine/
 .DS_Store
 CLAUDE.md
+/.claude/
+examples/demo-infra/.ansible_facts_cache/

@@ -85,6 +85,15 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [ ] ⏳ **10. Web SSH console** — per-host terminal in the browser
       (the TUI already has `s`); xterm.js + websocket, vendored.
       *Deliberately last: needs real SSH targets to validate.*
+      Partly superseded for read-only use by probes (below): most "let me
+      just check something" needs never justified a shell.
+- [x] ✅ **12. Read-only probes** — observe a host without SSH, from a fixed
+      catalog of vetted module+argv pairs. `GET /api/probes`,
+      `POST /api/repos/{id}/probes`, `pine probe list|run`. Safety is
+      structural: no command string is accepted, and `become` is forced off
+      with `-e ansible_become=false` so a repo's `ansible.cfg` cannot
+      silently escalate a probe to root.
+      *Remaining: web UI, TUI, website, screenshots.*
 - [x] ✅ **11. Secrets hygiene** — plaintext password-like values in vars,
       vault usage inventory. Part of the hygiene report.
 

@@ -124,6 +124,14 @@ type RunOpts struct {
 	ExtraVars     map[string]any
 }
 
+// simulateForced reports whether PINE_SIMULATE asks for the simulated code
+// paths even though ansible is installed. Without it the simulated branches are
+// unreachable — and untestable — on any machine that has ansible on PATH.
+func simulateForced() bool {
+	v := os.Getenv("PINE_SIMULATE")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 func (m *Manager) StartJob(req model.Job, opts ...RunOpts) (model.Job, error) {
 	repo, err := m.Store.GetRepo(req.RepoID)
 	if err != nil {
@@ -134,6 +142,7 @@ func (m *Manager) StartJob(req model.Job, opts ...RunOpts) (model.Job, error) {
 		RepoID:    repo.ID,
 		RepoName:  repo.Name,
 		Playbook:  req.Playbook,
+		Probe:     req.Probe,
 		Inventory: req.Inventory,
 		Limit:     req.Limit,
 		Tags:      req.Tags,
@@ -142,7 +151,12 @@ func (m *Manager) StartJob(req model.Job, opts ...RunOpts) (model.Job, error) {
 		Status:    model.JobPending,
 		Created:   time.Now().UTC().Format(time.RFC3339),
 	}
-	if !ansible.Available("ansible-playbook") {
+	// probes drive the `ansible` ad-hoc binary, everything else ansible-playbook
+	bin := "ansible-playbook"
+	if req.Probe != "" {
+		bin = "ansible"
+	}
+	if simulateForced() || !ansible.Available(bin) {
 		job.Simulated = true
 	}
 	if err := m.Store.SaveJob(job); err != nil {
@@ -252,6 +266,8 @@ func (m *Manager) execute(ctx context.Context, job model.Job, r *run) {
 
 	var failed bool
 	switch {
+	case job.Probe != "":
+		failed = m.runProbe(ctx, &job, r)
 	case job.Playbook == FactsJobName:
 		failed = m.runGather(ctx, &job, r)
 	case job.Playbook == ServicesJobName:

@@ -97,6 +97,8 @@ func New(mgr *runner.Manager, cfg Config) http.Handler {
 	mux.HandleFunc("POST /api/repos/{id}/drift/check", s.driftCheck)
 	mux.HandleFunc("GET /api/repos/{id}/services", s.services)
 	mux.HandleFunc("POST /api/repos/{id}/services/refresh", s.refreshServices)
+	mux.HandleFunc("GET /api/probes", s.listProbes)
+	mux.HandleFunc("POST /api/repos/{id}/probes", s.runProbe)
 	mux.HandleFunc("GET /api/repos/{id}/timelapse", s.timelapse)
 	mux.HandleFunc("GET /api/repos/{id}/worktrees", s.worktrees)
 	mux.HandleFunc("GET /api/repos/{id}/resolve", s.resolve)
@@ -1287,6 +1289,30 @@ func (s *Server) refreshServices(w http.ResponseWriter, r *http.Request) {
 	job, err := s.Mgr.CheckServices(r.PathValue("id"), req.Inventory)
 	if err != nil {
 		writeErr(w, errCode(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+// --- probes ---
+
+func (s *Server) listProbes(w http.ResponseWriter, r *http.Request) {
+	probes := runner.Probes()
+	writeJSON(w, http.StatusOK, map[string]any{"count": len(probes), "probes": probes})
+}
+
+// runProbe launches a read-only probe. The body names a probe by catalog ID;
+// there is deliberately no way to pass a command string.
+func (s *Server) runProbe(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Probe     string `json:"probe"`
+		Inventory string `json:"inventory"`
+		Limit     string `json:"limit"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	job, err := s.Mgr.RunProbe(r.PathValue("id"), req.Probe, req.Inventory, req.Limit)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, job)

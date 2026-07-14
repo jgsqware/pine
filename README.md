@@ -99,6 +99,12 @@ A `terraform plan` for Ansible ([design](docs/design/plan-mode.md)):
   profile** (ubuntu-24.04, debian-12, rhel-9, …).
 - **Fact harvesting** — `[gather facts]` jobs (`ansible -m setup --tree`,
   simulated fallback) store real per-host facts that feed every plan.
+- **Read-only probes** — inspect a host without opening an SSH session:
+  `pine probe run uptime --limit web*`. Probes are a fixed server-side
+  catalog (`ping`, `uptime`, `disk`, `memory`, `packages`, `services`,
+  `users`, `ports`), each a vetted module + argv. No command string ever
+  crosses the wire and `become` is forced off, so "this cannot modify a
+  host" is enforced structurally rather than by filtering what you type.
 - **Exact mode** — with ansible installed, `mode: "exact"` runs
   `ansible-playbook --check` through the JSON callback into the same UI.
 - Loop sizes, `serial` batches, predicted handlers, `--limit`/`--tags`/
@@ -370,6 +376,8 @@ curl -H "Authorization: Bearer $PINE_TOKEN" localhost:8743/api/stats
 | `GET/POST /api/repos/{id}/facts[/refresh]` | harvested facts |
 | `GET/POST /api/repos/{id}/drift[/check]` | drift heatmap / launch checks |
 | `GET/POST /api/repos/{id}/services[/refresh]` | service-status heatmap / launch a check |
+| `GET /api/probes` | the read-only probe catalog |
+| `POST /api/repos/{id}/probes` | run a probe (`{"probe","inventory","limit"}`) |
 | `GET /api/repos/{id}/timelapse?inventory=…` | topology history frames |
 | `GET /api/repos/{id}/worktrees` | git worktrees of the repo's working copy |
 | `/api/schedules…` | plan-gated recurring runs (CRUD, approve, run-now) |

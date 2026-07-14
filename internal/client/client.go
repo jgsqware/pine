@@ -21,14 +21,19 @@ import (
 type Client struct {
 	base string
 	http *http.Client
+	// stream is used for SSE job logs. It has no timeout: http.Client.Timeout
+	// bounds the whole exchange including the response body, so reusing the
+	// request client would cut a job's log off mid-run.
+	stream *http.Client
 }
 
 // New returns a client for a daemon reachable at baseURL (e.g.
 // "http://localhost:8743"). A trailing slash is trimmed.
 func New(baseURL string) *Client {
 	return &Client{
-		base: strings.TrimRight(baseURL, "/"),
-		http: &http.Client{Timeout: 30 * time.Second},
+		base:   strings.TrimRight(baseURL, "/"),
+		http:   &http.Client{Timeout: 30 * time.Second},
+		stream: &http.Client{},
 	}
 }
 
@@ -124,6 +129,22 @@ func (c *Client) StartJob(req model.Job) (model.Job, error) {
 	return job, err
 }
 
+// GetJob fetches a single job's current state.
+func (c *Client) GetJob(jobID string) (model.Job, error) {
+	var job model.Job
+	err := c.do(http.MethodGet, "/api/jobs/"+jobID, nil, &job)
+	return job, err
+}
+
+// RunProbe launches a read-only probe on the daemon. probeID must name an
+// entry in the server's probe catalog; the server rejects anything else.
+func (c *Client) RunProbe(repoID, probeID, inventory, limit string) (model.Job, error) {
+	req := map[string]string{"probe": probeID, "inventory": inventory, "limit": limit}
+	var job model.Job
+	err := c.do(http.MethodPost, "/api/repos/"+repoID+"/probes", req, &job)
+	return job, err
+}
+
 // JobLog fetches the stored log of a finished job.
 func (c *Client) JobLog(jobID string) (string, error) {
 	resp, err := c.http.Get(c.base + "/api/jobs/" + jobID + "/log")
@@ -156,7 +177,7 @@ func (c *Client) Plan(repo model.Repo, playbook string) (*plan.Result, error) {
 // which point the TUI stops following. On connection failure it returns
 // (nil, false) so the caller falls back to JobLog.
 func (c *Client) Subscribe(jobID string) (chan string, bool) {
-	resp, err := c.http.Get(c.base + "/api/jobs/" + jobID + "/events")
+	resp, err := c.stream.Get(c.base + "/api/jobs/" + jobID + "/events")
 	if err != nil || resp.StatusCode >= 400 {
 		if resp != nil {
 			resp.Body.Close()
