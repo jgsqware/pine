@@ -212,7 +212,9 @@ func inventoryFilesIn(dir string) []string {
 			out = append(out, full)
 		case ext == ".ini":
 			out = append(out, full)
-		case ext == ".yml" || ext == ".yaml":
+		case ext == ".yml" || ext == ".yaml" || ext == "":
+			// extensionless files (e.g. a root `production` inventory) are
+			// admitted only when their content is shaped like a YAML inventory
 			if looksLikeYAMLInventory(full) {
 				out = append(out, full)
 			}
@@ -539,10 +541,20 @@ func detectInventoryFormat(file string) string {
 	return "ini"
 }
 
+// maxInventorySniffBytes caps the size of a file we're willing to read and
+// YAML-parse just to guess whether it's an inventory. Real inventories, even
+// with thousands of hosts, stay far below this; the cap keeps the sniff from
+// slurping large extensionless blobs (binaries, LFS artifacts) that now reach
+// it via the extensionless branch of inventoryFilesIn.
+const maxInventorySniffBytes = 4 << 20 // 4 MiB
+
 // looksLikeYAMLInventory reports whether file parses as a YAML mapping that
 // carries inventory structure (a group with hosts/children/vars, or the "all"
 // root). INI inventories fail to unmarshal into a map, so this stays false.
 func looksLikeYAMLInventory(file string) bool {
+	if info, err := os.Stat(file); err != nil || info.Size() > maxInventorySniffBytes {
+		return false
+	}
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return false

@@ -96,6 +96,12 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
       *Remaining: web UI, TUI, website, screenshots.*
 - [x] ✅ **11. Secrets hygiene** — plaintext password-like values in vars,
       vault usage inventory. Part of the hygiene report.
+- [ ] ⏳ **13. Honor `ansible.cfg` `inventory =`** — parse the repo-local
+      `[defaults] inventory =` directive to locate inventories by their
+      declared path. Would additionally catch arbitrarily-named *extension-less
+      INI* inventories, which content-sniffing cannot (INI never parses as a
+      YAML map). Extension-less *YAML* inventories are already discovered by
+      content.
 
 ## State machine / GitOps — counter-analysis outcomes
 
