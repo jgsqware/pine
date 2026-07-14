@@ -9,6 +9,9 @@ ansible = "latest"
 node = "lts"
 glow = "latest"
 lazydocker = "latest"
+# real screenshots of the running app for docs/screenshots and UI review —
+# `playwright install chromium` still needs to fetch the browser binary once.
+"npm:playwright" = "latest"
 
 [env]
 # Where the Pine server is published by docker-compose (host:container 8743).

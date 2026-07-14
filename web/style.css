@@ -592,10 +592,10 @@ table.data .mono { color: var(--muted); }
 .pb-row + .pb-row { margin-top: 2px; }
 .pb-row.clickable { cursor: pointer; }
 .pb-row.clickable:hover { background: var(--panel); border-color: var(--border); }
-.pb-row-main { min-width: 0; flex: 0 0 30%; max-width: 360px; }
+.pb-row-main { min-width: 0; flex: 1 1 260px; }
 .pb-row-name { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pb-row-path { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pb-row-chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.pb-row-chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 0 1 auto; min-width: 0; justify-content: flex-end; }
 .pb-row-acts { display: flex; gap: 6px; flex: none; }
 .pb-chip-link { cursor: pointer; }
 .pb-chip-link.pb-host { color: var(--secondary); border-color: rgba(34, 211, 238, 0.25); }
@@ -603,7 +603,8 @@ table.data .mono { color: var(--muted); }
 
 @media (max-width: 760px) {
   .pb-row { flex-wrap: wrap; }
-  .pb-row-main { flex-basis: 100%; max-width: none; }
+  .pb-row-main { flex-basis: 100%; }
+  .pb-row-chips { justify-content: flex-start; }
 }
 
 /* ---------- playbook detail / task flow ---------- */
