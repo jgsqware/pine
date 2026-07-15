@@ -157,12 +157,13 @@ func (m *Manager) checkServicesReal(ctx context.Context, job *model.Job, r *run,
 	}
 	defer os.RemoveAll(tree)
 
+	execCtx := ansible.Resolve(m.Store.RepoWorkdir(&repo), "", job.Inventory)
 	args := []string{"all", "-m", "service_facts", "--tree", tree}
-	if job.Inventory != "" {
-		args = append(args, "-i", job.Inventory)
+	if execCtx.Inventory != "" {
+		args = append(args, "-i", execCtx.Inventory)
 	}
 	cmd := exec.CommandContext(ctx, ansible.Bin("ansible"), args...)
-	cmd.Dir = m.Store.RepoWorkdir(&repo)
+	cmd.Dir = execCtx.Dir
 	cmd.Env = append(ansible.Env(), "ANSIBLE_NOCOLOR=1")
 	out, _ := cmd.CombinedOutput()
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {

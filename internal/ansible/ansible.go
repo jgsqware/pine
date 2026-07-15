@@ -119,3 +119,79 @@ func Env() []string {
 	}
 	return append(env, "PATH="+p)
 }
+
+// ExecContext is where an ansible/ansible-playbook invocation should run
+// (cmd.Dir) and its playbook/inventory arguments rebased to be relative to
+// that directory instead of the repo root.
+type ExecContext struct {
+	Dir       string // cmd.Dir
+	Playbook  string // argv-ready; "" if playbookRel was ""
+	Inventory string // argv-ready; "" if inventoryRel was ""
+}
+
+// Resolve finds the directory an ansible/ansible-playbook invocation should
+// actually run from, and rebases playbookRel/inventoryRel (paths relative to
+// repoRoot, as scanned and stored on a Job) to be relative to it.
+//
+// ansible only ever auto-loads ansible.cfg from its current working
+// directory — never from the directory the playbook file happens to live in.
+// A Pine repo can contain more than one independent ansible project (a
+// monorepo with several ansible.cfg files at different depths); running
+// everything from repoRoot means any nested project's own ansible.cfg
+// (roles_path, inventory=, collections_path, ...) is silently invisible,
+// and ansible falls back to its hardcoded defaults instead — most visibly
+// "role not found" for roles that are right there, one directory over.
+//
+// The fix: walk up from the playbook's own directory (or the inventory's, if
+// there is no playbook) looking for the nearest ansible.cfg, stopping at
+// repoRoot, and run from there instead. Falls back to repoRoot when no
+// ansible.cfg is found anywhere in between, which reproduces today's
+// behavior exactly for every repo that only has one ansible.cfg at its root
+// (or none at all).
+func Resolve(repoRoot, playbookRel, inventoryRel string) ExecContext {
+	anchor := playbookRel
+	if anchor == "" {
+		anchor = inventoryRel
+	}
+	dir := projectRoot(repoRoot, anchor)
+	return ExecContext{
+		Dir:       dir,
+		Playbook:  rebase(dir, repoRoot, playbookRel),
+		Inventory: rebase(dir, repoRoot, inventoryRel),
+	}
+}
+
+// projectRoot returns the nearest ancestor of repoRoot/repoRelPath (down to
+// repoRoot itself) that contains an ansible.cfg, or repoRoot if none does.
+func projectRoot(repoRoot, repoRelPath string) string {
+	repoRoot = filepath.Clean(repoRoot)
+	if repoRelPath == "" {
+		return repoRoot
+	}
+	dir := filepath.Clean(filepath.Join(repoRoot, filepath.Dir(repoRelPath)))
+	for dir == repoRoot || strings.HasPrefix(dir, repoRoot+string(filepath.Separator)) {
+		if fi, err := os.Stat(filepath.Join(dir, "ansible.cfg")); err == nil && !fi.IsDir() {
+			return dir
+		}
+		if dir == repoRoot {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	return repoRoot
+}
+
+// rebase turns a path relative to repoRoot into one relative to dir, falling
+// back to an absolute path on the rare error (different volumes on Windows —
+// never happens on the single-filesystem Linux/macOS hosts Pine targets, but
+// an absolute path is always correct regardless of cwd, so it's a safe belt).
+func rebase(dir, repoRoot, repoRelPath string) string {
+	if repoRelPath == "" {
+		return ""
+	}
+	abs := filepath.Join(repoRoot, repoRelPath)
+	if rel, err := filepath.Rel(dir, abs); err == nil {
+		return rel
+	}
+	return abs
+}

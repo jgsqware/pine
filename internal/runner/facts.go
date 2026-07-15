@@ -89,12 +89,13 @@ func (m *Manager) gatherReal(ctx context.Context, job *model.Job, r *run, inv *m
 	}
 	defer os.RemoveAll(tree)
 
+	execCtx := ansible.Resolve(m.Store.RepoWorkdir(&repo), "", job.Inventory)
 	args := []string{"all", "-m", "setup", "--tree", tree}
-	if job.Inventory != "" {
-		args = append(args, "-i", job.Inventory)
+	if execCtx.Inventory != "" {
+		args = append(args, "-i", execCtx.Inventory)
 	}
 	cmd := exec.CommandContext(ctx, ansible.Bin("ansible"), args...)
-	cmd.Dir = m.Store.RepoWorkdir(&repo)
+	cmd.Dir = execCtx.Dir
 	cmd.Env = append(ansible.Env(), "ANSIBLE_NOCOLOR=1")
 	out, _ := cmd.CombinedOutput()
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {

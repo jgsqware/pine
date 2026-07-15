@@ -40,9 +40,10 @@ func ComputeExact(root string, repo model.Repo, req Request) (*Result, error) {
 	if !ok {
 		return nil, fmt.Errorf("ansible-playbook not found on this host - exact mode needs ansible installed (use estimated mode instead)")
 	}
-	args := []string{req.Playbook, "--check"}
-	if req.Inventory != "" {
-		args = append(args, "-i", req.Inventory)
+	execCtx := ansible.Resolve(root, req.Playbook, req.Inventory)
+	args := []string{execCtx.Playbook, "--check"}
+	if execCtx.Inventory != "" {
+		args = append(args, "-i", execCtx.Inventory)
 	}
 	if req.Limit != "" {
 		args = append(args, "--limit", req.Limit)
@@ -63,7 +64,7 @@ func ComputeExact(root string, repo model.Repo, req Request) (*Result, error) {
 		}
 	}
 	cmd := exec.Command(bin, args...)
-	cmd.Dir = root
+	cmd.Dir = execCtx.Dir
 	cmd.Env = append(ansible.Env(),
 		"ANSIBLE_STDOUT_CALLBACK=json", "ANSIBLE_NOCOLOR=1", "ANSIBLE_FORCE_COLOR=0")
 	switch repo.HostKeyChecking {

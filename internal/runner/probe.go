@@ -203,12 +203,10 @@ func (m *Manager) runProbe(ctx context.Context, job *model.Job, r *run) (failed 
 		r.publish("ERROR: invalid host pattern " + pattern)
 		return true
 	}
-	args := probeArgs(p, pattern, job.Inventory)
-
 	if job.Simulated {
-		return m.probeSim(ctx, job, r, p, args)
+		return m.probeSim(ctx, job, r, p, probeArgs(p, pattern, job.Inventory))
 	}
-	return m.probeReal(ctx, job, r, args)
+	return m.probeReal(ctx, job, r, p, pattern)
 }
 
 // simMatchHosts resolves an ansible host pattern against the inventory well
@@ -310,14 +308,16 @@ func (m *Manager) probeSim(ctx context.Context, job *model.Job, r *run, p Probe,
 
 // probeReal shells out to `ansible <pattern> -m <module> [-a <args>]`, streams
 // the output, and tallies the per-host status lines.
-func (m *Manager) probeReal(ctx context.Context, job *model.Job, r *run, args []string) (failed bool) {
+func (m *Manager) probeReal(ctx context.Context, job *model.Job, r *run, p Probe, pattern string) (failed bool) {
 	repo, err := m.Store.GetRepo(job.RepoID)
 	if err != nil {
 		r.publish("ERROR: " + err.Error())
 		return true
 	}
+	execCtx := ansible.Resolve(m.Store.RepoWorkdir(&repo), "", job.Inventory)
+	args := probeArgs(p, pattern, execCtx.Inventory)
 	cmd := exec.CommandContext(ctx, ansible.Bin("ansible"), args...)
-	cmd.Dir = m.Store.RepoWorkdir(&repo)
+	cmd.Dir = execCtx.Dir
 	cmd.Env = append(ansible.Env(), "ANSIBLE_FORCE_COLOR=0", "ANSIBLE_NOCOLOR=1")
 	cmd.Env = append(cmd.Env, hostKeyCheckingEnv(repo.HostKeyChecking)...)
 	stdout, err := cmd.StdoutPipe()

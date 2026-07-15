@@ -375,7 +375,8 @@ func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (faile
 		r.publish("ERROR: " + err.Error())
 		return true
 	}
-	workdir := m.Store.RepoWorkdir(&repo)
+	execCtx := ansible.Resolve(m.Store.RepoWorkdir(&repo), job.Playbook, job.Inventory)
+	workdir := execCtx.Dir
 
 	// Confine the playbook (and inventory) to the repo workdir before it reaches
 	// ansible-playbook: reject absolute paths, "..", and symlinks that escape.

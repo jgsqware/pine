@@ -52,6 +52,125 @@ func TestResolvesFromToolDir(t *testing.T) {
 	}
 }
 
+// TestResolveNestedAnsibleCfg reproduces the real-world layout that motivated
+// Resolve: a monorepo where the Pine-registered root has no ansible.cfg of
+// its own, but a nested sub-project (tc-agent-ansible/) does — and that
+// sub-project's ansible.cfg is what declares roles_path. Running from
+// repoRoot would leave it invisible to ansible; Resolve must point cmd.Dir at
+// the sub-project instead and rebase both paths onto it.
+func TestResolveNestedAnsibleCfg(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "tc-agent-ansible")
+	mustMkdirAll(t, filepath.Join(sub, "playbooks", "components"))
+	mustWriteFile(t, filepath.Join(sub, "ansible.cfg"), "[defaults]\nroles_path = ./roles\n")
+
+	ctx := Resolve(root,
+		"tc-agent-ansible/playbooks/components/grafana-stack-setup-only.yml",
+		"tc-agent-ansible/inventories/production")
+
+	if ctx.Dir != sub {
+		t.Errorf("Dir = %q, want %q", ctx.Dir, sub)
+	}
+	if ctx.Playbook != filepath.Join("playbooks", "components", "grafana-stack-setup-only.yml") {
+		t.Errorf("Playbook = %q", ctx.Playbook)
+	}
+	if ctx.Inventory != filepath.Join("inventories", "production") {
+		t.Errorf("Inventory = %q", ctx.Inventory)
+	}
+}
+
+// TestResolveNoAnsibleCfgFallsBackToRepoRoot covers every repo that has no
+// ansible.cfg at all, or only one at its own root — today's behavior, and it
+// must not change: cmd.Dir stays repoRoot and paths stay exactly as scanned.
+func TestResolveNoAnsibleCfgFallsBackToRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	mustMkdirAll(t, filepath.Join(root, "playbooks"))
+
+	ctx := Resolve(root, "playbooks/site.yml", "inventories/prod")
+
+	if ctx.Dir != root {
+		t.Errorf("Dir = %q, want repoRoot %q", ctx.Dir, root)
+	}
+	if ctx.Playbook != "playbooks/site.yml" {
+		t.Errorf("Playbook = %q, want unchanged", ctx.Playbook)
+	}
+	if ctx.Inventory != "inventories/prod" {
+		t.Errorf("Inventory = %q, want unchanged", ctx.Inventory)
+	}
+}
+
+// TestResolveAnsibleCfgAtRepoRoot: an ansible.cfg at repoRoot itself (the
+// common single-project layout) must still resolve to repoRoot, not error or
+// skip past it.
+func TestResolveAnsibleCfgAtRepoRoot(t *testing.T) {
+	root := t.TempDir()
+	mustMkdirAll(t, filepath.Join(root, "playbooks"))
+	mustWriteFile(t, filepath.Join(root, "ansible.cfg"), "[defaults]\n")
+
+	ctx := Resolve(root, "playbooks/site.yml", "")
+	if ctx.Dir != root {
+		t.Errorf("Dir = %q, want repoRoot %q", ctx.Dir, root)
+	}
+	if ctx.Playbook != "playbooks/site.yml" {
+		t.Errorf("Playbook = %q", ctx.Playbook)
+	}
+	if ctx.Inventory != "" {
+		t.Errorf("Inventory = %q, want empty", ctx.Inventory)
+	}
+}
+
+// TestResolveNoPlaybookAnchorsOnInventory covers probe/facts/services runs,
+// which only ever carry an inventory path (no playbook).
+func TestResolveNoPlaybookAnchorsOnInventory(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "proj")
+	mustMkdirAll(t, sub)
+	mustWriteFile(t, filepath.Join(sub, "ansible.cfg"), "[defaults]\n")
+
+	ctx := Resolve(root, "", "proj/inventories/prod")
+	if ctx.Dir != sub {
+		t.Errorf("Dir = %q, want %q", ctx.Dir, sub)
+	}
+	if ctx.Playbook != "" {
+		t.Errorf("Playbook = %q, want empty", ctx.Playbook)
+	}
+	if ctx.Inventory != filepath.Join("inventories", "prod") {
+		t.Errorf("Inventory = %q", ctx.Inventory)
+	}
+}
+
+// TestResolveDeeplyNestedFindsClosestCfg: with ansible.cfg at more than one
+// depth, the nearest one (closest to the playbook) must win, not repoRoot's.
+func TestResolveDeeplyNestedFindsClosestCfg(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "ansible.cfg"), "[defaults]\n# outer, decoy\n")
+	inner := filepath.Join(root, "a", "b")
+	mustMkdirAll(t, inner)
+	mustWriteFile(t, filepath.Join(inner, "ansible.cfg"), "[defaults]\n# inner, wins\n")
+
+	ctx := Resolve(root, "a/b/site.yml", "")
+	if ctx.Dir != inner {
+		t.Errorf("Dir = %q, want the closer %q, not repoRoot", ctx.Dir, inner)
+	}
+	if ctx.Playbook != "site.yml" {
+		t.Errorf("Playbook = %q, want \"site.yml\"", ctx.Playbook)
+	}
+}
+
+func mustMkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNonExecutableAndMissing(t *testing.T) {
 	dir := t.TempDir()
 	// a non-executable file must not count as a resolvable tool
