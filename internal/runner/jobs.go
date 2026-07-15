@@ -44,6 +44,10 @@ type run struct {
 	curTask  string
 	curStart time.Time
 	timings  []model.TaskDuration
+
+	// describeWrite is set for a Kind=="describe" job: false runs Claude Code
+	// read-only (dry-run, proposes changes), true lets it edit files.
+	describeWrite bool
 }
 
 func (r *run) publish(line string) {
@@ -266,6 +270,8 @@ func (m *Manager) execute(ctx context.Context, job model.Job, r *run) {
 
 	var failed bool
 	switch {
+	case job.Kind == "describe":
+		failed = m.runDescribe(ctx, &job, r)
 	case job.Probe != "":
 		failed = m.runProbe(ctx, &job, r)
 	case job.Playbook == FactsJobName:

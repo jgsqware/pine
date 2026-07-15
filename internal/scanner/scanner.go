@@ -48,7 +48,54 @@ func ScanWithCache(root string, cache *ScanCache, scanPaths ...string) (*model.S
 	go func() { defer wg.Done(); res.Roles = scanRoles(root, plugin, cache) }()
 	go func() { defer wg.Done(); res.Inventories = scanInventories(root) }()
 	wg.Wait()
+	applySidecarDescriptions(root, res.Playbooks)
 	return res, nil
+}
+
+// applySidecarDescriptions reads the repo-root pine.yml sidecar (if present) and
+// fills each playbook's Description from its `descriptions:` map, keyed by
+// repo-relative path. Playbooks have no native Ansible metadata slot, so this
+// committed sidecar — written by `pine describe` / the Guide action — is where
+// their human summary lives. Missing or malformed sidecars are ignored.
+func applySidecarDescriptions(root string, pbs []model.Playbook) {
+	if len(pbs) == 0 {
+		return
+	}
+	descs := loadSidecarDescriptions(root)
+	if len(descs) == 0 {
+		return
+	}
+	for i := range pbs {
+		if d := descs[filepath.ToSlash(pbs[i].Path)]; d != "" {
+			pbs[i].Description = d
+		}
+	}
+}
+
+// loadSidecarDescriptions returns the path→description map from pine.yml
+// (or pine.yaml) at the repo root, or nil when absent/invalid.
+func loadSidecarDescriptions(root string) map[string]string {
+	var doc map[string]any
+	for _, name := range []string{"pine.yml", "pine.yaml"} {
+		if d := parseVarsFile(filepath.Join(root, name)); d != nil {
+			doc = d
+			break
+		}
+	}
+	if doc == nil {
+		return nil
+	}
+	raw, ok := doc["descriptions"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if s := toStr(v); s != "" {
+			out[filepath.ToSlash(k)] = s
+		}
+	}
+	return out
 }
 
 // Summarize computes the headline counts for a scan result.

@@ -8,6 +8,10 @@ storage, a polished web UI, a full terminal UI, a CLI and a REST API.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
+| Guide — the repo explains itself | Auto-describe with Claude Code |
+|---|---|
+| ![Guide](docs/screenshots/guide.png) | ![Generate descriptions](docs/screenshots/guide-describe.png) |
+
 | Plan mode | Inventory topology |
 |---|---|
 | ![Plan](docs/screenshots/plan.png) | ![Topology](docs/screenshots/topology.png) |
@@ -37,6 +41,25 @@ storage, a polished web UI, a full terminal UI, a CLI and a REST API.
 ## Features
 
 ### Scan & visualize
+- **Guide (repo explainer)** — a per-repo orientation page that answers *what
+  is this repo, how is it wired, what can I run?* for a newcomer. It composes
+  the scan into playbook **tiers** (grouped by directory, e.g. `main` /
+  `components` / `utils`) with each playbook's resolved **target hosts**,
+  applied roles and flags (needs-input / rolling / become); a **role catalog**
+  with descriptions and "used-by" cross-refs; **entry points** (`run.sh`,
+  `site.yml`, `ansible.cfg`, docs); and an honest **"what you can / can't do"**
+  list derived from hygiene (vault-only runs, `vars_prompt`, plaintext secrets,
+  unused roles, untargeted hosts). The repo's own **README is rendered inline**.
+  Everything is a projection of the scan — no guessed prose. Also
+  `pine overview PATH [--json]`.
+- **Auto-describe with Claude Code** — when the `claude` CLI is present on the
+  Pine host, the Guide shows a **Generate descriptions** action that runs a
+  Claude Code session to write a one-line description for every playbook (into a
+  committed `pine.yml` sidecar) and role (into `meta/main.yml`
+  `galaxy_info.description`). **Dry-run by default** (proposes, writes nothing);
+  Apply writes the files for you to review in git. Also
+  `pine describe PATH [--write]`. It honours your existing `claude` login and
+  the button is hidden when the CLI isn't installed.
 - **Multi-repo** — connect any number of Ansible repositories (git URL or
   local path), one-click re-sync.
 - **Deep auto-scan** — playbooks, plays, tasks, roles (defaults, handlers,
@@ -215,6 +238,8 @@ go build -o pine ./cmd/pine
 # CLI, no server needed
 ./pine scan    examples/demo-infra
 ./pine scan    examples/demo-infra --paths apps/web   # scope discovery in a monorepo
+./pine overview examples/demo-infra                   # explain the repo: tiers, roles, entry points, cautions
+./pine describe examples/demo-infra                   # propose missing descriptions via Claude Code (dry-run; --write to apply)
 ./pine plan    examples/demo-infra rolling-update.yml -i inventories/production
 ./pine lineage examples/demo-infra -i production --host web01 --redact --json
 ./pine lineage examples/demo-infra --playbook webservers.yml \
@@ -372,6 +397,8 @@ curl -H "Authorization: Bearer $PINE_TOKEN" localhost:8743/api/stats
 | `GET /api/stats` | dashboard counters + recent jobs |
 | `GET/POST /api/repos`, `PATCH/DELETE /api/repos/{id}` | manage repositories (`scan_paths` included) |
 | `POST /api/repos/{id}/sync` | pull + re-scan |
+| `GET /api/repos/{id}/overview` | Guide view: playbook tiers with resolved target hosts, role catalog + usage, entry points, "what you can/can't do" cautions, Claude Code availability |
+| `POST /api/repos/{id}/describe` | launch a Claude Code session that writes missing descriptions (`{"write":bool}`; dry-run unless `write`); returns a streaming job |
 | `GET /api/repos/{id}/scan` | full scan result (playbooks, roles, inventories with complete task trees) |
 | `GET /api/repos/{id}/scan?slim=1` | slim scan: metadata + counters only, no task trees — significantly smaller on large repos; backward-compatible (the unparameterised URL is unchanged) |
 | `GET /api/repos/{id}/playbook?path=PATH` | full detail of one playbook (plays + task trees) — fetched on demand when a playbook is opened |
