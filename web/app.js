@@ -386,24 +386,44 @@ function highlightCode(text, path) {
   return text.split("\n").map(fn).join("\n");
 }
 
-// highlightJson returns HTML for a pretty-printed JSON value, reusing the same
-// tok-* spans as the code preview (keys, strings, numbers, booleans/null). It
-// escapes only & < > so the string-matching regex can still see the quotes.
-function highlightJson(value) {
-  const json = (typeof value === "string" ? value : JSON.stringify(value, null, 2))
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return json.replace(
-    /("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*")(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
-    (match, str, colon) => {
-      if (str !== undefined) {
-        return colon !== undefined
-          ? `<span class="tok-key">${str}</span><span class="tok-punct">${colon}</span>`
-          : `<span class="tok-str">${str}</span>`;
-      }
-      return /^-?\d/.test(match)
-        ? `<span class="tok-num">${match}</span>`
-        : `<span class="tok-bool">${match}</span>`;
-    });
+// highlightJson renders a JSON value as coloured, indented HTML, reusing the
+// code preview's tok-* palette (keys, strings, numbers, booleans/null). Values
+// arrive already parsed, so a multi-line string (a task's `stderr` / `stdout`,
+// a wrapped `msg`, a stack trace) is detected and exploded into real lines
+// instead of one \n-laden blob — see hlJsonString.
+function highlightJson(value, indent) {
+  indent = indent || 0;
+  const pad = "  ".repeat(indent);
+  const padIn = "  ".repeat(indent + 1);
+  if (value === null || value === undefined) return `<span class="tok-bool">null</span>`;
+  const t = typeof value;
+  if (t === "boolean") return `<span class="tok-bool">${value}</span>`;
+  if (t === "number") return `<span class="tok-num">${Number.isFinite(value) ? value : "null"}</span>`;
+  if (t === "string") return hlJsonString(value, indent);
+  if (Array.isArray(value)) {
+    if (!value.length) return "[]";
+    return "[\n" + value.map((v) => padIn + highlightJson(v, indent + 1)).join(",\n") + "\n" + pad + "]";
+  }
+  const keys = Object.keys(value);
+  if (!keys.length) return "{}";
+  return "{\n" + keys.map((k) =>
+    padIn + `<span class="tok-key">${esc(JSON.stringify(k))}</span><span class="tok-punct">: </span>`
+      + highlightJson(value[k], indent + 1)
+  ).join(",\n") + "\n" + pad + "}";
+}
+
+// hlJsonString renders a string value. Single-line strings stay inline (JSON
+// quoting preserved); a multi-line string is exploded into a fenced block so
+// \n-separated command output reads line by line rather than as one escaped
+// wall of text. Its real newlines/quotes are shown verbatim (HTML-escaped).
+function hlJsonString(str, indent) {
+  if (!str.includes("\n")) return `<span class="tok-str">${esc(JSON.stringify(str))}</span>`;
+  const pad = "  ".repeat(indent);
+  const padIn = "  ".repeat(indent + 1);
+  const lines = str.replace(/\r\n?/g, "\n").split("\n")
+    .map((l) => padIn + `<span class="tok-str">${l === "" ? "" : esc(l)}</span>`).join("\n");
+  const fence = `<span class="tok-punct" title="multi-line string">"""</span>`;
+  return `${fence}\n${lines}\n${pad}${fence}`;
 }
 
 async function openRawFileModal(repoId, candidates, title) {
