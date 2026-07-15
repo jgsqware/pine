@@ -4531,6 +4531,249 @@ async function pagePipelines(page) {
   await Promise.all([refreshPipelines(), refreshRuns()]);
 }
 
+/** Subsequence fuzzy match, case-insensitive. A contiguous substring always
+ *  outranks a scattered one (score < 1000 vs >= 1000). Returns null on no match. */
+function fuzzyMatch(query, text) {
+  const q = query.trim().toLowerCase();
+  if (!q) return 0;
+  const t = text.toLowerCase();
+  const idx = t.indexOf(q);
+  if (idx !== -1) return idx;
+  let ti = 0, score = 1000;
+  for (const c of q) {
+    const found = t.indexOf(c, ti);
+    if (found === -1) return null;
+    score += found - ti;
+    ti = found + 1;
+  }
+  return score;
+}
+
+/** A searchable single-select combobox: input + floating fuzzy-filtered menu
+ *  (menu lives on document.body so it isn't clipped by the modal's own
+ *  overflow, same trick as openVarPopover). options: [{value, label, sub}]. */
+/** freeText: accept and keep whatever the user types (no revert on blur, not
+ *  disabled when the option list is empty) — the dropdown becomes pure
+ *  autocomplete over an open-ended value instead of a closed enum. Used for
+ *  pipeline-step variable names, where the "right" answer isn't always one
+ *  Pine already knows about. */
+function mkFuzzySelect({ options, value, placeholder, empty, onChange, freeText }) {
+  let opts = options || [];
+  let val = value || "";
+  let menu = null, activeIdx = -1, filtered = [];
+
+  const input = el("input", { type: "text", placeholder: placeholder || "Search…", autocomplete: "off" });
+  if (freeText) input.value = val;
+  const wrap = el("div", { class: "fz-select" }, input);
+
+  const labelFor = (v) => (opts.find((o) => o.value === v) || {}).label || "";
+  const syncDisplay = () => { if (!freeText) input.value = labelFor(val); };
+
+  const positionMenu = () => {
+    if (!menu) return;
+    const r = input.getBoundingClientRect();
+    menu.style.left = `${r.left}px`;
+    menu.style.top = `${r.bottom + 4}px`;
+    menu.style.width = `${r.width}px`;
+  };
+  const onDocMouseDown = (e) => { if (menu && !menu.contains(e.target) && e.target !== input) { closeMenu(); syncDisplay(); } };
+  const onScrollOrResize = () => positionMenu();
+
+  function closeMenu() {
+    if (!menu) return;
+    menu.remove();
+    menu = null;
+    document.removeEventListener("mousedown", onDocMouseDown, true);
+    window.removeEventListener("scroll", onScrollOrResize, true);
+    window.removeEventListener("resize", onScrollOrResize);
+  }
+  const highlight = () => {
+    [...menu.children].forEach((c, i) => c.classList.toggle("active", i === activeIdx));
+    const c = menu.children[activeIdx];
+    if (c) c.scrollIntoView({ block: "nearest" });
+  };
+  const pick = (o) => {
+    val = o.value;
+    input.value = o.label;
+    closeMenu();
+    if (onChange) onChange(val);
+  };
+  const renderMenu = () => {
+    if (!opts.length && !freeText) return;
+    const q = input.value.trim();
+    filtered = opts
+      .map((o) => ({ o, s: fuzzyMatch(q, o.label + " " + (o.sub || "")) }))
+      .filter((x) => x.s !== null)
+      .sort((a, b) => a.s - b.s)
+      .map((x) => x.o);
+    if (freeText && !filtered.length && !q) return closeMenu();
+    if (!menu) {
+      menu = el("div", { class: "fz-menu" });
+      document.body.appendChild(menu);
+      document.addEventListener("mousedown", onDocMouseDown, true);
+      window.addEventListener("scroll", onScrollOrResize, true);
+      window.addEventListener("resize", onScrollOrResize);
+    }
+    menu.innerHTML = "";
+    if (!filtered.length) {
+      menu.appendChild(el("div", { class: "fz-empty" }, empty || "No matches"));
+    } else {
+      filtered.forEach((o) => menu.appendChild(el("div", {
+        class: "fz-opt" + (o.value === val ? " selected" : ""),
+        onmousedown: (e) => { e.preventDefault(); pick(o); },
+      }, el("span", { class: "fz-opt-label" }, o.label), o.sub ? el("span", { class: "fz-opt-sub mono" }, o.sub) : null)));
+    }
+    activeIdx = -1;
+    positionMenu();
+  };
+
+  input.addEventListener("focus", () => { if (!freeText) input.select(); renderMenu(); });
+  input.addEventListener("input", () => {
+    if (freeText) { val = input.value; if (onChange) onChange(val); }
+    renderMenu();
+  });
+  input.addEventListener("blur", () => setTimeout(() => { closeMenu(); syncDisplay(); }, 120));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { if (menu) { e.stopPropagation(); closeMenu(); syncDisplay(); } return; }
+    if (!menu) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, filtered.length - 1); highlight(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); highlight(); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      if (filtered[activeIdx]) pick(filtered[activeIdx]);
+      else if (!freeText && filtered.length === 1) pick(filtered[0]);
+      else closeMenu();
+    }
+  });
+
+  syncDisplay();
+  return {
+    root: wrap,
+    getValue: () => (freeText ? input.value.trim() : val),
+    setValue: (v) => { val = v; if (freeText) input.value = v; else syncDisplay(); },
+    setOptions: (o) => {
+      opts = o || [];
+      if (!freeText) { input.disabled = !opts.length; if (!opts.length) input.placeholder = empty || "No matches"; syncDisplay(); }
+      if (document.activeElement === input) renderMenu();
+    },
+  };
+}
+
+/** Multi-select chip picker for an ansible --limit pattern: pick any number
+ *  of hosts and/or groups from the current inventory, comma-joined (which is
+ *  ansible's own union syntax). Typing a name the inventory doesn't know
+ *  (Enter or comma) still adds it as a raw token, so hand-written patterns
+ *  like "web*" or "!web01" keep working. */
+function mkHostPicker({ value, placeholder }) {
+  let items = (value || "").split(",").map((s) => s.trim()).filter(Boolean);
+  let hosts = [], groups = [];
+  let onChangeCb = null;
+  let menu = null, activeIdx = -1, filtered = [];
+
+  const chipsBox = el("div", { class: "hp-chips" });
+  const input = el("input", { type: "text", placeholder: placeholder || "host or group…", autocomplete: "off" });
+  const wrap = el("div", { class: "host-picker" }, chipsBox, input);
+
+  const notify = () => { if (onChangeCb) onChangeCb(items.join(",")); };
+  const kindOf = (name) => (hosts.some((h) => h.name === name) ? "host" : groups.some((g) => g.name === name) ? "group" : "raw");
+
+  const renderChips = () => {
+    chipsBox.innerHTML = "";
+    items.forEach((name, i) => {
+      chipsBox.appendChild(el("span", { class: "chip hp-chip hp-" + kindOf(name) },
+        name,
+        el("span", {
+          class: "hp-remove", title: "Remove",
+          onmousedown: (e) => { e.preventDefault(); e.stopPropagation(); items.splice(i, 1); renderChips(); notify(); },
+        }, "×")));
+    });
+  };
+
+  const positionMenu = () => {
+    if (!menu) return;
+    const r = wrap.getBoundingClientRect();
+    menu.style.left = `${r.left}px`;
+    menu.style.top = `${r.bottom + 4}px`;
+    menu.style.width = `${Math.max(r.width, 220)}px`;
+  };
+  const onDocMouseDown = (e) => { if (menu && !menu.contains(e.target) && e.target !== input) closeMenu(); };
+  const onScrollOrResize = () => positionMenu();
+
+  function closeMenu() {
+    if (!menu) return;
+    menu.remove();
+    menu = null;
+    document.removeEventListener("mousedown", onDocMouseDown, true);
+    window.removeEventListener("scroll", onScrollOrResize, true);
+    window.removeEventListener("resize", onScrollOrResize);
+  }
+  const highlight = () => { [...menu.children].forEach((c, i) => c.classList.toggle("active", i === activeIdx)); };
+  const add = (name) => {
+    name = name.trim();
+    input.value = "";
+    if (!name || items.includes(name)) { renderMenu(); return; }
+    items.push(name);
+    renderChips();
+    notify();
+    input.focus();
+    renderMenu(); // stay open, ready for the next pick — this is a multi-select
+  };
+  const renderMenu = () => {
+    const q = input.value.trim();
+    const pool = [
+      ...groups.map((g) => ({ value: g.name, label: g.name, kind: "group" })),
+      ...hosts.map((h) => ({ value: h.name, label: h.name, kind: "host" })),
+    ].filter((o) => !items.includes(o.value));
+    filtered = q
+      ? pool.map((o) => ({ o, s: fuzzyMatch(q, o.label) })).filter((x) => x.s !== null).sort((a, b) => a.s - b.s).map((x) => x.o)
+      : pool;
+    if (!menu) {
+      menu = el("div", { class: "fz-menu" });
+      document.body.appendChild(menu);
+      document.addEventListener("mousedown", onDocMouseDown, true);
+      window.addEventListener("scroll", onScrollOrResize, true);
+      window.addEventListener("resize", onScrollOrResize);
+    }
+    menu.innerHTML = "";
+    if (!filtered.length) {
+      menu.appendChild(el("div", { class: "fz-empty" },
+        q ? `No match — Enter to add “${q}” as a pattern` : "No hosts/groups in this inventory"));
+    } else {
+      filtered.forEach((o) => menu.appendChild(el("div", {
+        class: "fz-opt", onmousedown: (e) => { e.preventDefault(); add(o.value); },
+      }, el("span", { class: "fz-opt-label" }, o.label), el("span", { class: "chip hp-" + o.kind + " fz-opt-kind" }, o.kind))));
+    }
+    activeIdx = -1;
+    positionMenu();
+  };
+
+  input.addEventListener("focus", renderMenu);
+  input.addEventListener("input", renderMenu);
+  input.addEventListener("blur", () => setTimeout(closeMenu, 120));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (filtered[activeIdx]) add(filtered[activeIdx].value);
+      else if (input.value.trim()) add(input.value.trim());
+    } else if (e.key === "," ) {
+      e.preventDefault();
+      if (input.value.trim()) add(input.value.trim());
+    } else if (e.key === "Backspace" && !input.value && items.length) {
+      items.pop(); renderChips(); notify();
+    } else if (e.key === "ArrowDown" && menu) { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, filtered.length - 1); highlight(); }
+    else if (e.key === "ArrowUp" && menu) { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); highlight(); }
+    else if (e.key === "Escape" && menu) { e.stopPropagation(); closeMenu(); }
+  });
+
+  renderChips();
+  return {
+    root: wrap,
+    getValue: () => items.join(","),
+    setOptions: (h, g) => { hosts = h || []; groups = g || []; },
+    onChange: (fn) => { onChangeCb = fn; },
+  };
+}
+
 /** Pipeline builder: name + repo + dynamic, reorderable step list.
  *  Editing rebuilds (POST new, DELETE old) — the API has no pipeline PATCH. */
 async function openPipelineModal(existing, onDone) {
@@ -4556,6 +4799,7 @@ async function openPipelineModal(existing, onDone) {
     inventory: (data && data.inventory) || "",
     limit: (data && data.limit) || "",
     tags: (data && data.tags) || "",
+    vars: Object.entries((data && data.vars) || {}).map(([name, value]) => ({ name, value })),
     check: !!(data && data.check),
     require_approval: !!(data && data.require_approval),
     continue_on_failure: !!(data && data.continue_on_failure),
@@ -4572,12 +4816,14 @@ async function openPipelineModal(existing, onDone) {
     nameI.value = st.name;
     nameI.addEventListener("input", () => (st.name = nameI.value));
 
-    const pbS = el("select");
-    if (!scanPbs.length) pbS.appendChild(el("option", { value: "" }, "No playbooks found"));
-    for (const p of scanPbs) pbS.appendChild(el("option", { value: p.path }, p.name ? `${p.name}  (${p.path})` : p.path));
-    if (st.playbook && scanPbs.some((p) => p.path === st.playbook)) pbS.value = st.playbook;
-    st.playbook = pbS.value;
-    pbS.addEventListener("change", () => (st.playbook = pbS.value));
+    const pbSel = mkFuzzySelect({
+      options: scanPbs.map((p) => ({ value: p.path, label: p.name || p.path, sub: p.name ? p.path : "" })),
+      value: scanPbs.some((p) => p.path === st.playbook) ? st.playbook : "",
+      placeholder: "Search playbooks…",
+      empty: "No playbooks found",
+      onChange: (v) => { st.playbook = v; refreshKnownVars(); },
+    });
+    st.playbook = pbSel.getValue();
 
     const invS = el("select");
     if (!scanInvs.length) invS.appendChild(el("option", { value: "" }, "No inventories found"));
@@ -4587,14 +4833,63 @@ async function openPipelineModal(existing, onDone) {
       if (opt) invS.value = st.inventory;
     }
     st.inventory = invS.value;
-    invS.addEventListener("change", () => (st.inventory = invS.value));
 
-    const limitI = el("input", { type: "text", placeholder: "limit (optional)", style: { width: "100%" } });
-    limitI.value = st.limit;
-    limitI.addEventListener("input", () => (st.limit = limitI.value));
+    const limitPicker = mkHostPicker({ value: st.limit, placeholder: "host or group (optional — empty = all)" });
+    st.limit = limitPicker.getValue();
+    limitPicker.onChange((v) => (st.limit = v));
+    const syncLimitOptions = () => {
+      const inv = scanInvs.find((i) => (i.path || i.name) === invS.value);
+      limitPicker.setOptions((inv && inv.hosts) || [], (inv && inv.groups) || []);
+    };
+    syncLimitOptions();
+
     const tagsI = el("input", { type: "text", placeholder: "tags (optional)", style: { width: "100%" } });
     tagsI.value = st.tags;
     tagsI.addEventListener("input", () => (st.tags = tagsI.value));
+
+    // --- variables: name autocompletes from /resolve's known-var list for
+    // whichever playbook+inventory is currently picked; refreshed on change.
+    const varsBox = el("div", { class: "pipe-vars" });
+    const varNameSels = []; // live registry so a late-arriving fetch can update every open row
+    let knownVarOpts = [];
+
+    const refreshKnownVars = async () => {
+      if (!st.playbook) { knownVarOpts = []; varNameSels.forEach((s) => s.setOptions([])); return; }
+      try {
+        const q = new URLSearchParams({ playbook: st.playbook, inventory: st.inventory || "" });
+        const rr = await api(`/repos/${repoSel.value}/resolve?${q.toString()}`);
+        knownVarOpts = (rr.known || []).slice().sort().map((n) => ({ value: n, label: n }));
+      } catch {
+        knownVarOpts = [];
+      }
+      varNameSels.forEach((s) => s.setOptions(knownVarOpts));
+    };
+
+    const renderVarRows = () => {
+      varsBox.innerHTML = "";
+      varNameSels.length = 0;
+      st.vars.forEach((v, i) => {
+        const nameSel = mkFuzzySelect({
+          options: knownVarOpts, value: v.name, freeText: true,
+          placeholder: "variable name…", empty: "no known variables",
+          onChange: (n) => (v.name = n),
+        });
+        varNameSels.push(nameSel);
+        const valueI = el("input", { type: "text", placeholder: "value — true, 42, \"text\"…" });
+        valueI.value = typeof v.value === "string" ? v.value : JSON.stringify(v.value);
+        valueI.addEventListener("input", () => (v.value = valueI.value));
+        varsBox.appendChild(el("div", { class: "pipe-var-row" },
+          nameSel.root, valueI,
+          el("button", {
+            class: "btn btn-sm btn-ghost", title: "Remove variable",
+            onclick: () => { st.vars.splice(i, 1); renderVarRows(); },
+          }, icon("trash"))));
+      });
+    };
+    renderVarRows();
+    refreshKnownVars();
+
+    invS.addEventListener("change", () => { st.inventory = invS.value; syncLimitOptions(); refreshKnownVars(); });
 
     const mkToggle = (key, label, title) => {
       const cb = el("input", { type: "checkbox", checked: st[key] || null });
@@ -4619,10 +4914,18 @@ async function openPipelineModal(existing, onDone) {
           onclick: () => { steps.splice(idx, 1); renderSteps(); },
         }, icon("trash"))),
       el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "8px" } },
-        el("div", { class: "field", style: { marginBottom: 0 } }, el("label", null, "Playbook"), pbS),
+        el("div", { class: "field", style: { marginBottom: 0 } }, el("label", null, "Playbook"), pbSel.root),
         el("div", { class: "field", style: { marginBottom: 0 } }, el("label", null, "Inventory"), invS)),
       el("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "6px" } },
-        limitI, tagsI),
+        el("div", { class: "field", style: { marginBottom: 0 } }, el("label", null, "Limit to host/group"), limitPicker.root),
+        el("div", { class: "field", style: { marginBottom: 0 } }, el("label", null, "Tags"), tagsI)),
+      el("div", { class: "field", style: { marginBottom: "8px" } },
+        el("label", null, "Variables ", el("span", { class: "muted" }, "— passed as -e extra vars to this step")),
+        varsBox,
+        el("button", {
+          class: "btn btn-sm", style: { marginTop: "2px" },
+          onclick: () => { st.vars.push({ name: "", value: "" }); renderVarRows(); },
+        }, icon("plus"), "Add variable")),
       el("div", { class: "pipe-toggles" },
         mkToggle("check", "check mode", "Run this step with --check (dry run)"),
         mkToggle("require_approval", "require approval", "Pause for human approval before this step"),
@@ -4670,6 +4973,8 @@ async function openPipelineModal(existing, onDone) {
         inventory: st.inventory || "",
         limit: st.limit.trim(),
         tags: st.tags.trim(),
+        vars: Object.fromEntries(
+          st.vars.filter((v) => v.name.trim()).map((v) => [v.name.trim(), parseVarValue(v.value)])),
         check: st.check,
         require_approval: st.require_approval,
         continue_on_failure: st.continue_on_failure,

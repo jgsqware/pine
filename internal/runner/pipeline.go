@@ -152,7 +152,7 @@ func (m *Manager) advancePipeline(runID string, pipe model.Pipeline, start int) 
 		job, err := m.StartJob(model.Job{
 			RepoID: pipe.RepoID, Playbook: step.Playbook, Inventory: step.Inventory,
 			Limit: step.Limit, Tags: step.Tags, Check: step.Check,
-		})
+		}, RunOpts{ExtraVars: step.Vars})
 		run.Steps[i].Status = "running"
 		run.Steps[i].JobID = job.ID
 		if err != nil {

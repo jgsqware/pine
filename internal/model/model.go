@@ -272,14 +272,15 @@ type Schedule struct {
 
 // PipelineStep is one stage of a light pipeline.
 type PipelineStep struct {
-	Name              string `json:"name"`
-	Playbook          string `json:"playbook"`
-	Inventory         string `json:"inventory,omitempty"`
-	Limit             string `json:"limit,omitempty"`
-	Tags              string `json:"tags,omitempty"`
-	Check             bool   `json:"check"`
-	RequireApproval   bool   `json:"require_approval"`
-	ContinueOnFailure bool   `json:"continue_on_failure"`
+	Name              string         `json:"name"`
+	Playbook          string         `json:"playbook"`
+	Inventory         string         `json:"inventory,omitempty"`
+	Limit             string         `json:"limit,omitempty"`
+	Tags              string         `json:"tags,omitempty"`
+	Vars              map[string]any `json:"vars,omitempty"` // -e extra vars for this step's run
+	Check             bool           `json:"check"`
+	RequireApproval   bool           `json:"require_approval"`
+	ContinueOnFailure bool           `json:"continue_on_failure"`
 }
 
 // Pipeline chains playbooks with failure stops and approval gates.

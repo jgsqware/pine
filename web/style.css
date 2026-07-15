@@ -1831,6 +1831,51 @@ a.step-chip:hover { text-decoration: none; border-color: var(--secondary); }
 .pipe-toggles { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 4px; }
 .pipe-toggles .check-row { font-size: 12px; color: var(--muted); }
 
+.pipe-vars { display: flex; flex-direction: column; gap: 6px; }
+.pipe-var-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; }
+.pipe-var-row input { font-family: var(--mono); font-size: 12.5px; }
+
+/* ---------- fuzzy search-select combobox ---------- */
+
+.fz-select { position: relative; }
+.fz-select input { width: 100%; }
+.fz-menu {
+  position: fixed; z-index: 600;
+  background: var(--panel); border: 1px solid #2e4438; border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  max-height: 260px; overflow-y: auto; padding: 4px;
+}
+.fz-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 9px; border-radius: 7px; cursor: pointer; font-size: 12.5px;
+}
+.fz-opt:hover, .fz-opt.active { background: rgba(74, 222, 128, 0.1); }
+.fz-opt.selected { color: var(--accent); font-weight: 600; }
+.fz-opt-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fz-opt-sub { color: var(--muted); font-size: 11px; flex: none; }
+.fz-opt-kind { flex: none; pointer-events: none; }
+.fz-empty { padding: 10px; color: var(--muted); font-size: 12px; text-align: center; }
+
+/* ---------- host/group multi-select (pipeline step limit) ---------- */
+
+.host-picker {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 6px;
+  background: var(--bg); cursor: text;
+}
+.host-picker:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.12); }
+.host-picker input {
+  flex: 1; min-width: 100px; border: none !important; background: none !important;
+  padding: 3px 2px; box-shadow: none !important;
+}
+.hp-chips { display: contents; }
+.chip.hp-chip { padding-right: 4px; }
+.chip.hp-host { color: var(--secondary); border-color: rgba(34, 211, 238, 0.3); background: var(--secondary-dim); }
+.chip.hp-group { color: var(--purple); border-color: rgba(192, 132, 252, 0.3); background: rgba(192, 132, 252, 0.1); }
+.chip.hp-raw { color: var(--warning); border-color: rgba(251, 191, 36, 0.3); background: var(--warning-dim); }
+.hp-remove { cursor: pointer; opacity: 0.7; font-size: 13px; line-height: 1; }
+.hp-remove:hover { opacity: 1; }
+
 /* ---------- topology time-lapse ---------- */
 
 .timelapse-bar {
