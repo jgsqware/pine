@@ -23,6 +23,24 @@ A feature is not done until ALL of these are updated in the same change:
    re-capture a live shot later. Never fabricate a screenshot that
    misrepresents how the app looks or invents behaviour it does not have.
 
+## Auth / bind model
+
+Pine's API executes `ansible-playbook` and `git`, so an unauthenticated
+public bind is a remote-code-execution surface. `pine serve` binds
+**loopback** (`127.0.0.1:8743`) by default — friction-free, no token. A
+non-loopback bind (`:8743`, `0.0.0.0`, `::`, a LAN IP) is **refused**
+unless a token is set (`--token` / `PINE_TOKEN`) or `--insecure` is passed
+(`guardBind` in `cmd/pine/main.go`).
+
+Any change to the bind/auth surface must keep these in sync:
+
+- `pine serve` — the `guardBind` gate + `server.Config{Token}`.
+- `pine service install` — bakes `Environment=PINE_TOKEN` into the systemd
+  unit for a non-loopback bind (never on the ExecStart command line).
+- Web UI (`web/`) — token in `localStorage["pine_token"]`, sent as the
+  `X-Pine-Token` header and `?token=` on the EventSource stream.
+- README auth/serve docs.
+
 ## Quality bar
 
 - Honest engines: static analysis must never present a guess as a
@@ -38,5 +56,6 @@ A feature is not done until ALL of these are updated in the same change:
 ```bash
 go build -o pine ./cmd/pine && go vet ./... && go test ./...
 node --check web/app.js
-./pine serve --demo --data .pine   # manual check on :8743
+./pine serve --demo --data .pine   # loopback 127.0.0.1:8743, no token needed
+                                   # a non-loopback bind needs --token/PINE_TOKEN
 ```
