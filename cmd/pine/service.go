@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -36,9 +39,10 @@ func cmdService(args []string) {
 
 func serviceUsage() {
 	fmt.Fprint(os.Stderr, `Usage:
-  pine service install [--addr :8743] [--data DIR] [--demo]   Install & start the systemd user service
-  pine service status                                         Show the service status
-  pine service uninstall                                      Stop & remove the service
+  pine service install [--addr 127.0.0.1:8743] [--data DIR] [--demo]  Install & start the systemd user service
+                       [--token TOKEN] [--insecure]                   Auth for a non-loopback bind
+  pine service status                                                 Show the service status
+  pine service uninstall                                              Stop & remove the service
 `)
 }
 
@@ -64,11 +68,23 @@ func requireSystemd() {
 
 func serviceInstall(args []string) {
 	fs := flag.NewFlagSet("service install", flag.ExitOnError)
-	addr := fs.String("addr", ":8743", "listen address")
+	addr := fs.String("addr", "127.0.0.1:8743", "listen address")
 	data := fs.String("data", defaultDataDir(), "data directory")
 	demo := fs.Bool("demo", false, "register the bundled demo repository")
+	token := fs.String("token", os.Getenv("PINE_TOKEN"), "require this API token (or set PINE_TOKEN); mandatory for a non-loopback bind")
+	insecure := fs.Bool("insecure", false, "allow a non-loopback bind without a token (not recommended)")
 	_ = fs.Parse(args)
 	requireSystemd()
+
+	// The service runs `pine serve`, whose API executes ansible and git — so it
+	// refuses a non-loopback bind without authentication. Mirror that here: mint
+	// a token when the operator exposes Pine but supplies neither --token nor
+	// --insecure, so the installed unit actually starts (and stays secure).
+	minted := false
+	if !isLoopbackBind(*addr) && *token == "" && !*insecure {
+		*token = genToken()
+		minted = true
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -89,7 +105,13 @@ func serviceInstall(args []string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		fatalf("create unit dir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(unitFile(exe, *addr, dataAbs, *demo)), 0o644); err != nil {
+	// The unit carries the token via Environment=PINE_TOKEN (not the command
+	// line) so it never shows up in `ps`; tighten perms since it holds a secret.
+	perm := os.FileMode(0o644)
+	if *token != "" {
+		perm = 0o600
+	}
+	if err := os.WriteFile(path, []byte(unitFile(exe, *addr, dataAbs, *demo, *token, *insecure)), perm); err != nil {
 		fatalf("write unit file: %v", err)
 	}
 	fmt.Printf("wrote %s\n", path)
@@ -109,12 +131,51 @@ func serviceInstall(args []string) {
 		}
 	}
 
-	fmt.Printf("\n✓ Pine is running as a service on http://localhost%s\n", *addr)
+	fmt.Printf("\n✓ Pine is running as a service on http://localhost%s\n", displayHostPort(*addr))
+
+	if *token != "" {
+		fmt.Printf("\nAPI token (required — this bind is reachable off-host):\n  %s\n", *token)
+		verb := "Generated one automatically"
+		if !minted {
+			verb = "Using the token you supplied"
+		}
+		fmt.Printf("%s and stored it in the unit (Environment=PINE_TOKEN).\n", verb)
+		fmt.Print("Use it to reach Pine:\n" +
+			"  • Web UI — paste it when prompted (it's kept in your browser)\n" +
+			"  • Terminal — export PINE_TOKEN before attaching:\n" +
+			"      export PINE_TOKEN=" + *token + "\n" +
+			"      pine attach\n")
+	} else if *insecure {
+		fmt.Print("\n⚠ Installed with --insecure: the API is exposed WITHOUT a token.\n" +
+			"  Anyone who can reach this address can run ansible and git through Pine.\n")
+	}
+
 	fmt.Print("\nManage it with:\n" +
 		"  systemctl --user status pine     # check\n" +
 		"  systemctl --user restart pine    # restart (after upgrading the binary)\n" +
 		"  journalctl --user -u pine -f     # follow logs\n" +
 		"  pine attach                      # drive it from the terminal\n")
+}
+
+// genToken returns a random 32-byte hex API token.
+func genToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		fatalf("generate token: %v", err)
+	}
+	return hex.EncodeToString(b)
+}
+
+// displayHostPort turns a listen address into something clickable: a bare
+// ":8743" or wildcard bind is reachable via localhost from the same machine.
+func displayHostPort(addr string) string {
+	if isLoopbackBind(addr) {
+		return addr
+	}
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		return ":" + port
+	}
+	return addr
 }
 
 func serviceUninstall(args []string) {
@@ -146,11 +207,20 @@ func serviceStatus() {
 	_ = cmd.Run()
 }
 
-// unitFile renders the systemd unit. Paths are quoted so spaces are safe.
-func unitFile(exe, addr, data string, demo bool) string {
+// unitFile renders the systemd unit. Paths are quoted so spaces are safe. A
+// non-empty token is passed via Environment=PINE_TOKEN (never the command line,
+// so it stays out of `ps`); --insecure is passed through when set.
+func unitFile(exe, addr, data string, demo bool, token string, insecure bool) string {
 	execStart := fmt.Sprintf("%q serve --addr %s --data %q", exe, addr, data)
 	if demo {
 		execStart += " --demo"
+	}
+	if insecure {
+		execStart += " --insecure"
+	}
+	env := "Environment=HOME=%h"
+	if token != "" {
+		env += "\nEnvironment=PINE_TOKEN=" + token
 	}
 	return fmt.Sprintf(`[Unit]
 Description=Pine — Ansible control plane (web UI + API + scheduler)
@@ -162,11 +232,11 @@ Type=simple
 ExecStart=%s
 Restart=on-failure
 RestartSec=5
-Environment=HOME=%%h
+%s
 
 [Install]
 WantedBy=default.target
-`, execStart)
+`, execStart, env)
 }
 
 // mustSystemctl runs `systemctl --user <args>` and aborts on failure.
