@@ -500,6 +500,12 @@ table.data .mono { color: var(--muted); }
 .code-view .tok-jinja { color: var(--warning); }
 .code-view .tok-punct { color: var(--muted); }
 .code-view .tok-doc { color: var(--muted); }
+/* syntax highlighting for JSON result previews (Messages panel + collapsed log) */
+.json-hl .tok-key { color: var(--secondary); }
+.json-hl .tok-str { color: #9ece9a; }
+.json-hl .tok-num { color: var(--purple); }
+.json-hl .tok-bool { color: var(--orange); }
+.json-hl .tok-punct { color: var(--muted); }
 
 /* ---------- tabs ---------- */
 

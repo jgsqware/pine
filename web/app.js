@@ -386,6 +386,26 @@ function highlightCode(text, path) {
   return text.split("\n").map(fn).join("\n");
 }
 
+// highlightJson returns HTML for a pretty-printed JSON value, reusing the same
+// tok-* spans as the code preview (keys, strings, numbers, booleans/null). It
+// escapes only & < > so the string-matching regex can still see the quotes.
+function highlightJson(value) {
+  const json = (typeof value === "string" ? value : JSON.stringify(value, null, 2))
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return json.replace(
+    /("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*")(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
+    (match, str, colon) => {
+      if (str !== undefined) {
+        return colon !== undefined
+          ? `<span class="tok-key">${str}</span><span class="tok-punct">${colon}</span>`
+          : `<span class="tok-str">${str}</span>`;
+      }
+      return /^-?\d/.test(match)
+        ? `<span class="tok-num">${match}</span>`
+        : `<span class="tok-bool">${match}</span>`;
+    });
+}
+
 async function openRawFileModal(repoId, candidates, title) {
   const paths = Array.isArray(candidates) ? candidates : [candidates];
   const { body: bodyEl } = openModal({
@@ -5180,7 +5200,8 @@ function renderResultLine(line) {
   let obj;
   try { obj = JSON.parse(m[2]); } catch { return null; }
   const sum = summarizeAnsibleResult(obj);
-  const full = el("pre", { class: "ll-json-full mono", style: { display: "none" } }, JSON.stringify(obj, null, 2));
+  const full = el("pre", { class: "ll-json-full mono json-hl", style: { display: "none" } });
+  full.innerHTML = highlightJson(obj);
   const caret = el("span", { class: "ll-json-caret" }, "▸");
   const head = el("div", {
     class: "ll ll-json-head " + logLineClass(line),
@@ -5289,7 +5310,8 @@ async function pageJobDetail(page, segs) {
     for (const m of msgs) {
       const row = el("div", { class: "jm-row jm-" + m.status });
       const caret = el("span", { class: "jm-caret" }, "▸");
-      const full = el("pre", { class: "jm-full mono" }, JSON.stringify(m.full, null, 2));
+      const full = el("pre", { class: "jm-full mono json-hl" });
+      full.innerHTML = highlightJson(m.full);
       row.appendChild(el("div", {
         class: "jm-row-head",
         onclick: () => { row.classList.toggle("open"); caret.textContent = row.classList.contains("open") ? "▾" : "▸"; },
