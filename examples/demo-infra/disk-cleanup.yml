@@ -1,0 +1,78 @@
+---
+# Reclaims disk space flagged by disk-audit.yml. Meant to run as the
+# approval-gated step of the "Disk cleanup" pipeline, after a human reviews
+# the audit output — see README.md's Pipelines section. Every task here is
+# safe to re-run: it only removes things that are already stale or unused.
+- name: Reclaim disk space on the Acme fleet
+  hosts: acme
+  become: true
+  gather_facts: true
+  vars:
+    tmp_max_age_days: 7
+    journal_max_age: 7d
+
+  tasks:
+    - name: Vacuum systemd journal logs older than {{ journal_max_age }}
+      ansible.builtin.command:
+        cmd: "journalctl --vacuum-time={{ journal_max_age }}"
+      register: journal_vacuum
+      changed_when: "'Vacuuming done' in journal_vacuum.stdout"
+      tags: [cleanup, logs]
+
+    - name: Find /tmp files older than {{ tmp_max_age_days }} days
+      ansible.builtin.find:
+        paths: /tmp
+        age: "{{ tmp_max_age_days }}d"
+        recurse: true
+        file_type: file
+      register: stale_tmp_files
+      tags: [cleanup, tmp]
+
+    - name: Delete the stale /tmp files found above
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ stale_tmp_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      tags: [cleanup, tmp]
+
+    - name: Clean the apt package cache (Debian family)
+      ansible.builtin.apt:
+        autoclean: true
+        autoremove: true
+      when: ansible_facts['os_family'] == 'Debian'
+      tags: [cleanup, packages]
+
+    - name: Clean the dnf package cache (RedHat family)
+      ansible.builtin.dnf:
+        autoremove: true
+      when: ansible_facts['os_family'] == 'RedHat'
+      tags: [cleanup, packages]
+
+    - name: Report cleanup done
+      ansible.builtin.debug:
+        msg: "Cleanup complete on {{ inventory_hostname }} — rerun disk-audit.yml to confirm."
+      tags: [cleanup, verify]
+
+- name: Prune unused Docker resources
+  hosts: docker_hosts
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Remove stopped containers, dangling images, build cache and unused networks
+      community.docker.docker_prune:
+        containers: true
+        images: true
+        images_filters:
+          dangling: false
+        builder_cache: true
+        networks: true
+      register: prune_result
+      tags: [cleanup, docker]
+
+    - name: Report Docker space reclaimed
+      ansible.builtin.debug:
+        msg: "Reclaimed {{ (prune_result.space_reclaimed | default(0) / 1024 / 1024) | round(1) }} MiB on {{ inventory_hostname }}"
+      tags: [cleanup, docker, verify]

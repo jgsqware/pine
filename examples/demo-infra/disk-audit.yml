@@ -1,0 +1,44 @@
+---
+# Read-only disk-space audit — the first step of the "human approves before
+# cleanup" pipeline story: nothing here can report changed, it only inspects
+# and reports so an operator can decide whether disk-cleanup.yml is worth
+# running. Pair with disk-cleanup.yml behind a require_approval pipeline step.
+- name: Audit disk space across the Acme fleet
+  hosts: acme
+  become: true
+  gather_facts: true
+  vars:
+    disk_warn_percent: 80
+
+  tasks:
+    - name: Refresh mount facts
+      ansible.builtin.setup:
+        filter: ansible_mounts
+      tags: [audit, disk]
+
+    - name: Report usage per real mount
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.mount }}: {{ (((item.size_total - item.size_available) / item.size_total) * 100) | round(1) }}%
+          used, {{ (item.size_available / 1024 / 1024 / 1024) | round(1) }} GiB free of
+          {{ (item.size_total / 1024 / 1024 / 1024) | round(1) }} GiB
+      loop: "{{ ansible_mounts }}"
+      loop_control:
+        label: "{{ item.mount }}"
+      when: item.size_total > 0
+      tags: [audit, disk]
+
+    - name: Flag mounts above the warning threshold
+      ansible.builtin.assert:
+        that:
+          - (((item.size_total - item.size_available) / item.size_total) * 100) < disk_warn_percent
+        fail_msg: >-
+          {{ item.mount }} on {{ inventory_hostname }} is at
+          {{ (((item.size_total - item.size_available) / item.size_total) * 100) | round(1) }}%
+          — above the {{ disk_warn_percent }}% threshold. Approve the cleanup step to reclaim space.
+        success_msg: "{{ item.mount }} on {{ inventory_hostname }} is within budget"
+      loop: "{{ ansible_mounts }}"
+      loop_control:
+        label: "{{ item.mount }}"
+      when: item.size_total > 0
+      tags: [audit, disk]

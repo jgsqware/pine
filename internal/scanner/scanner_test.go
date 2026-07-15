@@ -25,8 +25,8 @@ func TestScanDemoInfra(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	if got := len(res.Playbooks); got != 10 {
-		t.Errorf("playbooks = %d, want 10", got)
+	if got := len(res.Playbooks); got != 12 {
+		t.Errorf("playbooks = %d, want 12", got)
 	}
 	if got := len(res.Roles); got != 12 {
 		t.Errorf("roles = %d, want 12", got)
