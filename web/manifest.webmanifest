@@ -1,6 +1,6 @@
 {
-  "name": "Pine",
-  "short_name": "Pine",
+  "name": "Pine__PINE_LABEL_SUFFIX__",
+  "short_name": "Pine__PINE_LABEL_APP__",
   "description": "Ansible control plane — web UI, API, and scheduler.",
   "start_url": ".",
   "scope": ".",

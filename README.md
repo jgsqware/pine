@@ -251,6 +251,17 @@ It runs under your account (so it has your git/SSH credentials) and restarts on
 failure. To keep it running at boot before you log in, enable linger once:
 `sudo loginctl enable-linger $USER`.
 
+**Naming an instance** — running more than one Pine? Pass `--label NAME`
+(or `PINE_LABEL`) to `pine serve` / `pine service install` to stamp the name
+into the browser title, the sidebar sub-brand and the PWA manifest, so
+`Pine · iba` and `Pine · gaming1` show as distinct apps in the Dock / app
+switcher instead of both reading just "Pine". `service install` bakes it into
+the unit as `Environment=PINE_LABEL` (like the token, never on the command line).
+
+```bash
+pine serve --addr 0.0.0.0:8743 --token "$TOKEN" --label iba   # → title "Pine · iba"
+```
+
 > **Once it's running**, drive it from a terminal with **`pine attach`**
 > (`--addr` / `PINE_ADDR` to point elsewhere). Pine's store is single-writer, so
 > `pine tui` would open a *second* engine on the same files — it now warns when

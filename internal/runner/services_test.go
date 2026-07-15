@@ -53,6 +53,31 @@ func runServicesSimulated(t *testing.T, m *Manager) {
 	}
 }
 
+// TestServicesRecordsPickedInventory guards the "Refresh status → inventory —"
+// bug: a job started with no inventory selected must still record (and resolve
+// against) the inventory pickServiceInventory chose, so the job header names a
+// real inventory and ansible gets a -i instead of falling back to localhost.
+func TestServicesRecordsPickedInventory(t *testing.T) {
+	m := servicesManager(t)
+	devnull, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	r := &run{subs: map[chan string]bool{}, file: devnull}
+	job := &model.Job{RepoID: "r_svc", Playbook: ServicesJobName, Simulated: true} // Inventory empty
+	if failed := m.runServices(context.Background(), job, r); failed {
+		t.Fatal("simulated service harvest reported failure")
+	}
+	if job.Inventory == "" {
+		t.Fatal("runServices left job.Inventory empty — header would show — and ansible would use localhost")
+	}
+	// It must match the inventory the report resolves to, so header and page agree.
+	rep, err := m.ServiceStatus("r_svc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Inventory != rep.Inventory {
+		t.Fatalf("job.Inventory = %q, report inventory = %q — they must agree", job.Inventory, rep.Inventory)
+	}
+}
+
 func TestServiceStatusUnknownBeforeCheck(t *testing.T) {
 	m := servicesManager(t)
 	rep, err := m.ServiceStatus("r_svc", "")

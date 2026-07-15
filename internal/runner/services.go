@@ -91,6 +91,9 @@ func (m *Manager) runServices(ctx context.Context, job *model.Job, r *run) (fail
 		r.publish("ERROR: no inventory found")
 		return true
 	}
+	// Record the inventory we actually chose, so the job header shows it instead
+	// of "—" when "Refresh status" was clicked with nothing selected.
+	job.Inventory = inv.Name
 	groupVars := map[string]map[string]any{}
 	for _, g := range inv.Groups {
 		groupVars[g.Name] = g.Vars
@@ -157,7 +160,11 @@ func (m *Manager) checkServicesReal(ctx context.Context, job *model.Job, r *run,
 	}
 	defer os.RemoveAll(tree)
 
-	execCtx := ansible.Resolve(m.Store.RepoWorkdir(&repo), "", job.Inventory)
+	// Resolve against the inventory pickServiceInventory actually chose — not the
+	// raw job.Inventory, which is empty when "Refresh status" ran with nothing
+	// selected. Without this, ansible got no -i and fell back to implicit
+	// localhost → "no service facts".
+	execCtx := ansible.Resolve(m.Store.RepoWorkdir(&repo), "", inv.Path)
 	args := []string{"all", "-m", "service_facts", "--tree", tree}
 	if execCtx.Inventory != "" {
 		args = append(args, "-i", execCtx.Inventory)

@@ -208,6 +208,7 @@ func cmdLocal(path string, args []string) {
 	useTUI := fs.Bool("tui", false, "launch the terminal UI instead of the web server")
 	token := fs.String("token", os.Getenv("PINE_TOKEN"), "require this token on /api/ (or set PINE_TOKEN); mandatory for a non-loopback bind")
 	insecure := fs.Bool("insecure", false, "allow a non-loopback bind without a token (not recommended)")
+	label := fs.String("label", os.Getenv("PINE_LABEL"), "instance label (or set PINE_LABEL) shown in the title/PWA, e.g. iba, gaming1")
 	_ = fs.Parse(args)
 
 	abs, err := filepath.Abs(path)
@@ -248,7 +249,7 @@ func cmdLocal(path string, args []string) {
 	if !*noOpen {
 		openBrowser(url)
 	}
-	if err := http.Serve(ln, server.New(mgr, server.Config{Token: *token})); err != nil {
+	if err := http.Serve(ln, server.New(mgr, server.Config{Token: *token, Label: *label})); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -349,6 +350,7 @@ func cmdServe(args []string) {
 	demo := fs.Bool("demo", false, "register the bundled demo repository")
 	token := fs.String("token", os.Getenv("PINE_TOKEN"), "require this token on /api/ (or set PINE_TOKEN); mandatory for a non-loopback bind")
 	insecure := fs.Bool("insecure", false, "allow a non-loopback bind without a token (not recommended)")
+	label := fs.String("label", os.Getenv("PINE_LABEL"), "instance label (or set PINE_LABEL) shown in the title/PWA, e.g. iba, gaming1")
 	_ = fs.Parse(args)
 
 	if err := guardBind(*addr, *token, *insecure); err != nil {
@@ -356,7 +358,7 @@ func cmdServe(args []string) {
 	}
 	mgr := openManager(*data, *demo)
 	go mgr.StartScheduler(context.Background())
-	h := server.New(mgr, server.Config{Token: *token})
+	h := server.New(mgr, server.Config{Token: *token, Label: *label})
 	auth := "disabled (loopback)"
 	if *token != "" {
 		auth = "token required"

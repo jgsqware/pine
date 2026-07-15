@@ -41,6 +41,7 @@ func serviceUsage() {
 	fmt.Fprint(os.Stderr, `Usage:
   pine service install [--addr 127.0.0.1:8743] [--data DIR] [--demo]  Install & start the systemd user service
                        [--token TOKEN] [--insecure]                   Auth for a non-loopback bind
+                       [--label NAME]                                 Instance label shown in the title/PWA
   pine service status                                                 Show the service status
   pine service uninstall                                              Stop & remove the service
 `)
@@ -73,6 +74,7 @@ func serviceInstall(args []string) {
 	demo := fs.Bool("demo", false, "register the bundled demo repository")
 	token := fs.String("token", os.Getenv("PINE_TOKEN"), "require this API token (or set PINE_TOKEN); mandatory for a non-loopback bind")
 	insecure := fs.Bool("insecure", false, "allow a non-loopback bind without a token (not recommended)")
+	label := fs.String("label", os.Getenv("PINE_LABEL"), "instance label (or set PINE_LABEL) shown in the title/PWA, e.g. iba, gaming1")
 	_ = fs.Parse(args)
 	requireSystemd()
 
@@ -111,7 +113,7 @@ func serviceInstall(args []string) {
 	if *token != "" {
 		perm = 0o600
 	}
-	if err := os.WriteFile(path, []byte(unitFile(exe, *addr, dataAbs, *demo, *token, *insecure)), perm); err != nil {
+	if err := os.WriteFile(path, []byte(unitFile(exe, *addr, dataAbs, *demo, *token, *label, *insecure)), perm); err != nil {
 		fatalf("write unit file: %v", err)
 	}
 	fmt.Printf("wrote %s\n", path)
@@ -210,7 +212,7 @@ func serviceStatus() {
 // unitFile renders the systemd unit. Paths are quoted so spaces are safe. A
 // non-empty token is passed via Environment=PINE_TOKEN (never the command line,
 // so it stays out of `ps`); --insecure is passed through when set.
-func unitFile(exe, addr, data string, demo bool, token string, insecure bool) string {
+func unitFile(exe, addr, data string, demo bool, token, label string, insecure bool) string {
 	execStart := fmt.Sprintf("%q serve --addr %s --data %q", exe, addr, data)
 	if demo {
 		execStart += " --demo"
@@ -221,6 +223,9 @@ func unitFile(exe, addr, data string, demo bool, token string, insecure bool) st
 	env := "Environment=HOME=%h"
 	if token != "" {
 		env += "\nEnvironment=PINE_TOKEN=" + token
+	}
+	if label != "" {
+		env += "\nEnvironment=PINE_LABEL=" + label
 	}
 	return fmt.Sprintf(`[Unit]
 Description=Pine — Ansible control plane (web UI + API + scheduler)

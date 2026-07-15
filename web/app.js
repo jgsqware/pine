@@ -5286,6 +5286,13 @@ async function pageJobDetail(page, segs) {
         class: "btn btn-sm", title: "Diff this run against another run of the same playbook",
         onclick: () => openCompareModal(job, showDiff),
       }, icon("diff"), "Compare") : null,
+      el("button", {
+        class: "btn btn-sm", title: "Copy the full log to the clipboard",
+        onclick: async () => {
+          try { await navigator.clipboard.writeText(logText); toast("Log copied to clipboard", "success"); }
+          catch { toast("Copy failed", "error"); }
+        },
+      }, icon("clipboard"), "Copy log"),
       el("a", { class: "btn btn-sm", href: tokenQuery(`/api/jobs/${jobId}/log`), download: `${jobId}.log` }, icon("download"), "Download log")));
     headBox.appendChild(el("div", { class: "row small muted", style: { marginBottom: "12px", gap: "16px" } },
       el("span", null, "repo ", el("b", { style: { color: "var(--text)" } }, job.repo_name || job.repo_id)),

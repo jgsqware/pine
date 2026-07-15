@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -32,7 +33,8 @@ import (
 
 // Server wires the manager to HTTP.
 type Server struct {
-	Mgr *runner.Manager
+	Mgr   *runner.Manager
+	Label string // operator instance label (--label / PINE_LABEL), personalises the PWA
 }
 
 // Config tunes the HTTP surface. The zero value is safe for loopback use.
@@ -43,6 +45,13 @@ type Config struct {
 	// browser EventSource, which cannot set headers, can authenticate the SSE
 	// stream). An empty Token disables authentication (loopback-only default).
 	Token string
+
+	// Label is an optional operator-chosen instance name (e.g. "iba",
+	// "gaming1"). When set it is stamped into the SPA <title>, the sidebar
+	// brand and the PWA manifest so multiple Pine instances installed as PWAs
+	// on one machine show as "Pine · iba" / "Pine · gaming1" instead of all
+	// reading "Pine" in the Dock / app switcher.
+	Label string
 }
 
 // Version and BuildTime are stamped by main at build time (ldflags) and shown
@@ -65,9 +74,38 @@ func buildLabel() string {
 	return Version + " · " + bt
 }
 
+// stampLabel substitutes the instance-label placeholders in the SPA shell and
+// the PWA manifest. An empty label leaves everything reading plain "Pine".
+// The label is operator-controlled but still context-escaped (HTML for the
+// shell, JSON for the manifest) so an odd character can't corrupt the markup.
+//
+//	__PINE_LABEL_SUFFIX__ → " · iba"  (title / manifest name)
+//	__PINE_LABEL_APP__    → " iba"    (apple app title / manifest short_name)
+//	__PINE_LABEL_VER__    → "iba"     (sidebar sub-brand, defaults to "automation")
+func stampLabel(data []byte, path, label string) []byte {
+	label = strings.TrimSpace(label)
+	suffix, app, ver := "", "", "automation"
+	if label != "" {
+		esc := label
+		if strings.HasSuffix(path, ".webmanifest") {
+			if b, err := json.Marshal(label); err == nil {
+				esc = string(b[1 : len(b)-1]) // inner of the JSON string, no quotes
+			}
+		} else {
+			esc = html.EscapeString(label)
+		}
+		suffix, app, ver = " · "+esc, " "+esc, esc
+	}
+	s := string(data)
+	s = strings.ReplaceAll(s, "__PINE_LABEL_SUFFIX__", suffix)
+	s = strings.ReplaceAll(s, "__PINE_LABEL_APP__", app)
+	s = strings.ReplaceAll(s, "__PINE_LABEL_VER__", ver)
+	return []byte(s)
+}
+
 // New builds the HTTP handler.
 func New(mgr *runner.Manager, cfg Config) http.Handler {
-	s := &Server{Mgr: mgr}
+	s := &Server{Mgr: mgr, Label: strings.TrimSpace(cfg.Label)}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/version", s.version)
@@ -283,6 +321,7 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 		"version":    Version,
 		"build_time": BuildTime,
 		"label":      buildLabel(),
+		"instance":   s.Label,
 	})
 }
 
@@ -1080,6 +1119,11 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	// even when app.js is cached (the build label changes every build).
 	if path == "index.html" {
 		data = []byte(strings.Replace(string(data), "__PINE_BUILD__", buildLabel(), 1))
+	}
+	// Personalise the shell + manifest with the operator's instance label so
+	// multiple Pine PWAs on one machine are distinguishable.
+	if path == "index.html" || strings.HasSuffix(path, ".webmanifest") {
+		data = stampLabel(data, path, s.Label)
 	}
 	switch {
 	case strings.HasSuffix(path, ".html"):
