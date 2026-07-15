@@ -375,21 +375,25 @@ func (m *Manager) runAnsible(ctx context.Context, job *model.Job, r *run) (faile
 		r.publish("ERROR: " + err.Error())
 		return true
 	}
-	execCtx := ansible.Resolve(m.Store.RepoWorkdir(&repo), job.Playbook, job.Inventory)
+	repoRoot := m.Store.RepoWorkdir(&repo)
+	execCtx := ansible.Resolve(repoRoot, job.Playbook, job.Inventory)
 	workdir := execCtx.Dir
 
-	// Confine the playbook (and inventory) to the repo workdir before it reaches
-	// ansible-playbook: reject absolute paths, "..", and symlinks that escape.
-	// This runs before argv construction so a suspect path never launches ansible.
-	playbook, err := confineToWorkdir(workdir, job.Playbook)
-	if err != nil {
+	// Confine the playbook (and inventory) before it reaches ansible-playbook:
+	// reject absolute paths, "..", and symlinks that escape. The security
+	// boundary is the repo root, so validate the repo-relative paths stored on
+	// the job against it — NOT against workdir, which ansible.Resolve may have
+	// moved down to a nested ansible.cfg directory. (Confining against workdir
+	// double-counts the nested prefix and rejects a perfectly valid playbook.)
+	// The argv then uses the copies Resolve already rebased to run from workdir.
+	if _, err := confineToWorkdir(repoRoot, job.Playbook); err != nil {
 		r.publish("ERROR: invalid playbook: " + err.Error())
 		return true
 	}
-	inventory := job.Inventory
-	if inventory != "" {
-		inventory, err = confineToWorkdir(workdir, job.Inventory)
-		if err != nil {
+	playbook := execCtx.Playbook
+	inventory := execCtx.Inventory
+	if job.Inventory != "" {
+		if _, err := confineToWorkdir(repoRoot, job.Inventory); err != nil {
 			r.publish("ERROR: invalid inventory: " + err.Error())
 			return true
 		}

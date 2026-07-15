@@ -182,3 +182,49 @@ func TestRunAnsibleLegitPassesConfinement(t *testing.T) {
 		t.Fatalf("expected argv to end with '-- site.yml', got:\n%s", out)
 	}
 }
+
+// TestRunAnsibleNestedAnsibleCfg reproduces the regression where a repo-relative
+// playbook living under a nested ansible.cfg was rejected as "invalid playbook":
+// ansible.Resolve moves the workdir down to the ansible.cfg directory and
+// rebases the playbook, but confinement was re-checking the repo-relative path
+// against that moved workdir — double-counting the nested prefix. The playbook
+// must pass, and the argv must carry the path rebased to the nested dir.
+func TestRunAnsibleNestedAnsibleCfg(t *testing.T) {
+	dir := t.TempDir()
+	repoDir := filepath.Join(dir, "repo")
+	proj := filepath.Join(repoDir, "tc-agent-ansible")
+	if err := os.MkdirAll(filepath.Join(proj, "playbooks", "components"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A nested ansible.cfg makes tc-agent-ansible the project root Resolve runs from.
+	if err := os.WriteFile(filepath.Join(proj, "ansible.cfg"), []byte("[defaults]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pbRel := filepath.Join("playbooks", "components", "grafana-stack-setup-only.yml")
+	if err := os.WriteFile(filepath.Join(proj, pbRel), []byte("- hosts: all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(st)
+	if err := st.AddRepo(model.Repo{ID: "r_ans", Name: "ans", Path: repoDir, Status: model.RepoReady}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, drain := collectRun()
+	job := &model.Job{RepoID: "r_ans", Playbook: "tc-agent-ansible/" + filepath.ToSlash(pbRel)}
+	_ = m.runAnsible(context.Background(), job, r)
+	r.close()
+	out := drain()
+
+	if strings.Contains(out, "invalid playbook") {
+		t.Fatalf("playbook under a nested ansible.cfg was wrongly rejected:\n%s", out)
+	}
+	// argv must carry the path rebased to the nested project dir (relative to the
+	// ansible.cfg), not the original repo-relative path.
+	if !strings.Contains(out, "-- playbooks/components/grafana-stack-setup-only.yml") {
+		t.Fatalf("expected argv rebased to the nested ansible.cfg dir, got:\n%s", out)
+	}
+}
