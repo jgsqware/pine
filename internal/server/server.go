@@ -1090,6 +1090,10 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	case strings.HasSuffix(path, ".svg"):
 		w.Header().Set("Content-Type", "image/svg+xml")
+	case strings.HasSuffix(path, ".png"):
+		w.Header().Set("Content-Type", "image/png")
+	case strings.HasSuffix(path, ".webmanifest"):
+		w.Header().Set("Content-Type", "application/manifest+json")
 	}
 	// Assets are embedded at build time: tag them by content and require
 	// revalidation. After an upgrade the bytes (and ETag) change, so browsers

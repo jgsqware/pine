@@ -255,3 +255,39 @@ func TestPlaybookDetailPathTraversal(t *testing.T) {
 		}
 	}
 }
+
+// TestPWAAssets verifies the icons and web manifest that Safari/macOS need to
+// show a real app icon when adding Pine to the Dock are served with sensible
+// content types (an SVG favicon alone is ignored by Safari for PWAs).
+func TestPWAAssets(t *testing.T) {
+	h, _ := newTestServer(t)
+	cases := []struct{ path, wantType string }{
+		{"/apple-touch-icon.png", "image/png"},
+		{"/icon-192.png", "image/png"},
+		{"/icon-512.png", "image/png"},
+		{"/manifest.webmanifest", "application/manifest+json"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", tc.path, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != tc.wantType {
+			t.Errorf("%s: content-type = %q, want %q", tc.path, ct, tc.wantType)
+		}
+		if rec.Body.Len() == 0 {
+			t.Errorf("%s: empty body", tc.path)
+		}
+	}
+	// The served index.html must reference the apple-touch-icon and manifest.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	for _, want := range []string{`rel="apple-touch-icon"`, `rel="manifest"`, `name="theme-color"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("index.html missing %s", want)
+		}
+	}
+}
