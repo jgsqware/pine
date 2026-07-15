@@ -1,0 +1,15 @@
+{
+  "id": "pine",
+  "name": "Pine",
+  "family": "devtools",
+  "kind": "app",
+  "stack": "Go (TUI + web + REST)",
+  "summary": "Control-plane Ansible mono-binaire (alternative AWX/Tower)",
+  "visibility": "local",
+  "exposes": null,
+  "subtools": [],
+  "depends_on": [
+    "ansible"
+  ],
+  "links": []
+}
