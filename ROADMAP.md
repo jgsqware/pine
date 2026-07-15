@@ -56,6 +56,21 @@ Status: ✅ done · 🚧 in progress · ⏳ planned · 🔗 blocked by another p
 - [x] ✅ **3. Run diff** — compare two jobs of the same playbook: per
       task × host status transitions (ok→changed, ok→failed, new/removed
       tasks). `GET /api/jobs/{id}/diff?with=…`, view in job detail.
+- [x] ✅ **Guide (repo explainer)** — a per-repo onboarding page composed from
+      the scan: playbook **tiers** (grouped by directory) with each playbook's
+      resolved target hosts / roles / flags, a role catalog with "used-by"
+      cross-refs, detected **entry points** (`run.sh`, `site.yml`, `ansible.cfg`,
+      docs), a hygiene-derived **"what you can / can't do"** list, and the repo's
+      own README rendered inline. Pure projection of the scan (honest — no guessed
+      prose). `GET /api/repos/{id}/overview`, "Guide" page (top of Overview) +
+      `pine overview PATH`.
+- [x] ✅ **Auto-describe (Claude Code)** — when the `claude` CLI is on the host,
+      the Guide's **Generate descriptions** action runs a Claude Code session that
+      writes a one-line description for every playbook (committed `pine.yml`
+      sidecar, read back by the scanner) and role (`meta/main.yml`
+      `galaxy_info.description`). Dry-run by default; Apply writes for git review.
+      Honours the user's existing `claude` login; hidden when the CLI is absent.
+      `POST /api/repos/{id}/describe`, `pine describe PATH [--write]`.
 
 ## Strong differentiators
 

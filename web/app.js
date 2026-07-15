@@ -608,6 +608,7 @@ async function requireRepo(view) {
    ============================================================ */
 
 const PAGE_TITLES = {
+  guide: "Guide",
   dashboard: "Dashboard", repos: "Repositories", playbooks: "Playbooks",
   playbook: "Playbook", roles: "Roles", role: "Role", inventory: "Inventory",
   topology: "Topology", hygiene: "Hygiene", impact: "Impact",
@@ -625,6 +626,7 @@ async function route() {
   const segs = currentRoute();
   let name = segs[0] || "dashboard";
   const handlers = {
+    guide: pageGuide,
     dashboard: pageDashboard,
     repos: pageRepos,
     playbooks: pagePlaybooks,
@@ -665,6 +667,400 @@ async function route() {
       el("button", { class: "btn", onclick: route }, "Retry")));
     toast(e.message || String(e), "error");
   }
+}
+
+/* ============================================================
+   4. Guide — orientation for a repository
+   ============================================================ */
+
+async function pageGuide(page) {
+  const repo = await requireRepo(page);
+  if (!repo) return;
+
+  page.appendChild(el("div", { class: "page-head" },
+    el("h1", null, "Guide"),
+    el("span", { class: "sub" }, `what ${repo.name} is, how it's wired, and what you can run`)));
+
+  const box = el("div");
+  page.appendChild(box);
+  box.appendChild(skeletonRows(4, 90));
+
+  let ov, readme;
+  try {
+    [ov, readme] = await Promise.all([
+      api(`/repos/${repo.id}/overview`),
+      fetchRawFile(repo.id, "README.md").catch(() => null), // README is optional
+    ]);
+  } catch (e) {
+    box.innerHTML = "";
+    box.appendChild(el("div", { class: "empty" },
+      el("h3", null, "Could not build the guide"),
+      el("p", null, e.message),
+      el("button", { class: "btn", onclick: route }, "Retry")));
+    toast(e.message, "error", "Guide failed");
+    return;
+  }
+  box.innerHTML = "";
+
+  box.appendChild(guideAtAGlance(ov));
+  if (readme && readme.trim()) box.appendChild(guideReadme(readme));
+  box.appendChild(guideStructure(repo, ov));
+  if (ov.cautions && ov.cautions.length) box.appendChild(guideCautions(ov));
+  box.appendChild(guideDescribe(repo, ov));
+}
+
+function guideAtAGlance(ov) {
+  const s = ov.summary || {};
+  const panel = el("div", { class: "panel" });
+  panel.appendChild(el("div", { class: "panel-head" }, el("h2", null, "At a glance")));
+  const cards = [
+    ["Playbooks", s.playbooks, "accent", "#/playbooks"],
+    ["Roles", s.roles, "accent", "#/roles"],
+    ["Hosts", s.hosts, "secondary", "#/inventory"],
+    ["Inventories", s.inventories, "", "#/topology"],
+  ];
+  panel.appendChild(el("div", { class: "grid cols-4", style: { gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" } },
+    cards.map(([lbl, num, cls, href]) =>
+      el("div", { class: "card stat-card clickable", onclick: () => (location.hash = href) },
+        el("div", { class: `num ${cls}` }, String(num ?? 0)),
+        el("div", { class: "lbl" }, lbl)))));
+
+  if (ov.entry_points && ov.entry_points.length) {
+    panel.appendChild(el("h3", { class: "guide-sub" }, "Where to start"));
+    const list = el("div", { class: "entry-list" });
+    for (const e of ov.entry_points) {
+      list.appendChild(el("div", { class: "entry" },
+        el("code", { class: "chip mono" }, e.path),
+        el("span", { class: "muted" }, e.hint)));
+    }
+    panel.appendChild(list);
+  }
+  return panel;
+}
+
+function guideReadme(md) {
+  const panel = el("div", { class: "panel" });
+  const bodyWrap = el("div", { class: "markdown-body" });
+  bodyWrap.appendChild(renderMarkdown(md));
+  const collapsed = md.length > 4000;
+  if (collapsed) bodyWrap.classList.add("clamp");
+  const head = el("div", { class: "panel-head" }, el("h2", null, "README"));
+  panel.appendChild(head);
+  panel.appendChild(bodyWrap);
+  if (collapsed) {
+    const btn = el("button", { class: "btn btn-sm" }, "Show full README");
+    btn.onclick = () => {
+      const open = bodyWrap.classList.toggle("clamp");
+      btn.textContent = open ? "Show full README" : "Collapse README";
+    };
+    panel.appendChild(btn);
+  }
+  return panel;
+}
+
+function guideStructure(repo, ov) {
+  const panel = el("div", { class: "panel" });
+  panel.appendChild(el("div", { class: "panel-head" }, el("h2", null, "How it's organised"),
+    el("span", { class: "muted small" }, "playbooks grouped by directory")));
+
+  for (const tier of ov.tiers || []) {
+    panel.appendChild(el("h3", { class: "guide-sub" }, tier.name,
+      el("span", { class: "count-pill" }, String(tier.playbooks.length))));
+    const grid = el("div", { class: "guide-pb-list" });
+    for (const pb of tier.playbooks) grid.appendChild(guidePlaybookRow(repo, pb));
+    panel.appendChild(grid);
+  }
+
+  if (ov.roles && ov.roles.length) {
+    panel.appendChild(el("h3", { class: "guide-sub" }, "Roles",
+      el("span", { class: "count-pill" }, String(ov.roles.length))));
+    const grid = el("div", { class: "guide-role-grid" });
+    for (const r of ov.roles) grid.appendChild(guideRoleCard(repo, r));
+    panel.appendChild(grid);
+  }
+
+  if (ov.inventories && ov.inventories.length) {
+    panel.appendChild(el("h3", { class: "guide-sub" }, "Inventories"));
+    const list = el("div", { class: "entry-list" });
+    for (const inv of ov.inventories) {
+      const bits = [`${inv.hosts} hosts`, `${inv.groups} groups`];
+      if (inv.constructed_groups) bits.push(`${inv.constructed_groups} constructed`);
+      const row = el("div", { class: "entry entry-link" },
+        el("code", { class: "chip mono" }, inv.name),
+        el("span", { class: "muted" }, `${bits.join(" · ")} · ${inv.format.toUpperCase()}`));
+      row.onclick = () => { location.hash = "#/topology"; };
+      list.appendChild(row);
+    }
+    panel.appendChild(list);
+  }
+  return panel;
+}
+
+function guidePlaybookRow(repo, pb) {
+  const row = el("div", { class: "guide-pb" });
+  const title = el("div", { class: "guide-pb-title" },
+    el("a", { href: `#/playbook/${repo.id}/${pb.path.split("/").map(encodeURIComponent).join("/")}` }, pb.name || pb.path));
+  if (pb.needs_input) title.appendChild(el("span", { class: "chip warn" }, "needs input"));
+  if (pb.has_serial) title.appendChild(el("span", { class: "chip" }, "rolling"));
+  if (pb.become) title.appendChild(el("span", { class: "chip" }, "become"));
+  row.appendChild(title);
+
+  if (pb.description) {
+    row.appendChild(el("div", { class: "guide-pb-desc" }, pb.description));
+  } else {
+    row.appendChild(el("div", { class: "guide-pb-desc muted" }, "No description yet — generate one below."));
+  }
+
+  const meta = el("div", { class: "guide-pb-meta" });
+  const hosts = (pb.target_hosts && pb.target_hosts.length)
+    ? pb.target_hosts.slice(0, 4).join(", ") + (pb.target_hosts.length > 4 ? ` +${pb.target_hosts.length - 4}` : "")
+    : (pb.hosts || "—");
+  meta.appendChild(el("span", { class: "muted small" }, "→ " + hosts));
+  if (pb.roles && pb.roles.length) {
+    meta.appendChild(el("span", { class: "muted small" }, "roles: " + pb.roles.join(", ")));
+  }
+  row.appendChild(meta);
+  return row;
+}
+
+function guideRoleCard(repo, r) {
+  const card = el("div", { class: "card guide-role" + (r.unused ? " is-unused" : "") });
+  const head = el("div", { class: "guide-role-head" },
+    el("a", { href: `#/role/${repo.id}/${encodeURIComponent(r.name)}`, class: "mono" }, r.name));
+  if (r.unused) head.appendChild(el("span", { class: "chip warn" }, "unused"));
+  card.appendChild(head);
+  card.appendChild(el("div", { class: "guide-role-desc" + (r.description ? "" : " muted") },
+    r.description || "no galaxy_info.description"));
+  const foot = el("div", { class: "guide-role-foot muted small" });
+  foot.appendChild(el("span", null, `${r.tasks_count} tasks`));
+  if (r.used_by && r.used_by.length) {
+    foot.appendChild(el("span", null, `used by ${r.used_by.length} playbook${r.used_by.length === 1 ? "" : "s"}`));
+  }
+  card.appendChild(foot);
+  return card;
+}
+
+function guideCautions(ov) {
+  const panel = el("div", { class: "panel" });
+  panel.appendChild(el("div", { class: "panel-head" }, el("h2", null, "What you can & can't do"),
+    el("span", { class: "muted small" }, "derived from the scan + hygiene report")));
+  const list = el("div", { class: "caution-list" });
+  const sevClass = { high: "red", medium: "warn", info: "" };
+  for (const c of ov.cautions) {
+    list.appendChild(el("div", { class: "caution" },
+      el("span", { class: "chip " + (sevClass[c.severity] || "") }, c.kind),
+      el("span", { class: "caution-body" },
+        el("strong", { class: "mono" }, c.subject), " — ", c.detail)));
+  }
+  panel.appendChild(list);
+  return panel;
+}
+
+function guideDescribe(repo, ov) {
+  const panel = el("div", { class: "panel" });
+  panel.appendChild(el("div", { class: "panel-head" }, el("h2", null, "Generate descriptions")));
+  const cc = ov.claude_code || {};
+  if (!cc.available) {
+    panel.appendChild(el("p", { class: "muted", style: { margin: 0 } },
+      "Install the Claude Code CLI (", el("code", { class: "mono" }, "claude"),
+      ") on the Pine host to auto-write descriptions for playbooks and roles. ",
+      "Until then, add them by hand in each role's ", el("code", { class: "mono" }, "meta/main.yml"),
+      " and a repo-root ", el("code", { class: "mono" }, "pine.yml"), "."));
+    return panel;
+  }
+  panel.appendChild(el("p", { class: "muted", style: { marginTop: 0 } },
+    "Claude Code ", el("span", { class: "chip green" }, cc.version || "available"),
+    " can read this repo and write a one-line description for every playbook (into ",
+    el("code", { class: "mono" }, "pine.yml"), ") and role (into ",
+    el("code", { class: "mono" }, "meta/main.yml"), "). Start with a dry-run — nothing is written until you apply."));
+
+  const out = el("div", { class: "describe-out", style: { display: "none" } });
+  const dryBtn = el("button", { class: "btn btn-primary" }, "Dry-run");
+  const writeBtn = el("button", { class: "btn", disabled: true }, "Apply (write files)");
+  const actions = el("div", { class: "describe-actions" }, dryBtn, writeBtn);
+
+  const run = (write) => {
+    dryBtn.disabled = true; writeBtn.disabled = true;
+    out.style.display = "";
+    out.innerHTML = "";
+    const logBox = el("div", { class: "log describe-log" });
+    out.appendChild(logBox);
+    api(`/repos/${repo.id}/describe`, { method: "POST", body: JSON.stringify({ write: !!write }) })
+      .then((job) => streamDescribe(job, logBox, () => {
+        dryBtn.disabled = false;
+        writeBtn.disabled = false;
+        if (write) { toast("Descriptions written — re-sync to see them", "success", "Done"); }
+        else { writeBtn.disabled = false; }
+      }))
+      .catch((e) => {
+        logBox.appendChild(el("div", { class: "ll ll-failed" }, e.message));
+        dryBtn.disabled = false; writeBtn.disabled = false;
+      });
+  };
+  dryBtn.onclick = () => run(false);
+  writeBtn.onclick = async () => {
+    if (await confirmModal("Write descriptions?",
+      "Claude Code will edit meta/main.yml files and create/update pine.yml in your repo. Review the changes with git afterwards.",
+      "Write")) run(true);
+  };
+  panel.appendChild(actions);
+  panel.appendChild(out);
+  return panel;
+}
+
+// streamDescribe tails a describe job's SSE stream into logBox, calling done()
+// when the job reaches a terminal state.
+function streamDescribe(job, logBox, done) {
+  const append = (line) => {
+    const cls = /^ERROR/i.test(line) ? "ll ll-failed" : "ll";
+    logBox.appendChild(el("div", { class: cls }, line));
+    logBox.scrollTop = logBox.scrollHeight;
+  };
+  const es = new EventSource(tokenQuery(`/api/jobs/${job.id}/events`));
+  onCleanup(() => es.close());
+  es.addEventListener("line", (e) => append(e.data));
+  es.addEventListener("status", (e) => {
+    try {
+      const j = JSON.parse(e.data);
+      if (TERMINAL_STATUSES.has(j.status)) { es.close(); done && done(j); }
+    } catch { /* ignore */ }
+  });
+  es.onerror = () => {
+    api(`/jobs/${job.id}`).then((j) => {
+      if (TERMINAL_STATUSES.has(j.status)) { es.close(); done && done(j); }
+    }).catch(() => {});
+  };
+}
+
+/* ---- tiny dependency-free Markdown renderer (README preview) ----
+   Renders a safe subset to DOM nodes (never innerHTML of untrusted text):
+   headings, fenced/inline code, bold/italic, links (http/https/relative only),
+   unordered & ordered lists, blockquotes, tables, hr and paragraphs. */
+function renderMarkdown(src) {
+  const frag = document.createDocumentFragment();
+  const lines = src.replace(/\r\n?/g, "\n").split("\n");
+  let i = 0;
+  const flushList = (ordered, items) => {
+    const list = el(ordered ? "ol" : "ul");
+    for (const it of items) {
+      const li = el("li");
+      renderInline(it, li);
+      list.appendChild(li);
+    }
+    frag.appendChild(list);
+  };
+  while (i < lines.length) {
+    let line = lines[i];
+    // fenced code block
+    if (/^```/.test(line)) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++; // closing fence
+      const pre = el("pre"); pre.appendChild(el("code", null, buf.join("\n")));
+      frag.appendChild(pre);
+      continue;
+    }
+    // heading
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      const tag = "h" + Math.min(h[1].length + 1, 6); // shift down one (page h1 is the title)
+      const node = el(tag);
+      renderInline(h[2], node);
+      frag.appendChild(node);
+      i++; continue;
+    }
+    // horizontal rule
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { frag.appendChild(el("hr")); i++; continue; }
+    // table (header row followed by a |---| separator)
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      const rows = [];
+      while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== "") { rows.push(lines[i]); i++; }
+      frag.appendChild(renderTable(rows));
+      continue;
+    }
+    // blockquote
+    if (/^\s*>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+      const bq = el("blockquote");
+      renderInline(buf.join(" "), bq);
+      frag.appendChild(bq);
+      continue;
+    }
+    // unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, "")); i++; }
+      flushList(false, items);
+      continue;
+    }
+    // ordered list
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, "")); i++; }
+      flushList(true, items);
+      continue;
+    }
+    // blank line
+    if (line.trim() === "") { i++; continue; }
+    // paragraph (gather until blank / block start)
+    const buf = [line]; i++;
+    while (i < lines.length && lines[i].trim() !== "" &&
+      !/^(#{1,6}\s|```|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*\|)/.test(lines[i])) { buf.push(lines[i]); i++; }
+    const p = el("p");
+    renderInline(buf.join(" "), p);
+    frag.appendChild(p);
+  }
+  return frag;
+}
+
+function renderTable(rows) {
+  const table = el("table");
+  const cells = (r) => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
+  const head = el("thead"), htr = el("tr");
+  for (const c of cells(rows[0])) { const th = el("th"); renderInline(c, th); htr.appendChild(th); }
+  head.appendChild(htr); table.appendChild(head);
+  const body = el("tbody");
+  for (let r = 2; r < rows.length; r++) {
+    const tr = el("tr");
+    for (const c of cells(rows[r])) { const td = el("td"); renderInline(c, td); tr.appendChild(td); }
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  return table;
+}
+
+// renderInline parses inline markdown into `parent`, escaping all text by
+// building DOM text nodes (no innerHTML of repo content).
+function renderInline(text, parent) {
+  // token order matters: code first (its content is literal), then link, bold, italic.
+  const re = /(`[^`]+`)|(\[[^\]]+\]\([^)]+\))|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*]+\*)|(_[^_]+_)/;
+  let rest = text;
+  let m;
+  while ((m = re.exec(rest))) {
+    if (m.index > 0) parent.appendChild(document.createTextNode(rest.slice(0, m.index)));
+    const tok = m[0];
+    if (tok.startsWith("`")) {
+      parent.appendChild(el("code", null, tok.slice(1, -1)));
+    } else if (tok.startsWith("[")) {
+      const lm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      const href = lm[2].trim();
+      if (/^(https?:)?\/\//i.test(href) || href.startsWith("/") || href.startsWith("#") || /^[\w./-]+$/.test(href)) {
+        const a = el("a", { href, target: "_blank", rel: "noopener noreferrer" });
+        renderInline(lm[1], a);
+        parent.appendChild(a);
+      } else {
+        parent.appendChild(document.createTextNode(lm[1]));
+      }
+    } else if (tok.startsWith("**") || tok.startsWith("__")) {
+      const s = el("strong"); renderInline(tok.slice(2, -2), s); parent.appendChild(s);
+    } else {
+      const em = el("em"); renderInline(tok.slice(1, -1), em); parent.appendChild(em);
+    }
+    rest = rest.slice(m.index + tok.length);
+  }
+  if (rest) parent.appendChild(document.createTextNode(rest));
 }
 
 /* ============================================================
@@ -6295,7 +6691,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (gPressed) {
-    const map = { d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", v: "services", s: "schedules", l: "pipelines", j: "jobs" };
+    const map = { g: "guide", d: "dashboard", r: "repos", p: "playbooks", o: "roles", i: "inventory", t: "topology", h: "hygiene", m: "impact", w: "drift", v: "services", s: "schedules", l: "pipelines", j: "jobs" };
     if (map[e.key]) { location.hash = "#/" + map[e.key]; e.preventDefault(); }
     gPressed = false;
   } else if (e.key === "n") {

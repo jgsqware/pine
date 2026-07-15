@@ -204,6 +204,11 @@
     </div>
     <div class="features-grid">
       <article class="card card-flagship reveal">
+        <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M2 5.5A2.5 2.5 0 0 1 4.5 3H10a2 2 0 0 1 2 2v15a1.5 1.5 0 0 0-1.5-1.5H4.5A2.5 2.5 0 0 1 2 16z"/><path d="M22 5.5A2.5 2.5 0 0 0 19.5 3H14a2 2 0 0 0-2 2v15a1.5 1.5 0 0 1 1.5-1.5h6A2.5 2.5 0 0 0 22 16z"/></svg></div>
+        <h3>Guide — the repo explains itself</h3>
+        <p>Drop Pine on an unfamiliar repo and the <strong>Guide</strong> answers <em>what is this, how is it wired, what can I run?</em> — playbooks grouped into tiers with their real target hosts, a role catalog with "used-by" links, entry points like <code>run.sh</code>, a hygiene-derived "what you can &amp; can't do" list, and the repo's README rendered inline. Missing descriptions? If <code>claude</code> is on the host, <strong>Generate descriptions</strong> writes them into <code>meta/main.yml</code> and a <code>pine.yml</code> sidecar (dry-run first).</p>
+      </article>
+      <article class="card card-flagship reveal">
         <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M9 4h6M9 4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2"/><path d="m9.5 13.5 2 2 3.5-4.5"/></svg></div>
         <h3>Plan mode</h3>
         <p>The <code>terraform plan</code> Ansible never had. Per task × host verdicts — run, skip or unknown with the exact missing variables — in milliseconds. <a href="#plan">See it below ↓</a></p>

@@ -60,9 +60,14 @@ type Play struct {
 
 // Playbook is a scanned playbook file.
 type Playbook struct {
-	Path  string `json:"path"`
-	Name  string `json:"name"`
-	Plays []Play `json:"plays"`
+	Path string `json:"path"`
+	Name string `json:"name"`
+	// Description is a human summary of what the playbook does. Playbooks have
+	// no native Ansible metadata slot, so this is sourced from Pine's committed
+	// sidecar (pine.yml `descriptions:` map, keyed by repo-relative path) —
+	// written by `pine describe` / the Guide "Generate descriptions" action.
+	Description string `json:"description,omitempty"`
+	Plays       []Play `json:"plays"`
 }
 
 // Role is a scanned Ansible role.
@@ -215,9 +220,13 @@ type TaskDuration struct {
 
 // Job is one playbook execution.
 type Job struct {
-	ID            string         `json:"id"`
-	RepoID        string         `json:"repo_id"`
-	RepoName      string         `json:"repo_name"`
+	ID       string `json:"id"`
+	RepoID   string `json:"repo_id"`
+	RepoName string `json:"repo_name"`
+	// Kind marks a non-playbook job. The zero value "" means a playbook run
+	// (so jobs stored before Kind existed keep their meaning); "describe" is a
+	// Claude Code session that writes playbook/role descriptions.
+	Kind          string         `json:"kind,omitempty"`
 	Playbook      string         `json:"playbook"`
 	// Probe, when set, marks this job as a read-only probe run rather than a
 	// playbook run; it holds the catalog ID. The zero value means "playbook",

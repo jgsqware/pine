@@ -82,6 +82,8 @@ func New(mgr *runner.Manager, cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/repos/{id}/playbook", s.playbookDetail)
 	mux.HandleFunc("GET /api/repos/{id}/role", s.roleDetail)
 	mux.HandleFunc("GET /api/repos/{id}/topology", s.topology)
+	mux.HandleFunc("GET /api/repos/{id}/overview", s.overview)
+	mux.HandleFunc("POST /api/repos/{id}/describe", s.describe)
 	mux.HandleFunc("GET /api/repos/{id}/file", s.repoFile)
 
 	mux.HandleFunc("POST /api/plans", s.computePlan)
@@ -514,9 +516,10 @@ type slimPlay struct {
 
 // slimPlaybook is Playbook with slimmed plays (no task trees).
 type slimPlaybook struct {
-	Path  string     `json:"path"`
-	Name  string     `json:"name"`
-	Plays []slimPlay `json:"plays"`
+	Path        string     `json:"path"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	Plays       []slimPlay `json:"plays"`
 }
 
 // slimRole is Role without tasks, handlers, defaults and vars maps. Counts
@@ -546,7 +549,7 @@ type slimScanResult struct {
 func toSlimScan(res *model.ScanResult) slimScanResult {
 	pbs := make([]slimPlaybook, 0, len(res.Playbooks))
 	for _, pb := range res.Playbooks {
-		slim := slimPlaybook{Path: pb.Path, Name: pb.Name, Plays: make([]slimPlay, 0, len(pb.Plays))}
+		slim := slimPlaybook{Path: pb.Path, Name: pb.Name, Description: pb.Description, Plays: make([]slimPlay, 0, len(pb.Plays))}
 		for _, p := range pb.Plays {
 			slim.Plays = append(slim.Plays, slimPlay{
 				Name:          p.Name,

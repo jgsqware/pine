@@ -17,8 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jgsqware/pine/internal/claudecode"
 	"github.com/jgsqware/pine/internal/client"
 	"github.com/jgsqware/pine/internal/model"
+	"github.com/jgsqware/pine/internal/overview"
 	"github.com/jgsqware/pine/internal/plan"
 	"github.com/jgsqware/pine/internal/policy"
 	"github.com/jgsqware/pine/internal/runner"
@@ -43,6 +45,8 @@ Usage:
   pine attach [--addr :8743]                        Attach the terminal UI to a running daemon
   pine service install|status|uninstall             Run Pine as a systemd (user) service
   pine scan  PATH [--paths SUBDIR]                  Scan an Ansible repo and print JSON
+  pine overview PATH [--json]                       Explain a repo: tiers, roles, entry points, cautions
+  pine describe PATH [--write]                      Generate missing descriptions via Claude Code (dry-run default)
   pine lineage PATH -i INV (--host H|--all-hosts)   Resolved vars + provenance per host (--json, --redact)
   pine lineage PATH --playbook PB -i INV [flags]    + a playbook's effective vars (expands import_tasks/include_vars)
   pine plan  PATH PLAYBOOK [flags]                  Predict what a playbook would do
@@ -115,6 +119,10 @@ func main() {
 		cmdPolicy(os.Args[2:])
 	case "hygiene":
 		cmdHygiene(os.Args[2:])
+	case "overview":
+		cmdOverview(os.Args[2:])
+	case "describe":
+		cmdDescribe(os.Args[2:])
 	case "worktrees":
 		cmdWorktrees(os.Args[2:])
 	case "probe":
@@ -604,6 +612,146 @@ func cmdScan(args []string) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(res)
+}
+
+func cmdOverview(args []string) {
+	fs := flag.NewFlagSet("overview", flag.ExitOnError)
+	var paths scanPathList
+	fs.Var(&paths, "paths", "restrict scan to subdir(s) of PATH (repeatable / comma-separated)")
+	asJSON := fs.Bool("json", false, "print raw overview JSON")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine overview PATH [--paths SUBDIR] [--json]")
+		os.Exit(2)
+	}
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PATH
+
+	res, err := scanner.Scan(root, paths...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	abs, _ := filepath.Abs(root)
+	ov := overview.Compose(res, abs)
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(ov)
+		return
+	}
+
+	s := ov.Summary
+	fmt.Printf("%sOVERVIEW%s  %d playbooks · %d roles · %d hosts · %d inventories\n",
+		cBold, cOff, s.Playbooks, s.Roles, s.Hosts, s.Inventories)
+
+	if len(ov.EntryPoints) > 0 {
+		fmt.Printf("\n%sEntry points%s\n", cGreen, cOff)
+		for _, e := range ov.EntryPoints {
+			fmt.Printf("  %s%s%s — %s\n", cBold, e.Path, cOff, e.Hint)
+		}
+	}
+
+	for _, t := range ov.Tiers {
+		fmt.Printf("\n%s%s%s %s(%d)%s\n", cGreen, t.Name, cOff, cGray, len(t.Playbooks), cOff)
+		for _, pb := range t.Playbooks {
+			flags := ""
+			if pb.NeedsInput {
+				flags += " " + cAmber + "[needs-input]" + cOff
+			}
+			if pb.HasSerial {
+				flags += " " + cGray + "[rolling]" + cOff
+			}
+			desc := pb.Description
+			if desc == "" {
+				desc = cGray + "(no description — run 'pine describe')" + cOff
+			}
+			fmt.Printf("  %s%s%s → %s%s\n", cBold, pb.Name, cOff, hostsLabel(pb), flags)
+			fmt.Printf("      %s\n", desc)
+		}
+	}
+
+	if len(ov.Cautions) > 0 {
+		fmt.Printf("\n%sWhat to watch%s\n", cAmber, cOff)
+		for _, c := range ov.Cautions {
+			color := cGray
+			if c.Severity == "high" {
+				color = cRed
+			} else if c.Severity == "medium" {
+				color = cAmber
+			}
+			fmt.Printf("  [%s%s%s] %s — %s\n", color, c.Kind, cOff, c.Subject, c.Detail)
+		}
+	}
+
+	fmt.Printf("\n%sClaude Code%s: ", cGreen, cOff)
+	if ov.ClaudeCode.Available {
+		fmt.Printf("available (%s) — run 'pine describe %s' to generate missing descriptions\n", ov.ClaudeCode.Version, root)
+	} else {
+		fmt.Printf("not installed — descriptions must be written by hand\n")
+	}
+}
+
+// hostsLabel renders a playbook's target hosts compactly for the CLI report.
+func hostsLabel(pb overview.TierPlaybook) string {
+	if n := len(pb.TargetHosts); n > 0 {
+		if n <= 3 {
+			return strings.Join(pb.TargetHosts, ", ")
+		}
+		return fmt.Sprintf("%s +%d more", strings.Join(pb.TargetHosts[:3], ", "), n-3)
+	}
+	if pb.Hosts != "" {
+		return pb.Hosts
+	}
+	return "(no hosts)"
+}
+
+func cmdDescribe(args []string) {
+	fs := flag.NewFlagSet("describe", flag.ExitOnError)
+	write := fs.Bool("write", false, "apply changes (write meta/main.yml + pine.yml); default is a dry-run")
+	_ = fs.Parse(args)
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: pine describe PATH [--write]")
+		os.Exit(2)
+	}
+	root := fs.Arg(0)
+	_ = fs.Parse(fs.Args()[1:]) // allow flags after PATH
+
+	if !claudecode.Available() {
+		fmt.Fprintln(os.Stderr, "describe: the Claude Code CLI (`claude`) was not found on this host.")
+		fmt.Fprintln(os.Stderr, "Install it from https://code.claude.com, then retry.")
+		os.Exit(3)
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *write {
+		fmt.Printf("%sWriting descriptions%s with Claude Code (role meta/main.yml + pine.yml)…\n\n", cBold, cOff)
+	} else {
+		fmt.Printf("%sDry-run%s: proposing descriptions (no files modified). Use --write to apply.\n\n", cBold, cOff)
+	}
+
+	// CLI runs claude with its default text output streamed straight to the
+	// terminal (no stream-json parsing needed when a human is watching).
+	// No --bare: honour the user's stored `claude` login (see claudecode.Args).
+	cliArgs := []string{"-p", claudecode.Prompt(*write), "--add-dir", abs}
+	if *write {
+		cliArgs = append(cliArgs, "--permission-mode", "acceptEdits", "--allowedTools", "Read,Edit,Write")
+	} else {
+		cliArgs = append(cliArgs, "--allowedTools", "Read")
+	}
+	cmd := exec.Command(claudecode.Bin(), cliArgs...)
+	cmd.Dir = abs
+	cmd.Env = claudecode.Env()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("describe: claude exited: %v", err)
+	}
+	if *write {
+		fmt.Printf("\n%sDone.%s Run 'pine scan %s' to see the new descriptions.\n", cGreen, cOff, root)
+	}
 }
 
 func cmdLineage(args []string) {
