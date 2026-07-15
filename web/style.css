@@ -1149,20 +1149,44 @@ body.pv-resizing { cursor: col-resize; user-select: none; }
 .job-log .recap-line .rc-skip { color: var(--secondary); }
 .job-log .recap-line .rc-zero { color: var(--muted); font-weight: 400; }
 
-/* Messages panel: task msg outputs surfaced above the raw log */
+/* Result lines with a large JSON payload — collapsed to a one-line summary,
+   click to expand the full pretty-printed JSON. */
+.job-log .ll-json-head { cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 0; }
+.job-log .ll-json-head:hover { background: rgba(255, 255, 255, 0.04); }
+.job-log .ll-json-caret { color: var(--muted); flex: none; margin-right: 4px; transition: transform 0.12s; }
+.job-log .ll-json-msg { color: inherit; }
+.job-log .ll-json-detail { color: var(--warning); }
+.job-log .ll-json-size { font-size: 11px; margin-left: 6px; }
+.job-log .ll-json-full {
+  margin: 4px 0 6px 18px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; font-size: 11.5px; line-height: 1.5; color: var(--text); white-space: pre-wrap;
+  word-break: break-word; max-height: 400px; overflow: auto;
+}
+
+/* Messages panel: task result summaries surfaced above the raw log */
 .job-messages { padding: 12px 16px; }
 .job-messages .jm-head { display: flex; align-items: center; gap: 7px; font-weight: 650; margin-bottom: 8px; }
 .job-messages .jm-head .icon-wrap svg { width: 15px; height: 15px; }
 .job-messages .jm-row {
-  display: flex; align-items: baseline; gap: 10px; padding: 6px 10px; border-radius: 6px;
-  border-left: 3px solid var(--border); background: var(--bg); margin-top: 4px;
+  border-radius: 6px; border-left: 3px solid var(--border); background: var(--bg); margin-top: 4px;
 }
 .job-messages .jm-row.jm-failed { border-left-color: var(--danger); background: var(--danger-dim); }
 .job-messages .jm-row.jm-changed { border-left-color: var(--warning); }
 .job-messages .jm-row.jm-ok { border-left-color: var(--accent); }
+.job-messages .jm-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 6px 10px; cursor: pointer; }
+.job-messages .jm-row-head:hover { background: rgba(255, 255, 255, 0.03); }
+.job-messages .jm-caret { color: var(--muted); flex: none; }
 .job-messages .jm-host { color: var(--secondary); font-size: 12px; flex: none; }
 .job-messages .jm-task { color: var(--muted); font-size: 12px; flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-messages .jm-msg { color: var(--text); font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
+.job-messages .jm-detail { color: var(--warning); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.job-messages .jm-rc { color: var(--danger); font-size: 11px; flex: none; }
+.job-messages .jm-full {
+  display: none; margin: 0 10px 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; font-size: 11.5px; line-height: 1.5; color: var(--text); white-space: pre-wrap;
+  word-break: break-word; max-height: 400px; overflow: auto;
+}
+.job-messages .jm-row.open .jm-full { display: block; }
 .job-log .cursor {
   display: inline-block;
   width: 8px;

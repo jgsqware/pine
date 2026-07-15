@@ -5066,32 +5066,69 @@ async function pageJobs(page) {
 
 const TERMINAL_STATUSES = new Set(["success", "failed", "canceled"]);
 
-// extractMessages pulls task `msg` values out of the run log (from the
-// `=> { … }` result blocks, single- or multi-line pretty-printed JSON), so they
-// can be surfaced in a Messages panel. Returns [{task, host, status, msg}].
+/** Boils an ansible result dict down to what an operator actually needs at a
+ *  glance. `msg` is often generic for command/shell modules ("The command
+ *  exited with a non-zero return code.") while the actionable line is buried
+ *  at the tail of stderr/stdout — surface that separately as `detail` rather
+ *  than making the reader dig through the full JSON for it. */
+function summarizeAnsibleResult(obj) {
+  const tail = (arr) => (Array.isArray(arr) && arr.length ? String(arr[arr.length - 1]).trim() : "");
+  let msg = "";
+  if (obj.msg != null && obj.msg !== "") msg = Array.isArray(obj.msg) ? obj.msg.join(" ") : String(obj.msg);
+  const detail = tail(obj.stderr_lines) || tail(obj.stdout_lines);
+  if (!msg) msg = detail || "(no message)";
+  return {
+    msg,
+    detail: detail && detail !== msg ? detail : "",
+    rc: obj.rc,
+    cmd: Array.isArray(obj.cmd) ? obj.cmd.join(" ") : obj.cmd,
+  };
+}
+
+/** Matches one ansible result line — `status: [host]: FAILED! => {json}` or
+ *  `status: [host] => {json}` — capturing the human prefix separately from
+ *  the JSON payload so the payload can be collapsed independently. */
+const RESULT_LINE_RE = /^((?:ok|changed|failed|fatal|unreachable):\s*\[[^\]]+\]:?\s*(?:FAILED!|UNREACHABLE!)?\s*=>\s*)(\{.*)$/i;
+
+/** Parses a single physical log line as an ansible result block, accumulating
+ *  subsequent lines when the JSON is pretty-printed across more than one
+ *  (rare — the default callback emits it on one line, but not guaranteed).
+ *  lines/i are the full line array and current index; returns
+ *  {prefix, obj, raw, lastIndex} or null if this isn't a result line. */
+function parseResultBlock(lines, i) {
+  const m = lines[i].match(RESULT_LINE_RE);
+  if (!m) return null;
+  let acc = m[2], obj = null, j = i;
+  for (let tries = 0; tries < 500 && j < lines.length; tries++) {
+    try { obj = JSON.parse(acc); break; } catch { /* need more lines */ }
+    j++;
+    acc += "\n" + (lines[j] || "");
+  }
+  if (!obj) return null;
+  return { prefix: m[1], obj, raw: acc, lastIndex: j };
+}
+
+// extractMessages pulls task result summaries out of the run log (from the
+// `=> { … }` result blocks, single- or multi-line pretty-printed JSON), so
+// they can be surfaced in a Messages panel above the raw log.
+// Returns [{task, host, status, msg, detail, rc, full}].
 function extractMessages(text) {
   const out = [];
   const lines = text.split("\n");
   let task = "";
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const tm = line.match(/^(?:TASK|RUNNING HANDLER|HANDLER) \[(.+?)\]/);
+    const tm = lines[i].match(/^(?:TASK|RUNNING HANDLER|HANDLER) \[(.+?)\]/);
     if (tm) { task = tm[1]; continue; }
-    const rm = line.match(/^(ok|changed|failed|fatal|unreachable):\s*\[([^\]]+)\][^=]*=>\s*(\{.*)$/i);
-    if (!rm) continue;
-    let status = rm[1].toLowerCase();
+    const hm = lines[i].match(/^(ok|changed|failed|fatal|unreachable):\s*\[([^\]]+)\]/i);
+    if (!hm) continue;
+    const block = parseResultBlock(lines, i);
+    if (!block) continue;
+    i = block.lastIndex;
+    let status = hm[1].toLowerCase();
     if (status === "fatal") status = "failed";
-    // accumulate lines until the JSON parses (handles pretty-printed blocks)
-    let acc = rm[3], obj = null, j = i;
-    for (let tries = 0; tries < 500 && j < lines.length; tries++) {
-      try { obj = JSON.parse(acc); break; } catch { /* need more lines */ }
-      j++;
-      acc += "\n" + (lines[j] || "");
-    }
-    i = j;
-    if (obj && obj.msg != null && obj.msg !== "") {
-      const msg = Array.isArray(obj.msg) ? obj.msg.join("\n") : String(obj.msg);
-      out.push({ task, host: rm[2], status, msg });
+    const sum = summarizeAnsibleResult(block.obj);
+    if (sum.msg && sum.msg !== "(no message)") {
+      out.push({ task, host: hm[2], status, msg: sum.msg, detail: sum.detail, rc: sum.rc, full: block.obj });
     }
   }
   return out;
@@ -5127,6 +5164,38 @@ function logLineClass(line) {
   if (t.startsWith("skipping:") || t.startsWith("skipped:")) return "ll-skip";
   if (t.startsWith("[WARNING]") || t.startsWith("[DEPRECATION")) return "ll-warn";
   return "";
+}
+
+// Result lines with a large JSON payload (a failed shell/command task's
+// stderr/stdout easily runs to hundreds of embedded lines — e.g. a `docker
+// compose pull`'s progress output — all JSON-escaped onto one physical line)
+// swamp the terminal view. Collapse anything past LOG_JSON_COLLAPSE_CHARS
+// behind a one-line summary + click to expand; shorter results still render
+// through the normal logLineClass() coloring, unchanged.
+const LOG_JSON_COLLAPSE_CHARS = 300;
+
+function renderResultLine(line) {
+  const m = line.match(RESULT_LINE_RE);
+  if (!m || m[2].length < LOG_JSON_COLLAPSE_CHARS) return null;
+  let obj;
+  try { obj = JSON.parse(m[2]); } catch { return null; }
+  const sum = summarizeAnsibleResult(obj);
+  const full = el("pre", { class: "ll-json-full mono", style: { display: "none" } }, JSON.stringify(obj, null, 2));
+  const caret = el("span", { class: "ll-json-caret" }, "▸");
+  const head = el("div", {
+    class: "ll ll-json-head " + logLineClass(line),
+    onclick: () => {
+      const open = full.style.display === "none";
+      full.style.display = open ? "" : "none";
+      caret.textContent = open ? "▾" : "▸";
+    },
+  },
+    caret,
+    document.createTextNode(m[1].trim() + " "),
+    el("span", { class: "ll-json-msg" }, sum.msg),
+    sum.detail ? el("span", { class: "ll-json-detail" }, " — " + sum.detail) : null,
+    el("span", { class: "ll-json-size muted" }, ` (${(m[2].length / 1024).toFixed(1)} KB, click to expand)`));
+  return el("div", null, head, full);
 }
 
 async function pageJobDetail(page, segs) {
@@ -5218,10 +5287,21 @@ async function pageJobDetail(page, segs) {
     msgBox.appendChild(el("div", { class: "jm-head" }, icon("clipboard"),
       el("span", null, `Messages (${msgs.length})`)));
     for (const m of msgs) {
-      msgBox.appendChild(el("div", { class: "jm-row jm-" + m.status },
+      const row = el("div", { class: "jm-row jm-" + m.status });
+      const caret = el("span", { class: "jm-caret" }, "▸");
+      const full = el("pre", { class: "jm-full mono" }, JSON.stringify(m.full, null, 2));
+      row.appendChild(el("div", {
+        class: "jm-row-head",
+        onclick: () => { row.classList.toggle("open"); caret.textContent = row.classList.contains("open") ? "▾" : "▸"; },
+      },
+        caret,
         el("span", { class: "jm-host mono" }, m.host),
         m.task ? el("span", { class: "jm-task" }, m.task) : null,
-        el("span", { class: "jm-msg" }, m.msg)));
+        el("span", { class: "jm-msg" }, m.msg),
+        m.detail ? el("span", { class: "jm-detail mono" }, m.detail) : null,
+        typeof m.rc === "number" && m.rc !== 0 ? el("span", { class: "jm-rc mono" }, `rc=${m.rc}`) : null));
+      row.appendChild(full);
+      msgBox.appendChild(row);
     }
   };
   let msgTimer = 0;
@@ -5264,8 +5344,7 @@ async function pageJobDetail(page, segs) {
   const scrollLog = () => { if (autoscroll) logBox.scrollTop = logBox.scrollHeight; };
   const appendLine = (line) => {
     logText += line + "\n";
-    const recap = renderRecapLine(line);
-    const div = el("div", { class: "ll " + logLineClass(line) }, recap || line);
+    const div = renderResultLine(line) || el("div", { class: "ll " + logLineClass(line) }, renderRecapLine(line) || line);
     if (cursor.parentNode) logBox.insertBefore(div, cursor);
     else logBox.appendChild(div);
     scrollLog();
